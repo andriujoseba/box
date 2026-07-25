@@ -1845,13 +1845,18 @@ box_user() {
 }
 
 cmd_shell() { incus exec "$inst" -- sudo -u "$(box_user "$inst")" -i; }
-cmd_exec()  { incus exec "$inst" -- sudo -u "$(box_user "$inst")" -i "${args[@]:1}"; }
+# sudo -i joins its command argv into one shell string. In that join, a
+# backslash-newline becomes a shell continuation and silently deletes the
+# newline from a multi-line `box exec` payload (#169). Keep the login
+# environment explicitly, but let the inner shell exec the original argv.
+cmd_exec()  { incus exec "$inst" -- sudo -u "$(box_user "$inst")" -H bash -lc 'cd ~ && exec "$@"' _ "${args[@]:1}"; }
 
 # A shell is a child of the exec connection: drop the terminal and everything
 # in it is SIGHUP'd — a long Claude run dies with it. tmux 'new-session -A'
 # attaches when the session exists and creates it when it doesn't, so starting
 # work and reattaching after a disconnect are the same command. 'shell' stays
-# bare on purpose — two verbs, two contracts.
+# bare on purpose — two verbs, two contracts. Unlike cmd_exec, tmux has no
+# caller-supplied command payload; its session name is validated below.
 cmd_tmux() {
   local session="${args[1]:-main}"
   case "$session" in

@@ -5,6 +5,10 @@ which records not just what changed but what each drill run proved.
 
 ## Unreleased
 
+### Fixed
+
+- `box exec` preserves newlines and command argv across its login-user boundary (#169)
+
 ### Changed
 
 - Release and repository governance now use the shared ceremony pinned at `0.1.0` (heavy-duty/ceremony#14)

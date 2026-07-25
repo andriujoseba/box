@@ -71,8 +71,8 @@ wait_box() {   # poll until exec answers (the VM agent can take a while), ~4 min
 # Read from inside a box WITHOUT ever hanging the drill.
 #
 # Two traps, both hit for real:
-#   · 'box exec' becomes 'sudo -u <template user> -i' — a LOGIN zsh (oh-my-zsh and
-#     all). Fine for a person, needless machinery for a probe.
+#   · 'box exec' crosses a login-user shell boundary. Fine for a person,
+#     needless machinery for a probe.
 #   · $( ) waits for stdout to CLOSE, not for the command to exit. A grandchild
 #     inheriting the exec session's stdout keeps the substitution open forever,
 #     and 'timeout' does not save you: it kills the wrapper, not the holder of
