@@ -202,6 +202,31 @@ fi
 rm -f "$mintlog"
 as_u "$U1" box list 2>/dev/null | grep -q '^mine ' && ok "(b) box list shows mine" || no "(b) box list does not show mine"
 as_u "$U1" box exec mine -- true >/dev/null 2>&1 && ok "(b) box exec mine -- true" || no "(b) box exec failed"
+
+# #169: compare the new explicit login-user boundary with sudo -i while the
+# latter is still safe (one fixed `env` argv), then exercise the exact
+# silent-success multiline shape that sudo -i used to corrupt.
+target_user="$(as_u "$U1" incus config get mine user.box.user)"
+legacy_env="$(as_u "$U1" incus exec mine -- sudo -u "$target_user" -i env \
+  | grep -E '^(USER|LOGNAME|SHELL|HOME|PWD|PATH)=' | sort)"
+exec_env="$(as_u "$U1" box exec mine -- env \
+  | grep -E '^(USER|LOGNAME|SHELL|HOME|PWD|PATH)=' | sort)"
+[ "$exec_env" = "$legacy_env" ] \
+  && ok "(b) box exec preserves cross-user login environment (USER/LOGNAME/SHELL/HOME/PWD/PATH)" \
+  || {
+    no "(b) box exec changed the cross-user login environment (#169)"
+    diff -u <(printf '%s\n' "$legacy_env") <(printf '%s\n' "$exec_env") | sed 's/^/        /' || true
+  }
+as_u "$U1" box exec mine -- bash -lc '
+  set -o errexit -o nounset -o pipefail
+  touch /tmp/box-169-step-one
+  touch /tmp/box-169-step-two
+' >/dev/null 2>&1 \
+  && as_u "$U1" box exec mine -- test -f /tmp/box-169-step-one \
+  && as_u "$U1" box exec mine -- test -f /tmp/box-169-step-two \
+  && ok "(b) box exec preserves multiline commands, including the silent-success set shape" \
+  || no "(b) box exec corrupted a multiline command (#169)"
+
 as_u "$U1" box info mine 2>/dev/null | grep -qF "$(boxnet_pfx)" \
   && ok "(g) box info shows a boxnet ($(boxnet_pfx)x) address — placed on the hardened network" \
   || no "(g) mine has no boxnet address in box info"
