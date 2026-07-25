@@ -69,6 +69,55 @@ check "unknown flag on list exits 2"           2 "unknown option"   "$BOX" list 
 check "--name with no value exits 2"           2 "--name needs a value" "$BOX" new --name
 
 # ---------------------------------------------------------------------------
+# box exec — preserve command argv across the login-environment boundary
+# (#169). `sudo -i <command...>` joins argv into one shell string; its escaped
+# newline becomes a continuation, so a multi-line body can fuse into a
+# different valid command and still return 0. Drive cmd_exec through a fake
+# incus boundary that validates the wrapper shape and then executes it. This
+# test therefore fails against the old -i implementation before trusting the
+# marker files.
+# ---------------------------------------------------------------------------
+EXECFN="$(mktemp)"
+grep '^cmd_exec()' "$BOX" > "$EXECFN"
+check "box exec: cmd_exec extracted (guards the grep)" 0 "exec \"\$@\"" cat "$EXECFN"
+check "box exec: extracted function is valid bash" 0 "" bash -n "$EXECFN"
+check "box exec: command argv never rides sudo -i" 1 "" grep -q -- ' -i ' "$EXECFN"
+
+exec_fixture() { # exec_fixture <command> [arg...]
+  bash -c '
+    set -e
+    . "$0"
+    box_user() { printf "%s\n" fixture-user; }
+    incus() {
+      [ "$1" = exec ] && [ "$2" = fixture ] && [ "$3" = -- ]
+      shift 3
+      [ "$1" = sudo ] && [ "$2" = -u ] && [ "$3" = fixture-user ] &&
+        [ "$4" = -H ]
+      shift 4
+      "$@"
+    }
+    inst=fixture
+    args=(fixture "$@")
+    cmd_exec
+  ' "$EXECFN" "$@"
+}
+
+EXEC_STATE="$(mktemp -d)"
+exec_body="set -euo pipefail
+touch '$EXEC_STATE/step-one'
+touch '$EXEC_STATE/step-two'"
+check "box exec: silent-success multiline body executes each statement" 0 "" \
+  exec_fixture bash -lc "$exec_body"
+check "box exec: multiline step one was not fused into set argv" 0 "" \
+  test -f "$EXEC_STATE/step-one"
+check "box exec: multiline step two was not fused into set argv" 0 "" \
+  test -f "$EXEC_STATE/step-two"
+check "box exec: plain argv remains separate" 0 "one argument" \
+  exec_fixture printf '%s\n' "one argument"
+rm -rf "$EXEC_STATE"
+rm -f "$EXECFN"
+
+# ---------------------------------------------------------------------------
 # A shim `id` on PATH: lets us drive install.sh's DEST branch with a canned uid +
 # group output, exactly the way rig drives assert_runner_repo against fixtures.
 # ---------------------------------------------------------------------------
