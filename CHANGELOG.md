@@ -5,6 +5,8 @@ which records not just what changed but what each drill run proved.
 
 ## Unreleased
 
+## 0.9.1 — 2026-08-04
+
 ### Fixed
 
 - `box exec` preserves newlines and command argv across its login-user boundary (#169)
