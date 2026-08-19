@@ -47,6 +47,41 @@ is a good record. So is a maintainer's written waiver explaining why this
 release shipped without a full drill. What the gate refuses is silence — #95,
 #114 and #148 all shipped unproven because a skip left no trace.
 
+## The drill writes the first draft
+
+Everything above except the prose is a field `drill/drill.sh` already knows, so
+it emits them rather than leaving them to be retyped out of coloured terminal
+output at the end of a forty-minute run (#152):
+
+```
+bash drill/drill.sh --ref release/0.10.0 --emit-record drills/0.10.0.md
+```
+
+- **`--run-id <id>`** (or `DRILL_RUN_ID`) pins the ID this release set's three
+  records share. Unset, the drill generates `drill-<version>-<date>-01` — bump
+  the trailing sequence by hand for a second run the same day. Either way it is
+  printed as soon as the install lands, not at exit, so whoever drills rig and
+  cast can use the same string while their runs are still ahead of them. This
+  is the field that had no mechanism at all before: it was invented at write-up
+  time, three times, and the odds the three matched were whatever memory was
+  worth.
+- **The numbers are the probe floor's**, not what happened to run: `76/85`, not
+  `76/76`. A phase that did not run is recorded as a shortfall, and a phase
+  *declared* skipped is recorded as a `SKIP` line that lowers the floor by
+  exactly its probes (#153). Passing and skipped never look alike.
+- **`NO_COLOR=1`, or piping anywhere, drops the ANSI** from the drill, the
+  doctor and the multi-user rehearsal.
+- **The emitted file is refused if one already exists there.** A record is
+  edited by hand after it is emitted, and overwriting one destroys the
+  judgement calls that make it evidence.
+
+**What it emits is a skeleton, not a finished record.** The judgement calls in
+the worked example below — "judged not release-blocking: it affects teardown
+residue on a host that is about to be wiped" — are exactly what a script must
+not fabricate. So the emitted file ends with a paragraph saying it is a draft;
+write what the findings mean for the release, then delete that paragraph. A
+record still carrying it has not been read by anyone.
+
 ## Worked example
 
 The version below is a **placeholder that can never be a real release**.

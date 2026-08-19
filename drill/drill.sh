@@ -76,11 +76,11 @@ while [ $# -gt 0 ]; do
     --in-group) shift; break ;;                       # internal: see below
     # The help IS the header block above, printed verbatim, so a line added
     # there must move this window with it — 18 → 23 for the five lines the
-    # probe floor added, 23 → 38 for the fifteen the record added. What the
+    # probe floor added, 23 → 39 for the sixteen the record added. What the
     # window still cuts off (the phase list is stale and short) is #154's to
     # fix, not this issue's; test/cli.sh asserts the window still ends on the
     # phase list rather than mid-sentence, so moving it is checked, not hoped.
-    -h|--help) sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "drill: unknown option: $1" >&2; exit 2 ;;
   esac
 done
