@@ -30,10 +30,19 @@ case "${1:-}" in
 esac
 
 bad=0
-ok()   { printf '  \033[32mOK\033[0m    %s\n' "$*"; }
-no()   { printf '  \033[31mDIRTY\033[0m %s\n' "$*"; bad=$((bad + 1)); }
+# Colour resolved once, and dropped for NO_COLOR (set, any value, per the
+# convention) or a stdout that is not a terminal (#152). A doctor report is
+# pasted into an issue at least as often as it is read on a terminal, and
+# escape codes in that paste are noise nobody asked for.
+if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ]; then
+  C_G=''; C_R=''; C_B=''; C_0=''
+else
+  C_G=$'\033[32m'; C_R=$'\033[31m'; C_B=$'\033[1m'; C_0=$'\033[0m'
+fi
+ok()   { printf '  %sOK%s    %s\n' "$C_G" "$C_0" "$*"; }
+no()   { printf '  %sDIRTY%s %s\n' "$C_R" "$C_0" "$*"; bad=$((bad + 1)); }
 inf()  { printf '        %s\n' "$*"; }
-head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+head_() { printf '\n%s%s%s\n' "$C_B" "$*" "$C_0"; }
 
 # --- The #80 signature: a nested box stack squatting on the gateway ---------
 # setup-host run INSIDE a box builds a nested boxnet on the guest's own uplink
@@ -207,10 +216,10 @@ if [ "$TIER" = restricted ]; then
 
   head_ "Verdict"
   if [ "$bad" -eq 0 ]; then
-    printf '  \033[32mclean\033[0m — your tier is granted and your boxes are fit.\n\n'
+    printf '  %sclean%s — your tier is granted and your boxes are fit.\n\n' "$C_G" "$C_0"
     exit 0
   fi
-  printf '  \033[31m%s problem(s)\033[0m — see the fixes above (most need an admin).\n\n' "$bad"
+  printf '  %s%s problem(s)%s — see the fixes above (most need an admin).\n\n' "$C_R" "$bad" "$C_0"
   exit 1
 fi
 
@@ -501,14 +510,14 @@ fi
 head_ "Verdict"
 if [ "$bad" -eq 0 ]; then
   if [ "$FRESH" = 1 ]; then
-    printf '  \033[32mfresh\033[0m — no box stack on this host yet, and nothing dirty either.\n'
+    printf '  %sfresh%s — no box stack on this host yet, and nothing dirty either.\n' "$C_G" "$C_0"
     printf '  run:  box setup-host   (or the drill — it sets the host up itself)\n\n'
   else
-    printf '  \033[32mclean\033[0m — this host is fit to mint boxes (and to drill).\n\n'
+    printf '  %sclean%s — this host is fit to mint boxes (and to drill).\n\n' "$C_G" "$C_0"
   fi
   exit 0
 fi
-printf '  \033[31m%s problem(s)\033[0m — this host is NOT fit to mint boxes (or to drill).\n' "$bad"
+printf '  %s%s problem(s)%s — this host is NOT fit to mint boxes (or to drill).\n' "$C_R" "$bad" "$C_0"
 if [ "$FIX" = 1 ]; then
   printf '  reverted what could be reverted; re-run doctor to confirm.\n\n'
 else
