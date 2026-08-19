@@ -11,10 +11,26 @@
 #   bash drill/drill.sh --ref main       # drill a different branch of the repo
 #   bash drill/drill.sh --keep-boxes     # leave the boxes up to poke at
 #   DRILL_EXPECT=90 bash drill/drill.sh  # raise the floor (a whole number)
+#   bash drill/drill.sh --emit-record drills/0.10.0.md    # write the record
+#   bash drill/drill.sh --run-id drill-0.10.0-20260819-01 # share one ID
 #
 # The run is short unless it emits at least the expected number of verdicts:
 # a phase that never executed used to report a clean sweep (#153). A skip that
 # is legitimate prints a SKIP line and lowers the floor by exactly its probes.
+#
+# --emit-record <path> writes drills/README.md's six-item record with every
+# field the harness already knows filled in (#152): the run ID, the host, the
+# candidate refs and the SHAs they resolve to, the numbers against #153's
+# floor, the wall clock, and the findings uncoloured. It is a SKELETON — what
+# a failure means for the release is a judgement a script must not fabricate,
+# so the file says it is a draft until you edit that line out. --run-id (or
+# DRILL_RUN_ID) pins the ID this release set's three records share; unset, it
+# generates drill-<version>-<date>-01, and either way it is printed early
+# enough to hand to whoever drills rig and cast.
+#
+# NO_COLOR (any value), or a stdout that is not a terminal, drops the ANSI.
+# The summary exists to be piped somewhere; escape codes in a pasted record
+# are noise, and every record before this one was transcribed past them.
 #
 # Four phases:
 #   A. Incus semantics — the assumptions box is built on, probed directly.
@@ -40,6 +56,13 @@ set -u
 REPO="${BOX_REPO:-heavy-duty/box}"
 REF="${BOX_REF:-main}"
 YES=0; KEEP=0
+# The record's two settings survive the sg re-exec below as environment, not as
+# flags: --in-group takes no arguments through, so anything the second stage
+# needs is exported. Both default empty; DRILL_RUN_ID unset means "generate one
+# once the installed VERSION is known", which is not a decision this line can
+# make yet.
+RECORD="${DRILL_RECORD:-}"
+RUN_ID="${DRILL_RUN_ID:-}"
 SELF="$(readlink -f "$0")"
 
 while [ $# -gt 0 ]; do
@@ -48,24 +71,41 @@ while [ $# -gt 0 ]; do
     --keep-boxes) KEEP=1; shift ;;
     --repo) REPO="$2"; shift 2 ;;
     --ref) REF="$2"; shift 2 ;;
+    --emit-record) RECORD="$2"; shift 2 ;;
+    --run-id) RUN_ID="$2"; shift 2 ;;
     --in-group) shift; break ;;                       # internal: see below
     # The help IS the header block above, printed verbatim, so a line added
     # there must move this window with it — 18 → 23 for the five lines the
-    # probe floor added. What the window still cuts off (the phase list is
-    # stale and short) is #154's to fix, not this issue's.
-    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # probe floor added, 23 → 38 for the fifteen the record added. What the
+    # window still cuts off (the phase list is stale and short) is #154's to
+    # fix, not this issue's; test/cli.sh asserts the window still ends on the
+    # phase list rather than mid-sentence, so moving it is checked, not hoped.
+    -h|--help) sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "drill: unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 # >>> drill verdicts — extracted by test/cli.sh together with the ledger and the
 # summary below, so the run's EXIT PATH can be executed rather than grepped.
+#
+# The colour is resolved ONCE, here, and every verdict reads the result (#152).
+# It used to be unconditional, in a script whose whole output exists to be read
+# later: piping the summary to a file gave escape codes, and the operator then
+# transcribed a record past them. NO_COLOR (the convention: set, any value,
+# even empty) and a stdout that is not a terminal both mean plain. The variables
+# stay defined either way, so nothing below has to ask a second time — which is
+# what keeps this block self-contained enough for the harness to source.
+if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ]; then
+  C_G=''; C_R=''; C_Y=''; C_B=''; C_0=''
+else
+  C_G=$'\033[32m'; C_R=$'\033[31m'; C_Y=$'\033[33m'; C_B=$'\033[1m'; C_0=$'\033[0m'
+fi
 pass=0; fail=0; findings=(); audit=()
-ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; pass=$((pass + 1)); tally; }
-no()   { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fail=$((fail + 1)); findings+=("FAIL: $*"); tally; }
-note() { printf '  \033[33mNOTE\033[0m  %s\n' "$*"; findings+=("NOTE: $*"); }
+ok()   { printf '  %sPASS%s  %s\n' "$C_G" "$C_0" "$*"; pass=$((pass + 1)); tally; }
+no()   { printf '  %sFAIL%s  %s\n' "$C_R" "$C_0" "$*"; fail=$((fail + 1)); findings+=("FAIL: $*"); tally; }
+note() { printf '  %sNOTE%s  %s\n' "$C_Y" "$C_0" "$*"; findings+=("NOTE: $*"); }
 inf()  { printf '        %s\n' "$*"; }
-phase(){ PHASE="$1"; shift; printf '\n\033[1m══ %s\033[0m\n' "$*"; }
+phase(){ PHASE="$1"; shift; printf '\n%s══ %s%s\n' "$C_B" "$*" "$C_0"; }
 aud()  { audit+=("$*"); }                       # an answer for the #15 audit
 # <<< drill verdicts
 
@@ -122,7 +162,10 @@ tally() {   # attribute a verdict to the open phase. ok/no must still return 0.
 skipped() {   # skipped <phase-key> <n> <why>
   local k="$1" n="$2"; shift 2
   PHASE_WAIVED[$k]=$(( ${PHASE_WAIVED[$k]:-0} + n ))
-  printf '  \033[33mSKIP\033[0m  %s\n' "$*"
+  # ${C_Y:-} and not "$C_Y": the colour belongs to the verdicts block above, and
+  # this one's contract is that it assumes only `findings`. Sourced alone by the
+  # harness it prints plain, which is what the harness wants anyway (#152).
+  printf '  %sSKIP%s  %s\n' "${C_Y:-}" "${C_0:-}" "$*"
   findings+=("SKIP: $* [$k: $n probe(s) not expected this run]")
 }
 
@@ -185,7 +228,208 @@ ledger_line() {   # the per-phase counts a single total can never make obvious
 }
 # <<< probe ledger
 
+# >>> drill record (#152) — test/cli.sh extracts this block verbatim and drives
+# it, so keep it self-contained: it may assume the verdict helpers and the probe
+# ledger above it, and nothing else the script declares. Everything else it
+# needs arrives as an argument or as one of the REC_* variables below.
+#
+# drills/README.md asks a record for six things, and this harness knew five of
+# them all along while printing none in that shape. So every record was retyped
+# by hand out of ANSI-coloured terminal output at the end of a forty-minute run,
+# by someone who then had to reconstruct what the host had been. The sixth — the
+# run ID that makes box's, rig's and cast's records reassemble into one picture —
+# had no mechanism at all: it was invented at write-up time, independently, three
+# times, and the odds the three matched were whatever memory was worth.
+#
+# The split is the whole design. record_collect() touches the world (uname,
+# incus, /etc/os-release, the network) and record_write() touches nothing but
+# the REC_* set, so the SHAPE of a record is drivable by a test on a host with
+# no Incus, no drill and no network.
+#
+# What the harness must never write is prose. "Judged not release-blocking: it
+# affects teardown residue on a host that is about to be wiped" is a judgement,
+# and a generated file that reads like a finished one is worse than no file at
+# all — it invites exactly the transcription-free confidence the last two
+# waivers were written under. So the emitted record ends by saying it is a
+# draft, in the rendered text and not in an HTML comment nobody sees.
+
+record_version() {   # the VERSION of the tree the install actually landed
+  local v
+  v="$(cat "$HOME/.local/share/box/current/VERSION" 2>/dev/null)"
+  printf '%s' "${v:-unknown}"
+}
+
+# drills/README.md: "The name must match the contents of VERSION exactly", and
+# the ID carries that version so a record and its run cannot drift apart. The
+# trailing -01 is a sequence for a second run on the same day; bump it by hand,
+# or pass --run-id, which is what a coordinated release set does anyway.
+record_run_id() {   # <version> <yyyymmdd> → drill-<version>-<date>-01
+  printf 'drill-%s-%s-01' "$1" "$2"
+}
+
+# "Real hardware" is the claim the record makes, so name the hardware — and name
+# the virtualisation too. A drill run inside a VM is not disqualified, but a
+# record that does not say so lets a reader assume bare metal, and the boundary
+# this drill measures is precisely the one nested virtualisation blurs.
+record_host() {
+  local kernel os cpu mem virt incus
+  kernel="$(uname -sr 2>/dev/null)"; kernel="${kernel:-unknown kernel}"
+  # shellcheck disable=SC1091  # a data file, present on every distro box targets
+  os="$( . /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}" )"
+  os="${os:-unknown OS}"
+  cpu="$(awk -F': ' '/^model name/ { print $2; exit }' /proc/cpuinfo 2>/dev/null)"
+  cpu="${cpu:-unknown CPU}"
+  mem="$(awk '/^MemTotal:/ { printf "%.0f GB", $2 / 1048576 }' /proc/meminfo 2>/dev/null)"
+  mem="${mem:-unknown RAM}"
+  virt="$(systemd-detect-virt 2>/dev/null)"; virt="${virt:-unknown}"
+  incus="$(incus --version 2>/dev/null)"; incus="${incus:-not installed}"
+  printf '%s / %s, %s, kernel %s, Incus %s (virt: %s)' \
+    "$cpu" "$mem" "$os" "$kernel" "$incus" "$virt"
+}
+
+# A ref without its SHA proves nothing later — the branch moves and the record
+# stops naming a tree. git first because it costs no rate limit and answers for
+# any ref; the GitHub API's `sha` media type second, because a drill host has
+# curl by construction (it fetched install.sh with it) and may not have git.
+# Both answers go through one validator: an error page and a rate-limit body are
+# not SHAs, and 'unresolved' in the record is honest where a truncated HTML
+# fragment would be a lie with a monospace font on.
+record_sha() {   # <repo> <ref> → the seven-char commit, or 'unresolved'
+  local repo="$1" ref="$2" sha=''
+  # A ref that IS a commit resolves to itself; asking a remote to expand it
+  # returns nothing, which is how a pinned drill used to record 'unresolved'.
+  if [ "${#ref}" -eq 40 ] && [ -z "${ref//[0-9a-f]/}" ]; then
+    printf '%s' "${ref:0:7}"; return 0
+  fi
+  if command -v git >/dev/null 2>&1; then
+    sha="$(git ls-remote "https://github.com/$repo" "$ref" 2>/dev/null \
+           | awk 'NR == 1 { print substr($1, 1, 7) }')"
+  fi
+  if [ -z "$sha" ] && command -v curl >/dev/null 2>&1; then
+    sha="$(curl -fsSL -m 20 -H 'Accept: application/vnd.github.sha' \
+             "https://api.github.com/repos/$repo/commits/$ref" 2>/dev/null \
+           | cut -c1-7)"
+  fi
+  case "$sha" in
+    ''|*[!0-9a-f]*) printf 'unresolved' ;;
+    *)              printf '%s' "$sha" ;;
+  esac
+}
+
+# drills/README.md's worked example writes "41 minutes wall clock". $SECONDS
+# cannot supply it: the drill re-execs itself into the incus-admin group and
+# the shell that finishes is not the shell that started, so the clock is an
+# epoch stamp carried across that exec (DRILL_T0).
+record_wallclock() {   # <seconds> → the phrase, or an honest refusal to guess
+  local s="${1:-}"
+  case "$s" in
+    ''|*[!0-9]*) printf 'wall clock not measured' ; return 0 ;;
+  esac
+  if [ "$s" -lt 60 ]; then printf 'under a minute wall clock'
+  else printf '%s minutes wall clock' "$(( (s + 30) / 60 ))"; fi
+}
+
+# Refuse a bad record path BEFORE the drill starts formatting a host, exactly as
+# the DRILL_EXPECT guard does: an operator who typo'd it must find out now, not
+# in the summary forty minutes on.
+#
+# The overwrite refusal is the load-bearing half. The emitted file is a skeleton
+# the operator then writes prose into, and that edited file is the release
+# evidence the gate reads. A second run pointed at the same path would silently
+# eat those judgements, so it does not get to: remove the file or name another.
+record_check_path() {   # <path> — empty path means no record was asked for
+  local path="$1" dir
+  [ -n "$path" ] || return 0
+  case "$path" in */*) dir="${path%/*}" ;; *) dir='.' ;; esac
+  [ -d "$dir" ]  || { echo "drill: --emit-record: no such directory: $dir" >&2; return 2; }
+  [ -w "$dir" ]  || { echo "drill: --emit-record: not writable: $dir" >&2; return 2; }
+  if [ -s "$path" ]; then
+    echo "drill: --emit-record: $path already exists and is not empty." >&2
+    echo "  A record is edited by hand after it is emitted, so overwriting one" >&2
+    echo "  destroys the judgement calls that make it evidence. Remove it, or" >&2
+    echo "  emit somewhere else and merge the two by hand." >&2
+    return 2
+  fi
+  return 0
+}
+
+# Fill the REC_* set from the world. Every field is ${...:-} against itself, so
+# a caller (the test, or an operator scripting around this) can pin any one of
+# them and have the rest collected around it.
+record_collect() {   # <box-repo> <box-ref> <keep-boxes:0|1>
+  local prefix=''
+  REC_VERSION="${REC_VERSION:-$(record_version)}"
+  REC_DATE="${REC_DATE:-$(date -I 2>/dev/null)}"
+  REC_RUN_ID="${REC_RUN_ID:-$(record_run_id "$REC_VERSION" "${REC_DATE//-/}")}"
+  REC_HOST="${REC_HOST:-$(record_host)}"
+  REC_BOX_REPO="${REC_BOX_REPO:-$1}"
+  REC_BOX_REF="${REC_BOX_REF:-$2}"
+  REC_BOX_SHA="${REC_BOX_SHA:-$(record_sha "$REC_BOX_REPO" "$REC_BOX_REF")}"
+  # The rig pin the MINT actually used, read the way bin/box reads it
+  # (rig_repo/rig_ref, default heavy-duty/rig@main). Where that default is what
+  # was in force, the record says `main` — the released-box gap #81 opened and
+  # #150 closes is a fact about the run, and a record that hid it would be
+  # asserting a combination nobody drilled.
+  REC_RIG_REPO="${REC_RIG_REPO:-${RIG_REPO:-heavy-duty/rig}}"
+  REC_RIG_REF="${REC_RIG_REF:-${RIG_REF:-main}}"
+  REC_RIG_SHA="${REC_RIG_SHA:-$(record_sha "$REC_RIG_REPO" "$REC_RIG_REF")}"
+  REC_ELAPSED="${REC_ELAPSED:-}"
+  if [ -z "$REC_ELAPSED" ] && [ -n "${DRILL_T0:-}" ]; then
+    REC_ELAPSED="$(( $(date +%s) - DRILL_T0 ))"
+  fi
+  # The command that reproduces this run, env pins included — the flags alone
+  # would name a different drill than the one that ran.
+  [ -n "${RIG_REPO:-}" ]     && prefix="${prefix}RIG_REPO=$RIG_REPO "
+  [ -n "${RIG_REF:-}" ]      && prefix="${prefix}RIG_REF=$RIG_REF "
+  [ -n "${DRILL_EXPECT:-}" ] && prefix="${prefix}DRILL_EXPECT=$DRILL_EXPECT "
+  REC_INVOCATION="${REC_INVOCATION:-${prefix}bash drill/drill.sh --repo $1 --ref $2$( [ "$3" = 1 ] && printf ' --keep-boxes' )}"
+  return 0
+}
+
+# The backticks below are MARKDOWN, in single-quoted printf formats whose only
+# expansions are %s. SC2016 reads them as command substitutions that will not
+# expand, which is exactly right and exactly not the point.
+# shellcheck disable=SC2016
+record_write() {   # <path> — composes the REC_* set and the ledger into a record
+  local path="$1"
+  {
+    printf '# Release drill — %s\n\n' "$REC_VERSION"
+    printf -- '- **Run ID:** `%s`\n' "$REC_RUN_ID"
+    printf -- '- **Host:** %s\n' "$REC_HOST"
+    printf -- '- **Date:** %s\n' "$REC_DATE"
+    printf -- '- **Candidate refs:**\n'
+    printf -- '  - box `%s` @ `%s` (%s)\n' "$REC_BOX_REF" "$REC_BOX_SHA" "$REC_BOX_REPO"
+    printf -- '  - rig `%s` @ `%s` (%s)\n' "$REC_RIG_REF" "$REC_RIG_SHA" "$REC_RIG_REPO"
+    printf '\n## What ran\n\n'
+    printf '`%s`\n\n' "$REC_INVOCATION"
+    # The denominator is the FLOOR, never pass+fail. #153 is the whole reason:
+    # a run that emitted 76 of 85 and failed none is not "76/76 passed", and a
+    # record carrying that fraction is the exact artifact that issue exists to
+    # stop being written. Declared skips are subtracted and named below.
+    printf '%s of the %s declared probes were expected this run.\n\n' \
+      "$(ledger_expected)" "$(ledger_declared)"
+    printf '```\n%s\n```\n' "$(ledger_line)"
+    printf '\n## Result\n\n'
+    printf '**%s/%s passed, %s failed.** %s.\n\n' \
+      "$pass" "$(ledger_expected)" "$fail" "$(record_wallclock "$REC_ELAPSED")"
+    # SKIP lines land here beside FAIL and NOTE, each carrying its own prefix,
+    # so a phase that did not run is recorded as skipped and is never mistaken
+    # for one that passed.
+    if [ "${#findings[@]}" -gt 0 ]; then
+      printf -- '- %s\n' "${findings[@]}"
+    else
+      printf -- '- Nothing to report: no FAIL, no NOTE, no declared skip.\n'
+    fi
+    printf '\n> **Draft — a generated skeleton, not yet a record.** Every field\n'
+    printf '> above is what the harness observed. What each finding MEANS for\n'
+    printf '> the release is a judgement it must not fabricate: write that, then\n'
+    printf '> delete this paragraph (#152).\n'
+  } > "$path"
+}
+# <<< drill record
+
 ledger_check_expect || exit 2
+record_check_path "$RECORD" || exit 2
 
 wait_box() {   # poll until exec answers (the VM agent can take a while), ~4 min
   # 2 min was too short: run 17's legacy box came up AFTER the window closed —
@@ -304,6 +548,13 @@ EOF
     case "$reply" in y|Y|yes) ;; *) echo "stopped."; exit 1 ;; esac
   fi
 
+  # The wall clock starts HERE, after the consent prompt, and is an epoch stamp
+  # rather than $SECONDS: this shell is about to exec itself into the
+  # incus-admin group, and $SECONDS restarts at zero in the shell that actually
+  # finishes the run (#152). Operator think-time at the prompt is not the
+  # drill's duration, which is why the stamp is taken below it and not above.
+  DRILL_T0="$(date +%s)"
+
   phase - "Installing box ($REPO@$REF)"
 
   # Sudo, up front and out loud. Later calls run unattended, and a password
@@ -369,6 +620,17 @@ EOF
   fi
   inf "installed tree confirms: $got"
 
+  # The run ID is resolved HERE and not at the end, because its whole purpose is
+  # to be handed to whoever drills rig and cast — and they need it while their
+  # runs are still ahead of them, not after this one finishes forty minutes
+  # later. It needs the installed VERSION, which is why it cannot be resolved
+  # any earlier than this line (#152).
+  if [ -z "$RUN_ID" ]; then
+    RUN_ID="$(record_run_id "$(record_version)" "$(date +%Y%m%d)")"
+  fi
+  inf "run ID: $RUN_ID   ← rig's and cast's records for this release use this exact string"
+  [ -n "$RECORD" ] && inf "record will be written to: $RECORD"
+
   phase - "Host setup (Incus, boxnet, ACL, profile, firewall)"
   if [ "$fw_absent_pre" = 1 ]; then
     note "neither nft nor ufw present pre-setup — setup-host.sh must install nftables itself (it fixed this once; watch that it still does)"
@@ -410,7 +672,12 @@ EOF
   # credentials are untouched, so we still have to enter the group ourselves —
   # once, for the remainder of the drill.
   inf "re-entering inside the incus-admin group…"
-  exec sg incus-admin -c "IN_GROUP=1 DRILL_OWNS_SETUP='$OWNS' BOX_REPO='$REPO' BOX_REF='$REF' KEEP=$KEEP bash '$SELF' --in-group"
+  # DRILL_RECORD / DRILL_RUN_ID / DRILL_T0 cross the exec as environment because
+  # --in-group takes no arguments through (the parser breaks on it). The clock
+  # in particular MUST cross: the shell that writes the record is not the shell
+  # that started the run, so a $SECONDS-based duration would report the time
+  # since this line rather than the drill's (#152).
+  exec sg incus-admin -c "IN_GROUP=1 DRILL_OWNS_SETUP='$OWNS' BOX_REPO='$REPO' BOX_REF='$REF' KEEP=$KEEP DRILL_RECORD='$RECORD' DRILL_RUN_ID='$RUN_ID' DRILL_T0='$DRILL_T0' bash '$SELF' --in-group"
 fi
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -1129,8 +1396,9 @@ fi
 # and INCLUDING the exit gate at the end of the file, and executes it. Grepping
 # for the shortfall verdict proves only that the line is written; #153's whole
 # criterion is an EXIT STATUS, so the exit status is what has to be driven. Keep
-# the block self-contained: it may assume only the verdict helpers and the
-# ledger above it, both of which are extracted alongside it.
+# the block self-contained: it may assume the verdict helpers, the ledger and
+# the record block above it — all three are extracted alongside it — plus the
+# four settings the record needs from the command line: RECORD, REPO, REF, KEEP.
 phase - "Summary"
 # Everything the floor grades on is read BEFORE the floor's own verdict, which
 # would otherwise count itself: the shortfall FAIL lands under phase '-' and so
@@ -1156,6 +1424,29 @@ fi
 if [ "${#audit[@]}" -gt 0 ]; then
   phase - "#15 audit answers — paste this block into heavy-duty/claudebox#15"
   printf '  %s\n' "${audit[@]}"
+fi
+
+# The record, last, so it carries the shortfall verdict above it — a record
+# emitted before that `no` fires would report a clean sweep on a short run,
+# which is the defect #153 closed and this must not reopen (#152).
+#
+# It cannot move the exit status, and that is deliberate rather than incidental:
+# the status is the floor's verdict on the DRILL, and a full disk has no opinion
+# about whether the trust boundary held. The path was already checked writable
+# before the run started, so reaching the failure branch here means something
+# changed underfoot — loud on stderr, in the findings, and never silent.
+if [ -n "${RECORD:-}" ]; then
+  REC_RUN_ID="${REC_RUN_ID:-${RUN_ID:-}}"
+  record_collect "$REPO" "$REF" "$KEEP"
+  if record_write "$RECORD"; then
+    echo
+    inf "record written: $RECORD"
+    inf "it is a SKELETON — write what the findings mean for the release, then delete its draft line."
+    inf "run ID $REC_RUN_ID goes in rig's and cast's records for this release too."
+  else
+    echo "drill: FAILED to write the record to $RECORD" >&2
+    note "the record could not be written to $RECORD — the numbers above are the only copy"
+  fi
 fi
 
 echo
