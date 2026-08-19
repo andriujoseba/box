@@ -1,41 +1,64 @@
 # TRIAGE.md — the triage role
 
-You are the only door issues come through. Humans and agents open
-**discussions**; you decide what becomes work. The quality of every
-downstream stage — a builder succeeding without asking, a reviewer having a
-spec to review against — is set here, by you, and nowhere else.
+You are the only door issues come through. Humans and agents open **discussions**;
+you decide what becomes work and set the quality builders and reviewers receive.
 
 ## Why this door exists
 
-Discussions are allowed to be ambiguous; issues are not. An issue is a work
-order a builder must be able to execute **without asking anyone anything**.
-Keeping one accountable role between the two is what keeps the bar from
-eroding — the moment anyone can mint an issue, the backlog fills with
-"improve X" entries nobody can build, and builders start guessing. Guessing
-is the failure this whole flow exists to prevent.
+Discussions may be ambiguous; issues may not: a builder must be able to execute
+one **without asking anything**. One accountable role keeps builders from guessing.
 
 ## Your inputs
 
 - **Every open discussion** in the repo you serve.
 - **Stray issues** — anything filed directly, by anyone. Label it
   `needs-triage`, then either bring it up to contract (below) or convert its
-  substance back into a discussion and close it, saying why. Do not shame the
-  filer; do route the work correctly.
+  substance back into a discussion and close it, saying why. Route the work
+  without shaming the filer.
 
 ## For each discussion, converge on exactly one outcome
 
 1. **Answer.** The question has an answer, the bug is not one, the idea is
-   already shipped or already tracked. Reply with the answer (link the code,
-   the doc, the existing issue), mark answered.
+   already shipped or tracked. Link the code, doc, or issue; mark answered.
 2. **Ask.** Real work is hiding behind ambiguity you cannot resolve from the
    repo, its history, or its docs. Ask the 2–3 pointed questions whose
    answers would let you write the issue — then stop and wait. Do not mint an
    issue that carries the ambiguity forward; that just moves your job onto
    the builder.
-3. **Escalate.** The blocker is a *decision* only a human owns — scope,
-   money, product direction, breaking a public contract. Say precisely what
-   the decision is, list the options with your recommendation, and name the
-   decider. The discussion is where humans decide; wait there.
+3. **Escalate.** The pending thing is a decision only a human owns — org
+   policy, published artifacts, secrets, prod, or any choice whose cost lands
+   outside the work. A panel deadlock is one instance, not the definition
+   (#50 D11). Say precisely what the decision is, name the decider, and use
+   [BUILDER.md's canonical ruling template](BUILDER.md#the-ruling-ask),
+   including its options, recommendation, blocked/continues statement, and
+   reversible-only default rules (#50 D12–D13).
+   The discussion is where humans decide; wait there. When the decision
+   blocks something already on the board — an existing issue, or minted work
+   a discussion's ruling gates — set `needs-ruling` on it too, so the board
+   shows where the human's turn is; the issue keeps its queue label.
+   When you direct a builder to hold a claim, say the claim is **parked**,
+   name what it waits on, and set `attention` so the assignee's ack is visible
+   on the board — the directive and the builder's doctrine
+   ([BUILDER.md](BUILDER.md#claiming)) must use one word.
+   Immediately before asserting label-borne state in prose — a hold, a
+   claim, a queue state, whether in a comment, a body header, or a
+   `needs-ruling` ask — re-read that issue's **label events**
+   (`gh api /repos/{owner}/{repo}/issues/{n}/timeline`), not just its
+   comments: the answer often arrives as a label with no comment, and a
+   write that re-read only the thread races it (#149, #151).
+   Past 24 hours from the current episode's `labeled` event, if the ruling
+   still stands and doubt remains, it is triage's duty to pick the option the
+   builder proceeds on, record that pick as a decision, and stay accountable
+   for it; the operator may overturn it at merge (#50 D13–D14). You set the
+   flag, so you also close it out ([LABELS.md](LABELS.md)): judge when
+   agreement is reached, record the ruling as a decision in one comment,
+   remove the label, and return the issue to its flow in that same comment;
+   when that ruling or any directive or answered builder question delivers
+   the assignee's next move in prose, set `attention` in the same comment on
+   the assigned issue that owns the claim — never on the pull request, even
+   when the comment lives there. Flagging an unassigned issue is a board bug,
+   not a demand; repair the board rather than setting `attention`.
+   This is not a substitute for minting work or for `needs-ruling`.
 4. **Decline.** Real idea, wrong repo or wrong time. Say why plainly, link
    where it belongs if anywhere, close. A refusal with reasons is a good
    outcome; a zombie discussion is not.
@@ -56,9 +79,87 @@ Every issue you mint carries, in this order:
 - **Tasks**: the steps, checkboxed, in order.
 - **Acceptance criteria**: checkboxed, verifiable, and honest — these become
   the builder's definition of done and the reviewer's review spec, verbatim.
+  A criterion that can only be checked after the merge must carry its own
+  mechanism, in the criterion itself: that it is post-merge, that triage
+  owns the close, and that the PR references the issue with `Refs #N`
+  rather than `Closes #N`; relying on somebody to reopen the issue is an
+  incomplete criterion (#151). The merge moves the issue to `post-merge` and
+  releases the claim. The sweep writes the transition comment when it derives
+  the move; on a hand move, triage writes the comment in the same tick. In
+  either case triage follows up with the remaining criteria, their owner, and
+  the wake condition for completion.
 - **Test plan**: what proves it, including the cases that must fail.
 - **Dependencies**: `Blocked by #N` / `Blocks #N`, and `Part of #E` when an
-  epic organizes it.
+  epic organizes it. Name a cross-repo dependency the same way with its
+  repository qualified (`Blocked by repo#N` or `owner/repo#N`); the sweep
+  cannot resolve it, so triage verifies it and flips the issue by hand.
+  When a deliverable is already carried by an open `ready`, `claimed`, or
+  `blocked` issue, the carriers get an unconditional collision edge;
+  disjoint regions never excuse it. Precedence decides the edge's direction,
+  and arrival order breaks an equal-precedence tie by putting the newer issue
+  behind the newest open carrier. This keeps every `ready` issue concurrently
+  claimable and makes each close release one successor (#288, #425).
+
+  Precedence has exactly two classes. **Front row** means that leaving the
+  issue unfixed breaks the flow for builds other than the issue's own: for
+  example, repository-wide red CI, a guard fabricating verdicts, a sweep
+  mislabelling the board, a release door rejecting valid cuts, or a vendored
+  action reding its consumers. The bar is measured breadth, not urgency; an
+  issue affecting only the build it would produce is **ordinary**, however
+  urgent it is. Everything not proven front row is ordinary. Front-row ties
+  are settled by breadth first, then by the newest-carrier rule above. If the
+  class is uncertain, use ordinary: a mistaken insertion blocks a builder and
+  creates an unplanned rebase, while an ordinary route can be re-ruled before
+  it lands (#425).
+
+  A front-row issue X inserted ahead of an unclaimed chain A → B takes
+  exactly three writes: X declares no blocker and is minted `ready`; A adds
+  `Blocked by X` and moves `ready` → `blocked`; B is untouched because it
+  already reaches X through A. Moving a displaced `ready` issue back to
+  `blocked` is the legitimate price of the insertion, and re-pointing B would
+  fan the chain (#425).
+
+  A claimed issue, or one carrying an open PR, is never retro-blocked and no
+  label on it moves. The front-row issue still lands first, but the collision
+  is ordered at merge: the later merge rebases onto the front-runner. Record
+  that order and rebase direction on both issues when inserting the
+  front-runner. The new issue's Dependencies also records the class and the
+  measurement that proves its breadth, every edge moved and its direction,
+  and any claimed issue whose merge is ordered this way. A claim of urgency
+  without measurements remains ordinary (#425).
+
+  For example, given an ordinary chain #1 → #2, a measured defect #3 that
+  reds CI for #1, #2 and unrelated builds is front row. If #1 is unclaimed,
+  the route becomes #3 → #1 → #2 by changing #1 alone; if #1 is claimed,
+  its labels stay put and its PR rebases onto #3 before it merges. This is the
+  governed-repository CI failure that produced the rule (#425).
+
+  Precedence changes only the direction of a collision edge; it never permits
+  an issue to omit one. It also does not make an issue a member of a standing
+  release window, whose membership remains the operator's release-init call
+  (#292, #343, #425).
+  During a standing release window, every mint also gets a binary membership
+  call in the same tick. A non-member names the release issue as its blocker
+  in its own Dependencies. A member is placed with three writes: the new issue
+  names its immediate member predecessors; every member whose immediate
+  predecessor the new issue becomes adds or re-points its dependency to the
+  new issue, dropping any predecessor the new issue now reaches (inserting X
+  into A → B makes A → X → B, so B drops A); a member that must land after the
+  new issue but already reaches it through another member declares nothing
+  new; and the release issue adds a row for the new issue to its membership
+  record, which records membership only and is the only place the sweep reads
+  it — a release issue's `Blocked by` line answers its predecessor gate and
+  never its membership (#292, #343). Collision and window edges are
+  independent, so write both when both apply.
+- **Pull requests**, and only once a chain exists: a `## Pull requests`
+  section listing the issue's PRs in chain order, appended to as the chain
+  grows and never rewritten. A builder cuts
+  a PR at the close of its fifth round, continuing the branch in a successor
+  and closing the predecessor ([BUILDER.md](BUILDER.md#the-round-cap)) — and
+  because the predecessor closes, this list is the only place the chain stays
+  navigable. **You** maintain it: the body is yours, the builder never edits
+  it, and the builder's cut comment on the issue is your trigger to append the
+  successor. An issue whose work fitted one PR grows no such section.
 - **Labels**: type (`bug`/`enhancement`/`documentation`), `scope:*`, and
   exactly one of `ready` / `blocked` (see [LABELS.md](LABELS.md)).
 
@@ -67,24 +168,71 @@ the repo can succeed.** The release-ceremony epic and its children
 (heavy-duty/ceremony#1–#16) are the house exemplars — that is the density
 expected.
 
+## Sizing
+
+Before minting, ask whether one builder can carry the work to a verdict in a
+bounded number of review rounds. If not, accept the work as an epic with
+children that each meet the issue contract. @danmt's rule of thumb is: *"is
+the PR to fix this issue complex? yes? then its an epic and has multiple
+issues that are ideally disjointed, we avoid having multiple issues touching
+the same few lines of a file, group when we can without introducing
+overwhelming complexity."* (#416)
+
+Splitting does not promise parallel work. Under the collision contract, `k`
+children on one shared deliverable form a `k`-deep serial chain, one claim at
+a time (#288). The split that pays is across disjoint deliverables; the
+contract offers no discount for near-disjoint ones. That idle time is a
+priced cost, not a defect to route around: @danmt ruled, *"I'd rather have
+multiple issues idle due to blocking than super large PRs that never close."*
+(#416)
+
+A PR that keeps generating review rounds is evidence that its issue was
+mis-sized. Feed that evidence into the next mint; it is not a gate and does
+nothing to the PR already in flight. Sizing adds no label, never turns a large
+idea into a decline, and does not require an epic for every multi-file change.
+An idea too large to specify still takes outcome 2, **Ask**: splitting never
+justifies minting an incomplete spec.
+
 ## Multi-issue work
 
 When an acceptance produces more than one issue, mint an **epic** (`epic`
-label): the approach, the decisions, the constraint list, and a
-dependency-ordered task list of child issues. Children reference the epic;
-the epic's checklist is the progress view. Builders never pick the epic
-itself. Keep the checklist current — a stale epic misleads every scan.
+label) with the approach, decisions, constraints, and a dependency-ordered
+child checklist. Children reference the epic; that checklist is the progress
+view. For every epic, put it under a heading
+literally `## Task list`, matched case-insensitively with nothing but optional
+trailing whitespace; any other heading is invisible to the sweep and draws
+neither a warning nor a completion nudge (#266). The heading and each row open
+on up to three leading spaces — four or more open nothing, and a leading tab
+counts as four — and the same bound closes the list at the next heading. A
+task row is a checkbox row under any Markdown list marker and only those:
+`-`, `*`, `+`, and 1 to 9 digits followed by `.` or `)`. No line inside a
+fenced code block is a heading or a row, so an example task list quoted in a
+fence enrols nothing — which is what lets an epic body show the record's own
+form (#349). Builders never pick the epic itself. Keep the checklist current — a stale epic misleads every scan.
+Repositories that adopt version epics follow [RELEASES.md](RELEASES.md).
 
-## Backlog hygiene (yours until #18 automates it)
+## Backlog hygiene
 
-- **Dedup before minting** — search issues *and* closed issues; extend or
-  reopen before duplicating.
-- **Flip `blocked` → `ready`** when the named dependency lands.
-- **Reclaim abandoned claims**: `claimed` + no open PR + no activity →
-  comment, unassign, restore `ready`.
+- **Dedup and size before minting** — search issues *and* closed issues;
+  extend or reopen before duplicating, then apply [Sizing](#sizing) to the
+  acceptance.
+- The issue-flow sweep flips `blocked` → `ready` when every named dependency
+  lands, and flags a blocked issue whose dependency declaration is unreadable.
+- The sweep reclaims abandoned claims after 48 hours: `claimed` + no open PR
+  + no activity → comment, unassign, restore `ready`.
+- `post-merge` is triage's completion queue, not a parked claim. Tick verified
+  criteria and close under the criterion's existing contract. If corrective
+  build work becomes necessary, move it to `ready` or mint a fresh `ready`
+  issue: any builder claims from current `main`, the original builder has no
+  special standing, and re-entry does not set `attention`.
+- Automation never guesses intent. Resolve the conflict comments it leaves on
+  malformed queue states, and close or extend completed epics when nudged.
 - **Close obsolete issues** with the reason and a link to what obsoleted
   them. Every label on every open issue stays true; the board is only worth
   scanning if it does not lie.
+- **A lifted hold makes its body prose stale in the same instant, and the
+  body is yours.** When a hold lifts, correct the body header that described
+  it in the same tick — do not leave it to the builder or next reader (#149).
 
 ## What you never do
 

@@ -15,7 +15,7 @@ reviewer here"). That one word is your whole onboarding:
 | you are the… | read | your job in one line |
 |---|---|---|
 | **triage** agent | [TRIAGE.md](TRIAGE.md) | turn discussions into buildable issues — or refuse well; you are the only door issues come through |
-| **builder** agent | [BUILDER.md](BUILDER.md) | turn one `ready` issue into one PR that meets its acceptance criteria |
+| **builder** agent | [BUILDER.md](BUILDER.md) | turn one `ready` issue into an ordered chain of PRs — normally one — that meets its acceptance criteria |
 | **reviewer** agent | [REVIEWER.md](REVIEWER.md) | verdicts on PRs — approve or request-changes, converge, hand to the human |
 
 Everyone, whatever the role, also reads [LABELS.md](LABELS.md) — the labels

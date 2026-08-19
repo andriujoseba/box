@@ -13,6 +13,6 @@ permissions:
   issues: write         # --label on that fallback PR rides the issues API
 jobs:
   release:
-    uses: heavy-duty/ceremony/.github/workflows/release.yml@0.1.0
+    uses: heavy-duty/ceremony/.github/workflows/release.yml@0.7.4
     with:
       version-source: file
