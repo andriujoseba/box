@@ -2780,7 +2780,93 @@ check "drill: a KVM-less host declares the VM probe it did not run" 0 "" \
   grep -qF 'skipped B 1 "no /dev/kvm' "$ROOT/drill/drill.sh"
 check "drill: --keep-boxes declares the teardown probe it did not run" 0 "" \
   grep -qF 'skipped T 1 "--keep-boxes' "$ROOT/drill/drill.sh"
-rm -f "$LEDGERFN"
+
+# A typo'd DRILL_EXPECT used to reach the arithmetic and leak a bash
+# 'unbound variable' line into the summary. It failed safe; it did not explain.
+check "probe ledger: a non-numeric DRILL_EXPECT is refused, and named" 2 \
+  "DRILL_EXPECT must be a whole number, got: abc" \
+  led "DRILL_EXPECT=abc; ledger_check_expect"
+check "probe ledger: ...while a numeric one is accepted" 0 "" \
+  led "DRILL_EXPECT=90; ledger_check_expect"
+check "probe ledger: ...and an unset one is not an error" 0 "" led "ledger_check_expect"
+# Refusing early is the whole point: an operator who typo'd it must find out
+# before the drill starts formatting a host, not in the summary forty minutes on.
+expect_guard_runs_first() {
+  local guard first
+  guard="$(grep -n '^ledger_check_expect || exit 2$' "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+  [ -n "$guard" ] || { echo "the DRILL_EXPECT guard is defined but never called"; return 1; }
+  first="$(grep -nE '^[[:space:]]*phase [A-Za-z-]+ ' "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+  [ "$guard" -lt "$first" ] || { echo "the guard runs at $guard, after the first phase at $first"; return 1; }
+}
+check "drill: the DRILL_EXPECT guard is called, and before the first phase" 0 "" \
+  expect_guard_runs_first
+
+# ---------------------------------------------------------------------------
+# The exit path, EXECUTED (#153). Everything above proves the ledger's
+# arithmetic and that the summary's lines are written. Neither proves the drill
+# LEAVES non-zero when it ran short — and an exit status is the whole of #153's
+# central criterion, so grep is not evidence for it: replacing the final
+# `[ "$fail" -eq 0 ]` with unconditional success passed every check above.
+#
+# So compose the three extracted blocks — verdicts, ledger, summary — into the
+# runnable skeleton of a drill that has finished, and run it. The exit status
+# asserted below is the real one, produced by the real gate.
+# ---------------------------------------------------------------------------
+VERDFN="$(mktemp)"; SUMFN="$(mktemp)"
+awk '/^# >>> drill verdicts/,/^# <<< drill verdicts/' "$ROOT/drill/drill.sh" > "$VERDFN"
+awk '/^# >>> ledger summary/,/^# <<< ledger summary/' "$ROOT/drill/drill.sh" > "$SUMFN"
+check "drill summary: the verdict helpers extract (guards the awk)" 0 "pass=\$((pass + 1))" \
+  cat "$VERDFN"
+check "drill summary: the summary extracts (guards the awk)" 0 "the drill ran SHORT:" cat "$SUMFN"
+# The gate must be INSIDE the extracted window, or the scenarios below run an
+# exit path that is not the script's. This is what stops the hole reopening by
+# the gate simply moving out from under the marker.
+# shellcheck disable=SC2016  # a literal in the target file
+check "drill summary: ...with the exit gate inside the window, not below it" 0 "" \
+  grep -qF '[ "$fail" -eq 0 ]' "$SUMFN"
+
+# Run the composed skeleton. $1 is the state a finished drill would be in.
+run_summary() {
+  bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; $1; . '$SUMFN'"
+}
+summary_lacks() {   # 0 when the composed run does NOT say $1
+  local needle="$1"; shift
+  ! run_summary "$1" 2>&1 | grep -qF -e "$needle"
+}
+COMPLETE="$FULL; pass=85; fail=0"
+
+check "drill summary: a complete run reports 85/85 and EXITS 0" 0 "85/85 passed, 0 failed" \
+  run_summary "$COMPLETE"
+
+# THE regression, end to end. Phase C never executed: 76 verdicts, none of them
+# failing, and the drill used to leave here 0 with "76 passed, 0 failed" on the
+# line an operator transcribes into drills/<version>.md as proof.
+check "drill summary: a phase that never ran EXITS NON-ZERO" 1 "the drill ran SHORT:" \
+  run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=76"
+check "drill summary: ...naming the short phase, against the full denominator" 1 \
+  "short in: C(0/9)" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=76"
+check "drill summary: ...and the record carries 76/85, not a clean 76" 1 \
+  "76/85 passed, 1 failed" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=76"
+# The verdict names both roads to a short phase, not just the commoner one.
+check "drill summary: ...and does not diagnose 'never ran' as the only cause" 1 \
+  "or failed before emitting the rest" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=76"
+
+# A DECLARED skip is the line between honest and tuned-down: same 76 verdicts,
+# but the run said which nine it was not going to emit, and why.
+check "drill summary: a declared skip lowers the floor and EXITS 0" 0 \
+  "76/76 passed, 0 failed" \
+  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=76"
+check "drill summary: ...and the SKIP survives into the findings block" 0 \
+  "SKIP: no isolation stack" \
+  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=76"
+
+# The other road to non-zero: nothing short, one thing genuinely failed. Both
+# roads have to work, and the second must not be reported as the first.
+check "drill summary: a complete run with one real FAIL EXITS NON-ZERO" 1 \
+  "84/85 passed, 1 failed" run_summary "$COMPLETE; pass=84; fail=1"
+check "drill summary: ...and is not mislabelled as a short run" 0 "" \
+  summary_lacks "the drill ran SHORT:" "$COMPLETE; pass=84; fail=1"
+rm -f "$LEDGERFN" "$VERDFN" "$SUMFN"
 
 # The docs keep the new promises.
 check "help setup-host names BOX_SUBNET" 0 "BOX_SUBNET" "$BOX" help setup-host
