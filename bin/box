@@ -2443,7 +2443,13 @@ cmd_expose() {
       action=allow "destination=$ip/32" "destination_port=$port" protocol=tcp >/dev/null 2>&1
     # If that was the last door, unpin the static address it required. Only
     # then — other exposures still lean on the pin. Best-effort, like the ACL.
-    if ! incus config device list "$inst" 2>/dev/null | grep -q '^expose-'; then
+    # Capture first, then decide. `incus config device list` can write more
+    # than grep needs; a direct `| grep -q` lets grep close the pipe on the
+    # first exposure, turning incus's SIGPIPE into a false "no doors left"
+    # under pipefail and unpinning the address another exposure still uses
+    # (#134).
+    local devices; devices="$(incus config device list "$inst" 2>/dev/null || true)"
+    if ! grep -q '^expose-' <<<"$devices"; then
       incus config device unset "$inst" eth0 ipv4.address >/dev/null 2>&1
     fi
     return 0
