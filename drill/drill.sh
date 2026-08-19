@@ -10,7 +10,7 @@
 #   bash drill/drill.sh --yes            # no prompt (CI, or you've read it)
 #   bash drill/drill.sh --ref main       # drill a different branch of the repo
 #   bash drill/drill.sh --keep-boxes     # leave the boxes up to poke at
-#   DRILL_EXPECT=90 bash drill/drill.sh  # raise the expected-probe floor
+#   DRILL_EXPECT=90 bash drill/drill.sh  # raise the floor (a whole number)
 #
 # The run is short unless it emits at least the expected number of verdicts:
 # a phase that never executed used to report a clean sweep (#153). A skip that
@@ -58,6 +58,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# >>> drill verdicts — extracted by test/cli.sh together with the ledger and the
+# summary below, so the run's EXIT PATH can be executed rather than grepped.
 pass=0; fail=0; findings=(); audit=()
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; pass=$((pass + 1)); tally; }
 no()   { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fail=$((fail + 1)); findings+=("FAIL: $*"); tally; }
@@ -65,6 +67,7 @@ note() { printf '  \033[33mNOTE\033[0m  %s\n' "$*"; findings+=("NOTE: $*"); }
 inf()  { printf '        %s\n' "$*"; }
 phase(){ PHASE="$1"; shift; printf '\n\033[1m══ %s\033[0m\n' "$*"; }
 aud()  { audit+=("$*"); }                       # an answer for the #15 audit
+# <<< drill verdicts
 
 # >>> probe ledger (#153) — test/cli.sh extracts this block verbatim; keep it
 # self-contained (it may assume only `findings`, declared above).
@@ -147,6 +150,20 @@ ledger_expected() {
   printf '%s' "$(( ${DRILL_EXPECT:-$(ledger_declared)} - $(ledger_waived) ))"
 }
 
+# A typo'd override must SAY it was a typo. DRILL_EXPECT=abc used to reach the
+# arithmetic above and leak 'abc: unbound variable' into the summary, printing
+# "1 of  expected probes" — it failed safe (the shortfall verdict does not
+# depend on the total) but left the operator to infer the cause from a mangled
+# line. Checked once at startup instead, where they can still fix it.
+ledger_check_expect() {
+  case "${DRILL_EXPECT:-0}" in
+    *[!0-9]*)
+      echo "drill: DRILL_EXPECT must be a whole number, got: ${DRILL_EXPECT}" >&2
+      return 2 ;;
+  esac
+  return 0
+}
+
 ledger_short() {   # every phase that came up short, as ' K(got/want)'
   local k want got out=""
   for k in "${PHASE_ORDER[@]}"; do
@@ -167,6 +184,8 @@ ledger_line() {   # the per-phase counts a single total can never make obvious
   printf '  probes %s\n' "$out"
 }
 # <<< probe ledger
+
+ledger_check_expect || exit 2
 
 wait_box() {   # poll until exec answers (the VM agent can take a while), ~4 min
   # 2 min was too short: run 17's legacy box came up AFTER the window closed —
@@ -823,6 +842,10 @@ case "$hv" in
   dropped)
     ok "box → host is blocked (no path to the machine's sockets)"
     aud "A2 box→host: dropped" ;;
+  # Unreachable today: box_probe answers reachable|refused|dropped and nothing
+  # else. The arm is pre-existing insurance for the day it grows a fourth
+  # outcome; the `skipped` is here so that day costs the ledger nothing rather
+  # than silently shortening C by one. Not live wiring — read it as a seatbelt.
   *)
     note "box→host probe inconclusive ($hv)"
     aud "A2 box→host: INCONCLUSIVE ($hv)"
@@ -906,6 +929,9 @@ if [ -n "$ARCH_IP" ]; then
     dropped)
       ok "host → box is dropped (entry is 'incus exec' only, as designed)"
       aud "A7 inbound host→box: dropped" ;;
+    # Unreachable today, same as C2's: the if/elif/else above covers exactly the
+    # three values box_probe returns. Seatbelt, not live wiring — the `skipped`
+    # keeps the ledger honest if that ever stops being true.
     *)
       note "inbound probe inconclusive ($hv)"
       aud "A7 inbound host→box: INCONCLUSIVE ($hv)"
@@ -1099,6 +1125,12 @@ else
                      || no "a drill box survived teardown: $(printf '%s' "$leftover" | awk '{print $1}' | tr '\n' ' ')"
 fi
 
+# >>> ledger summary (#153) — test/cli.sh extracts this block verbatim, down to
+# and INCLUDING the exit gate at the end of the file, and executes it. Grepping
+# for the shortfall verdict proves only that the line is written; #153's whole
+# criterion is an EXIT STATUS, so the exit status is what has to be driven. Keep
+# the block self-contained: it may assume only the verdict helpers and the
+# ledger above it, both of which are extracted alongside it.
 phase - "Summary"
 # Everything the floor grades on is read BEFORE the floor's own verdict, which
 # would otherwise count itself: the shortfall FAIL lands under phase '-' and so
@@ -1110,7 +1142,10 @@ ran=$(( pass + fail ))
 short="$(ledger_short)"
 ledger_line
 if [ "$ran" -lt "$expected" ] || [ -n "$short" ]; then
-  no "the drill ran SHORT: $ran of $expected expected probes${short:+ — short in:$short} — a phase, or a block that depends on one, never ran. This is not a clean sweep, whatever the pass count says (#153)."
+  # "never ran" is the common road here, not the only one: a block that failed
+  # early emits its one `no` and leaves the rest of its phase unasserted, which
+  # is short too. The verdict names both rather than diagnosing the wrong one.
+  no "the drill ran SHORT: $ran of $expected expected probes${short:+ — short in:$short} — a phase, or a block that depends on one, never ran, or failed before emitting the rest. This is not a clean sweep, whatever the pass count says (#153)."
 fi
 printf '  %s/%s passed, %s failed\n' "$pass" "$expected" "$fail"
 if [ "${#findings[@]}" -gt 0 ]; then
@@ -1128,3 +1163,4 @@ inf "this host still has Incus, boxnet, the ACL, the profile and the firewall ru
 inf "(plus, unless re-run: dns.mode=none and NIC filtering from the D phase)."
 inf "to undo:  box uninstall --purge-host   (or ~/.local/share/box/current/host/teardown-host.sh)"
 [ "$fail" -eq 0 ]
+# <<< ledger summary
