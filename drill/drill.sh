@@ -10,6 +10,11 @@
 #   bash drill/drill.sh --yes            # no prompt (CI, or you've read it)
 #   bash drill/drill.sh --ref main       # drill a different branch of the repo
 #   bash drill/drill.sh --keep-boxes     # leave the boxes up to poke at
+#   DRILL_EXPECT=90 bash drill/drill.sh  # raise the floor (a whole number)
+#
+# The run is short unless it emits at least the expected number of verdicts:
+# a phase that never executed used to report a clean sweep (#153). A skip that
+# is legitimate prints a SKIP line and lowers the floor by exactly its probes.
 #
 # Four phases:
 #   A. Incus semantics — the assumptions box is built on, probed directly.
@@ -44,18 +49,143 @@ while [ $# -gt 0 ]; do
     --repo) REPO="$2"; shift 2 ;;
     --ref) REF="$2"; shift 2 ;;
     --in-group) shift; break ;;                       # internal: see below
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # The help IS the header block above, printed verbatim, so a line added
+    # there must move this window with it — 18 → 23 for the five lines the
+    # probe floor added. What the window still cuts off (the phase list is
+    # stale and short) is #154's to fix, not this issue's.
+    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "drill: unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
+# >>> drill verdicts — extracted by test/cli.sh together with the ledger and the
+# summary below, so the run's EXIT PATH can be executed rather than grepped.
 pass=0; fail=0; findings=(); audit=()
-ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; pass=$((pass + 1)); }
-no()   { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fail=$((fail + 1)); findings+=("FAIL: $*"); }
+ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; pass=$((pass + 1)); tally; }
+no()   { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fail=$((fail + 1)); findings+=("FAIL: $*"); tally; }
 note() { printf '  \033[33mNOTE\033[0m  %s\n' "$*"; findings+=("NOTE: $*"); }
 inf()  { printf '        %s\n' "$*"; }
-phase(){ printf '\n\033[1m══ %s\033[0m\n' "$*"; }
+phase(){ PHASE="$1"; shift; printf '\n\033[1m══ %s\033[0m\n' "$*"; }
 aud()  { audit+=("$*"); }                       # an answer for the #15 audit
+# <<< drill verdicts
+
+# >>> probe ledger (#153) — test/cli.sh extracts this block verbatim; keep it
+# self-contained (it may assume only `findings`, declared above).
+#
+# The drill used to count what it RAN and never how much it SHOULD have run, so
+# a phase that never executed reported a clean sweep: "71 passed, 0 failed",
+# exit 0, and nothing on the line to say twelve isolation probes never fired.
+# That number does not stay in a terminal — it is transcribed into
+# drills/<version>.md as the evidence a release was proven, and read months
+# later by someone with no way to know the run was short. A drill that silently
+# drills LESS code is the same defect as one that silently drills the WRONG
+# code, which this script already refuses three hundred lines down.
+#
+# So every phase declares how many verdicts a COMPLETE run of it emits, ok/no
+# tally against whichever phase is open, and the summary asserts the numbers as
+# a FLOOR — a floor and not an equality, so adding a probe does not turn the
+# commit that adds it red. Bumping the number below is part of adding one,
+# which is also what finally gives CONTRIBUTING's "85-probe contract" and
+# drills/README.md's "84/85" something that checks them.
+#
+# Phase keys are the letters the phase headers already use; '-' is a phase that
+# emits no verdicts at all (install, host setup, the summary itself). A verdict
+# emitted under '-' lands in the '?' bucket and is reported, because an
+# unattributed probe means this table has drifted from the script.
+PHASE_ORDER=(I A B C E D M T)
+declare -A PHASE_EXPECT=(
+  [I]=1     # install.sh left a complete host stack (#64)
+  [A]=8     # A1–A6, A8, A9 — Incus semantics (A7 prints, it does not judge)
+  [B]=49    # the box surface: 6 templates/version + blank 10 + codex/grok 3×2
+            # + the drill box, its clone and the CLI contract 27
+  [C]=9     # C1–C7, plus archive-is-up and the peer clone
+  [E]=7     # box expose: add, list, info, the door, per-port, remove, shut
+  [D]=0     # D states the settled contract; it judges only a failed baseline
+  [M]=10    # migration: legacy up, visible, refuse, re-home ×5, retire ×2
+  [T]=1     # teardown: every box the drill minted is gone
+)
+declare -A PHASE_RAN=() PHASE_WAIVED=()
+PHASE=-
+
+tally() {   # attribute a verdict to the open phase. ok/no must still return 0.
+  case "$PHASE" in
+    -|'') PHASE_RAN[?]=$(( ${PHASE_RAN[?]:-0} + 1 )) ;;
+    *)    PHASE_RAN[$PHASE]=$(( ${PHASE_RAN[$PHASE]:-0} + 1 )) ;;
+  esac
+  return 0
+}
+
+# A legitimate skip DECREMENTS the expectation and SAYS SO on its own line, and
+# lands in findings so it survives into the record. The expectation is never
+# quietly tuned down to whatever the weakest run happens to produce — that is
+# the failure this whole ledger exists to prevent, one level in.
+skipped() {   # skipped <phase-key> <n> <why>
+  local k="$1" n="$2"; shift 2
+  PHASE_WAIVED[$k]=$(( ${PHASE_WAIVED[$k]:-0} + n ))
+  printf '  \033[33mSKIP\033[0m  %s\n' "$*"
+  findings+=("SKIP: $* [$k: $n probe(s) not expected this run]")
+}
+
+ledger_want() {   # what phase <k> owes THIS run, after declared skips
+  local k="$1"
+  printf '%s' "$(( ${PHASE_EXPECT[$k]:-0} - ${PHASE_WAIVED[$k]:-0} ))"
+}
+
+ledger_declared() {   # the table's own total — the "85" the docs quote
+  local k t=0
+  for k in "${PHASE_ORDER[@]}"; do t=$(( t + ${PHASE_EXPECT[$k]:-0} )); done
+  printf '%s' "$t"
+}
+
+ledger_waived() {
+  local k t=0
+  for k in "${PHASE_ORDER[@]}"; do t=$(( t + ${PHASE_WAIVED[$k]:-0} )); done
+  printf '%s' "$t"
+}
+
+# The floor for the whole run. DRILL_EXPECT is the operator's override of the
+# table's total (raise it to demand more, never to excuse a short run); declared
+# skips decrement whichever total is in force.
+ledger_expected() {
+  printf '%s' "$(( ${DRILL_EXPECT:-$(ledger_declared)} - $(ledger_waived) ))"
+}
+
+# A typo'd override must SAY it was a typo. DRILL_EXPECT=abc used to reach the
+# arithmetic above and leak 'abc: unbound variable' into the summary, printing
+# "1 of  expected probes" — it failed safe (the shortfall verdict does not
+# depend on the total) but left the operator to infer the cause from a mangled
+# line. Checked once at startup instead, where they can still fix it.
+ledger_check_expect() {
+  case "${DRILL_EXPECT:-0}" in
+    *[!0-9]*)
+      echo "drill: DRILL_EXPECT must be a whole number, got: ${DRILL_EXPECT}" >&2
+      return 2 ;;
+  esac
+  return 0
+}
+
+ledger_short() {   # every phase that came up short, as ' K(got/want)'
+  local k want got out=""
+  for k in "${PHASE_ORDER[@]}"; do
+    want="$(ledger_want "$k")"; got="${PHASE_RAN[$k]:-0}"
+    [ "$got" -lt "$want" ] && out="$out $k($got/$want)"
+  done
+  printf '%s' "$out"
+}
+
+ledger_line() {   # the per-phase counts a single total can never make obvious
+  local k out="" waived=0
+  for k in "${PHASE_ORDER[@]}"; do
+    out="$out  $k ${PHASE_RAN[$k]:-0}/$(ledger_want "$k")"
+    waived=$(( waived + ${PHASE_WAIVED[$k]:-0} ))
+  done
+  [ "${PHASE_RAN[?]:-0}" -gt 0 ] && out="$out  ?${PHASE_RAN[?]} (unattributed — the ledger has drifted)"
+  [ "$waived" -gt 0 ] && out="$out   [$waived waived by declared skips]"
+  printf '  probes %s\n' "$out"
+}
+# <<< probe ledger
+
+ledger_check_expect || exit 2
 
 wait_box() {   # poll until exec answers (the VM agent can take a while), ~4 min
   # 2 min was too short: run 17's legacy box came up AFTER the window closed —
@@ -174,7 +304,7 @@ EOF
     case "$reply" in y|Y|yes) ;; *) echo "stopped."; exit 1 ;; esac
   fi
 
-  phase "Installing box ($REPO@$REF)"
+  phase - "Installing box ($REPO@$REF)"
 
   # Sudo, up front and out loud. Later calls run unattended, and a password
   # prompt swallowed by a '-qq' redirect looks exactly like a hang. This now
@@ -239,7 +369,7 @@ EOF
   fi
   inf "installed tree confirms: $got"
 
-  phase "Host setup (Incus, boxnet, ACL, profile, firewall)"
+  phase - "Host setup (Incus, boxnet, ACL, profile, firewall)"
   if [ "$fw_absent_pre" = 1 ]; then
     note "neither nft nor ufw present pre-setup — setup-host.sh must install nftables itself (it fixed this once; watch that it still does)"
   fi
@@ -294,7 +424,7 @@ KEEP="${KEEP:-0}"
 # thing. This is read-only, so it is safe with a previous run's boxes still
 # attached.
 if [ "${DRILL_OWNS_SETUP:-0}" != 1 ]; then
-  phase "Asserting the stack that install.sh built"
+  phase I "Asserting the stack that install.sh built"
   missing=""
   incus network show boxnet        >/dev/null 2>&1 || missing="$missing boxnet"
   incus network acl show box-isolate >/dev/null 2>&1 || missing="$missing box-isolate"
@@ -311,6 +441,8 @@ if [ "${DRILL_OWNS_SETUP:-0}" != 1 ]; then
     exit 1
   fi
   ok "install.sh left a complete host stack (boxnet, box-isolate, box-net, nft bridge drop) — no second setup needed"
+else
+  skipped I 1 "DRILL_OWNS_SETUP=1 — the drill built the stack itself, so install.sh's own contract (#64) was NOT asserted this run"
 fi
 
 # CLEAN BEFORE SETUP, not after. setup-host.sh reconfigures the network's ACLs,
@@ -396,7 +528,7 @@ KVM=0; [ -e /dev/kvm ] && KVM=1
                || note "NO /dev/kvm on this host — box will fall back to CONTAINER mode, so this run does NOT validate the VM trust boundary"
 
 # ===========================================================================
-phase "A. Incus semantics — the assumptions box is built on"
+phase A "A. Incus semantics — the assumptions box is built on"
 # ===========================================================================
 incus launch images:debian/13 cbprobe --config user.box=1 >/dev/null 2>&1
 incus launch images:debian/13 cbnotours >/dev/null 2>&1      # untagged: not ours
@@ -449,6 +581,7 @@ if [ "$rc" -eq 0 ] && [ -z "$u" ]; then
 else
   note "config get on an unset key → rc=$rc out='$u' (not the documented empty+0 — #17's lookup adapts)"
   aud "B4 config-get unset key: rc=$rc out='$u'"
+  skipped A 1 "A8 recorded an observation, not a verdict — incus did not answer the documented empty+0"
 fi
 
 # A9 — 'incus copy' preserves user.* keys (#15 B2). #17's whole metadata design:
@@ -469,7 +602,7 @@ incus delete -f cbcopy >/dev/null 2>&1
 incus delete -f cbprobe cbnotours >/dev/null 2>&1
 
 # ===========================================================================
-phase "B. The box surface"
+phase B "B. The box surface"
 # ===========================================================================
 # Compare against the installed tree's VERSION file, not a hardcoded number —
 # a pinned literal here would fail the drill on every release.
@@ -484,7 +617,7 @@ case "$v" in *"$expected"*) ok "box --version → $v" ;; *) no "version mismatch
 tenants="$({ incus list user.box=1 --format csv --columns n 2>/dev/null
              incus list user.claudebox=1 --format csv --columns n 2>/dev/null; } | sort -u | tr '\n' ' ')"
 if [ -n "${tenants% }" ]; then
-  inf "host already has boxes (${tenants% }) — the empty-host message cannot be tested this run"
+  skipped B 1 "host already has boxes (${tenants% }) — the empty-host message is not testable on a shared host"
 else
   box list >/dev/null 2>&1 && box list 2>&1 | grep -q 'no boxes yet' \
     && ok "empty host: 'no boxes yet', exit 0" || no "empty-host message wrong"
@@ -602,6 +735,7 @@ if [ "$KVM" = 1 ]; then
                   || no "the box is '$typ' but /dev/kvm exists — it should have been a VM"
 else
   note "the box is '$typ' (no /dev/kvm on this host)"
+  skipped B 1 "no /dev/kvm — the box is a container, so 'is it a VM?' has no verdict and the VM trust boundary was NOT validated"
 fi
 
 box info drill | grep -q '^IPV4' && ok "info shows an IPv4" || no "info has no IPV4 row"
@@ -669,7 +803,7 @@ box list archive 2>&1 | grep -q 'box info archive' && ok "'list <box>' points at
 box snapshot archive --labl x 2>&1 | grep -q 'unknown option' && ok "typo'd flag rejected (not swallowed as a label)" || no "unknown flag was swallowed"
 
 # ===========================================================================
-phase "C. Isolation baseline — does the boundary actually hold? (#15 section A)"
+phase C "C. Isolation baseline — does the boundary actually hold? (#15 section A)"
 # ===========================================================================
 box start archive >/dev/null 2>&1
 wait_box archive && ok "archive is back up (agent answering)" \
@@ -708,9 +842,14 @@ case "$hv" in
   dropped)
     ok "box → host is blocked (no path to the machine's sockets)"
     aud "A2 box→host: dropped" ;;
+  # Unreachable today: box_probe answers reachable|refused|dropped and nothing
+  # else. The arm is pre-existing insurance for the day it grows a fourth
+  # outcome; the `skipped` is here so that day costs the ledger nothing rather
+  # than silently shortening C by one. Not live wiring — read it as a seatbelt.
   *)
     note "box→host probe inconclusive ($hv)"
-    aud "A2 box→host: INCONCLUSIVE ($hv)" ;;
+    aud "A2 box→host: INCONCLUSIVE ($hv)"
+    skipped C 1 "C2 box→host was inconclusive ($hv) — no verdict on the firewall" ;;
 esac
 
 # C3 — RFC1918 (#15 A2)
@@ -790,9 +929,13 @@ if [ -n "$ARCH_IP" ]; then
     dropped)
       ok "host → box is dropped (entry is 'incus exec' only, as designed)"
       aud "A7 inbound host→box: dropped" ;;
+    # Unreachable today, same as C2's: the if/elif/else above covers exactly the
+    # three values box_probe returns. Seatbelt, not live wiring — the `skipped`
+    # keeps the ledger honest if that ever stops being true.
     *)
       note "inbound probe inconclusive ($hv)"
-      aud "A7 inbound host→box: INCONCLUSIVE ($hv)" ;;
+      aud "A7 inbound host→box: INCONCLUSIVE ($hv)"
+      skipped C 1 "C7 host→box was inconclusive ($hv) — no verdict on the ingress drop" ;;
   esac
 else
   no "could not read archive's boxnet address — the inbound probe never ran"
@@ -800,7 +943,7 @@ else
 fi
 
 # ===========================================================================
-phase "E. box expose — a deliberate loopback door (#55)"
+phase E "E. box expose — a deliberate loopback door (#55)"
 # ===========================================================================
 # archive is a running claude-box box (node is installed). Start a DETACHED
 # listener on 0.0.0.0 inside it, expose the port, and prove the door works
@@ -822,7 +965,9 @@ if incus file push "$srv" archive/tmp/srv.js >/dev/null 2>&1; then
     box expose archive --list 2>/dev/null | grep -q "$EP" \
       && ok "expose --list shows the open door" || no "expose --list does not show the exposure"
     box info archive 2>/dev/null | grep -qi "$EP" \
-      && ok "box info surfaces the exposure (a box with a hole says so)" || note "box info does not mention the exposure (nice-to-have)"
+      && ok "box info surfaces the exposure (a box with a hole says so)" \
+      || { note "box info does not mention the exposure (nice-to-have)"
+           skipped E 1 "box info does not surface the exposure — recorded as a NOTE, so E owes one verdict less"; }
     # THE test: does the host's loopback reach the box's server?
     sleep 2
     if curl -sS -m 6 "http://127.0.0.1:$EHP" 2>/dev/null | grep -q box-expose-ok; then
@@ -857,7 +1002,7 @@ else
 fi
 
 # ===========================================================================
-phase "D. The isolation contract, stated"
+phase D "D. The isolation contract, stated"
 # ===========================================================================
 # Phase D used to REHEARSE the hardening on a throwaway host, because nobody
 # knew whether it would work. That question is settled: the hardening now ships
@@ -890,7 +1035,7 @@ if [ "$BASELINE_OK" -ne 1 ]; then
 fi
 
 # ===========================================================================
-phase "M. Migration — the pre-0.4.0 → box transition (host/migrate-host.sh)"
+phase M "M. Migration — the pre-0.4.0 → box transition (host/migrate-host.sh)"
 # ===========================================================================
 # A fresh host has no legacy stack, so build a faithful one: claudenet on the
 # OLD subnet, a claude-dev profile pinned to it, and a box tagged with the OLD
@@ -964,10 +1109,12 @@ fi
 
 # ===========================================================================
 if [ "$KEEP" = 1 ]; then
-  phase "Boxes left up (--keep-boxes)"
+  phase - "Boxes left up (--keep-boxes)"
   box list
   inf "note: the D-phase mutations (dns.mode=none, NIC filtering) are still applied"
+  skipped T 1 "--keep-boxes — the boxes stay up on purpose, so teardown is not asserted this run"
 else
+  phase T "T. Teardown — every box the drill minted is gone"
   # every name the drill can have left, whatever branch a partial run took
   for n in drill clone archive peer tpl codex grok legacybox; do box rm "$n" --force >/dev/null 2>&1; done
   # Assert OUR boxes are gone — not that the host is empty. The rm loop above
@@ -978,15 +1125,36 @@ else
                      || no "a drill box survived teardown: $(printf '%s' "$leftover" | awk '{print $1}' | tr '\n' ' ')"
 fi
 
-phase "Summary"
-printf '  %s passed, %s failed\n' "$pass" "$fail"
+# >>> ledger summary (#153) — test/cli.sh extracts this block verbatim, down to
+# and INCLUDING the exit gate at the end of the file, and executes it. Grepping
+# for the shortfall verdict proves only that the line is written; #153's whole
+# criterion is an EXIT STATUS, so the exit status is what has to be driven. Keep
+# the block self-contained: it may assume only the verdict helpers and the
+# ledger above it, both of which are extracted alongside it.
+phase - "Summary"
+# Everything the floor grades on is read BEFORE the floor's own verdict, which
+# would otherwise count itself: the shortfall FAIL lands under phase '-' and so
+# in the '?' bucket, deliberately, and the per-phase line is already printed by
+# the time it fires. What it does move is `fail`, which is the point — a short
+# run leaves here non-zero.
+expected="$(ledger_expected)"
+ran=$(( pass + fail ))
+short="$(ledger_short)"
+ledger_line
+if [ "$ran" -lt "$expected" ] || [ -n "$short" ]; then
+  # "never ran" is the common road here, not the only one: a block that failed
+  # early emits its one `no` and leaves the rest of its phase unasserted, which
+  # is short too. The verdict names both rather than diagnosing the wrong one.
+  no "the drill ran SHORT: $ran of $expected expected probes${short:+ — short in:$short} — a phase, or a block that depends on one, never ran, or failed before emitting the rest. This is not a clean sweep, whatever the pass count says (#153)."
+fi
+printf '  %s/%s passed, %s failed\n' "$pass" "$expected" "$fail"
 if [ "${#findings[@]}" -gt 0 ]; then
   echo
   printf '  %s\n' "${findings[@]}"
 fi
 
 if [ "${#audit[@]}" -gt 0 ]; then
-  phase "#15 audit answers — paste this block into heavy-duty/claudebox#15"
+  phase - "#15 audit answers — paste this block into heavy-duty/claudebox#15"
   printf '  %s\n' "${audit[@]}"
 fi
 
@@ -995,3 +1163,4 @@ inf "this host still has Incus, boxnet, the ACL, the profile and the firewall ru
 inf "(plus, unless re-run: dns.mode=none and NIC filtering from the D phase)."
 inf "to undo:  box uninstall --purge-host   (or ~/.local/share/box/current/host/teardown-host.sh)"
 [ "$fail" -eq 0 ]
+# <<< ledger summary
