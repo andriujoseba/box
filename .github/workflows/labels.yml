@@ -1,13 +1,47 @@
 name: labels
+# The EVENT-facing half of the labels automation. Its sibling
+# labels-sweep.yml carries the reconcile sweep and the hourly cron; this
+# file carries the triggers and dispatches that sibling within seconds of a
+# board event. Splitting them is ceremony#209: all sweeps serialize through
+# one concurrency group, and GitHub records every queue-displaced run as
+# CANCELLED — harmless until such a run rode a pull_request_target trigger
+# and its ❌ landed on that PR's checks as fake red CI that GitHub then
+# refuses to rerun. Behind its own caller, a displaced sweep cancels on the
+# Actions tab, attached to no PR.
+#
+# THE CRON IS NOT HERE. It MOVED to labels-sweep.yml — moved, never copied.
+# A repo that copies it gets double sweeps: every tick fires both callers
+# into the one shared concurrency group, so displacement goes UP and the fix
+# reads as the bug getting worse. A repo-wide grep for the schedule key must
+# return exactly one line, and it is in the sibling — this comment is
+# deliberately written without the literal token so it does not become the
+# second hit in that very check.
 on:
-  schedule: [{cron: "*/15 * * * *"}] # advisory; the handoff label is the real wake
-  workflow_dispatch:                 # bootstraps missing labels on a fresh repo
   pull_request_target:
-    types: [opened, reopened, ready_for_review, converted_to_draft, synchronize, labeled, unlabeled]
+    # Fork PRs; these carry the head/draft/review facts state:* derives from.
+    # labeled/unlabeled are the handoff wake (state:needs-human confirmed here);
+    # synchronize re-derives on every push. review_requested/review_request_removed
+    # (shipped in 0.3.0, ceremony#137) wake the sweep that clears
+    # blocker:unrequested when the panel is asked.
+    types: [opened, reopened, ready_for_review, converted_to_draft, synchronize, labeled, unlabeled, review_requested, review_request_removed]
+  # New at this pin: unavailable at 0.1.0, which is why issue events in this
+  # repository have never woken anything. Narrowed (ceremony#199) to the
+  # actions carrying a queue-state change the hourly cron cannot wait one
+  # cadence for: opened → the mint→needs-triage check, closed → the
+  # blocker-closes→ready self-heal, edited → a body rewrite of the
+  # `Blocked by #N` declaration the sweep parses, reopened → a closed issue
+  # re-entering the queue.
+  issues:
+    types: [opened, closed, edited, reopened]
 permissions:
   contents: read
+  checks: read          # mergeability/check-rollup read for PR state
+  statuses: read        # commit-status rollup read for PR state
+  actions: write        # the trigger job's `gh workflow run` dispatch of the sweep caller (#209)
   issues: write
   pull-requests: write
 jobs:
   labels:
-    uses: heavy-duty/ceremony/.github/workflows/labels.yml@0.1.0
+    uses: heavy-duty/ceremony/.github/workflows/labels.yml@0.7.4
+    # No `sweep_workflow:` — the sibling below is named labels-sweep.yml,
+    # which is the default this caller looks for.

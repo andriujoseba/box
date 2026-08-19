@@ -1,0 +1,50 @@
+name: labels-sweep
+# The RECONCILE half, split out of labels.yml at ceremony#209: PR state,
+# blockers, handoff, stale status, the issue work queue and the needs-ruling
+# invariants. Detached from PR-triggered runs on purpose — see labels.yml's
+# header for the fake-red-CI failure that split them.
+on:
+  # The cadence this repo owns (ceremony#203), and the cron that used to sit
+  # on labels.yml at */15. Hourly is ceremony's recommended default and is
+  # what ceremony#199 relaxed it to: the cron is the sweep's only wake for
+  # four transition classes — a review verdict landing, blocker:ci-red
+  # set/cleared, blocker:conflict when another PR merges under this one, and
+  # time-based stale / 48h claim-reclaim. Everything else arrives in seconds
+  # through labels.yml's trigger job. Do not delete it: it is also the
+  # discovery path for a board nobody is touching.
+  schedule: [{cron: "0 * * * *"}]
+  # A manual full-board sweep. A bare dispatch (input default "yes") also
+  # BOOTSTRAPS THE TAXONOMY on a fresh repo — which is exactly what this
+  # repository needs on the day this PR merges: `ready`, `claimed`,
+  # `post-merge`, `needs-triage`, `epic`, `needs-ruling`, `offsite`,
+  # `attention` and `rerun-owed` do not exist here yet, so the whole board
+  # can only say `blocked`. That press needs `actions: write`, which no agent
+  # identity in this fleet holds:
+  #
+  #   gh workflow run labels-sweep.yml -R heavy-duty/box
+  #
+  # The labels caller's trigger job wakes this workflow with bootstrap=no on
+  # every board event, so the declared input is part of the contract: a
+  # dispatch naming an undeclared input is refused, and the trigger job goes
+  # loudly red.
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: Bootstrap the label taxonomy before sweeping
+        type: choice
+        options: ["yes", "no"]
+        default: "yes"
+permissions:
+  contents: read
+  checks: read          # mergeability/check-rollup read for PR state
+  statuses: read        # commit-status rollup read for PR state
+  actions: read         # workflow-run nodes inside the check rollup
+  issues: write
+  pull-requests: write
+jobs:
+  sweep:
+    uses: heavy-duty/ceremony/.github/workflows/labels-sweep.yml@0.7.4
+    # No `pr_workflow_name:` — this repo's PR-facing caller is named
+    # `labels`, which is the default the sweep exports as SELF_WORKFLOW so
+    # the label machinery's own check entries never count toward
+    # blocker:ci-red.

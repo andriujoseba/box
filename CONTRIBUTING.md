@@ -34,17 +34,30 @@ invisible to the panel; when ready, request every eligible reviewer.
 
 ## Changelog
 
-Every behavior-changing PR adds one concise line under `## Unreleased`,
-above the shipped heading below it. Cite the issue or PR. Never replace or
-duplicate a shipped heading; the shared armed and monotonic guards enforce
-both halves of this rule.
+Every behavior-changing PR writes one file — `changelog.d/<issue>.md` —
+carrying the exact prose that will be published, and nothing else. It does
+**not** edit `CHANGELOG.md`; the release PR assembles the fragments into the
+next section and consumes them. Distinct filenames never conflict, which is
+the whole point: the shared `## Unreleased` anchor this replaced made two
+open PRs a conflict by construction, and a rebase moves the head, so each
+conflict cost a full review round.
+
+This tree is `grouped` (the sentinel at `changelog.d/shape` says so), so a
+fragment carries its own `### Added` / `### Changed` / `### Fixed` heading
+above its bullets. Two rules bite on every entry, and the corpus is graded
+whole — one bad file reds every PR opened after it: **at most 300
+characters** per entry, and **exactly one terminal `(#N).` citation**. An
+entry citing a cross-repo issue goes in `changelog.d/<repo>-<N>.md`.
+
+Never replace or duplicate a shipped heading; the shared armed, monotonic
+and assembled guards enforce every half of this rule.
 
 ## Releases
 
 The release ceremony, merge and tag doors, version stamps, guard semantics,
 and recovery paths are defined by
-[heavy-duty/ceremony](https://github.com/heavy-duty/ceremony/blob/0.1.0/README.md).
-Box pins the shared machinery and doctrine at `0.1.0`.
+[heavy-duty/ceremony](https://github.com/heavy-duty/ceremony/blob/0.7.4/README.md).
+Box pins the shared machinery and doctrine at `0.7.4`.
 
 Box uses the `file` version backend and has no artifact hook: for this
 pure-Bash tree, GitHub’s source tarball for the tag is the package, and

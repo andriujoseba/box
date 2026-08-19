@@ -1,0 +1,30 @@
+name: ci-rerun
+# Services `rerun-owed` (ceremony#424). A fork PR's `pull_request` run lives
+# in THIS repository and rerunning it needs `actions: write` here — which no
+# fleet identity holds: builders are fork authors and the review bots measure
+# `triage: true` and nothing more. So a head red on a flaky runner used to
+# wait for @danmt to press the button. The builder sets the label with its
+# evidence comment; this workflow starts the one rerun, removes the label and
+# comments the new attempt's URL. A refusal LEAVES the label standing and
+# says which of the four gates refused.
+#
+# ROSTER PRECONDITION, and it is not satisfied in this repository yet: gate 1
+# reads .github/labels.conf and admits only identities named by `panel=`, a
+# `panel[<login>]=` row's bracketed login or its listed reviewers, or
+# `triage-actors=`. This PR adds `triage-actors=dan-claude-bot`, so triage is
+# admitted; the builders are NOT, because a conf whose panel is review bots
+# alone answers "no" for every builder who is not also a reviewer. Adding a
+# builder to the roster is a policy call this PR deliberately does not make —
+# see the PR body.
+on:
+  # pull_request_target, not pull_request: a fork PR's pull_request run holds a
+  # read-only token and can neither rerun a run nor remove the label.
+  pull_request_target:
+    types: [labeled]
+permissions:
+  contents: read        # .github/labels.conf (the fleet roster) and the implementation — never the head
+  actions: write        # the rerun no fork PR author can start; the whole reason this exists
+  pull-requests: write  # remove rerun-owed, post the outcome
+jobs:
+  ci-rerun:
+    uses: heavy-duty/ceremony/.github/workflows/ci-rerun.yml@0.7.4

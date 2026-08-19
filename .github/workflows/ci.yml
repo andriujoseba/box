@@ -7,7 +7,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # fetch-depth: 0, for the changelog-monotonic step below and only
           # for it. That check is about a DIFF — which release headings the
@@ -65,7 +65,7 @@ jobs:
       # tree, not about the release machinery, so when it goes red the log
       # says which check found the drift without anyone reading a suite.
       - name: changelog is armed for the next entry
-        uses: heavy-duty/ceremony/actions/changelog-armed@0.1.0
+        uses: heavy-duty/ceremony/actions/changelog-armed@0.7.4
       # ...and no SHIPPED release heading was deleted or DUPLICATED (#122, #143).
       # Its own step for the same reason as the one above — when it goes red the
       # log names the invariant that broke — but a DIFFERENT invariant: armed is
@@ -102,11 +102,59 @@ jobs:
       # every ordinary push and PR, the script no-ops green by design, so
       # running it everywhere costs nothing and closes the route.
       - name: a release tree has a drill record
-        uses: heavy-duty/ceremony/actions/drill-recorded@0.1.0
+        uses: heavy-duty/ceremony/actions/drill-recorded@0.7.4
       - name: no shipped changelog heading was deleted or duplicated
-        uses: heavy-duty/ceremony/actions/changelog-monotonic@0.1.0
+        uses: heavy-duty/ceremony/actions/changelog-monotonic@0.7.4
+      # A fourth changelog invariant, and a different one again: armed is the
+      # shape of this tree, monotonic the diff against the merge base, and
+      # this one is the ARITHMETIC of a release — that the stamped section is
+      # exactly the fragments it consumed, no more and no fewer. Green NOTICE
+      # on every ordinary PR, where there is no section to assemble; it only
+      # has something to say on a release PR. Git-aware like monotonic, so it
+      # rides the same fetch-depth: 0 checkout above and fails closed without
+      # a merge base rather than skipping.
+      #
+      # New at this pin: it does not exist at 0.1.0 (ceremony#112, shipped in
+      # 0.2.0), which is why a repo on the old pin could convert to fragments
+      # and have nothing assert the conversion stayed honest.
+      - name: a release section is exactly its fragments
+        uses: heavy-duty/ceremony/actions/changelog-assembled@0.7.4
       - name: vendored ceremony doctrine matches the pin
-        uses: heavy-duty/ceremony/actions/docs-sync@0.1.0
+        uses: heavy-duty/ceremony/actions/docs-sync@0.7.4
+      # No workflow that executes PR-authored code may name a self-hosted
+      # runner nobody vouched for — a pull_request run IS the branch's code,
+      # and unreviewed fork code must never touch your own hardware
+      # (ceremony#58). Every job in this repository is ubuntu-latest, so the
+      # guard is green from the day it lands and asserts nothing today.
+      #
+      # That is a RULING, not an absence (@danmt, 2026-08-19). The fleet runs
+      # three self-hosted tiers and incubator routes to them — but incubator
+      # is private and box is public, and a public repo gets its Actions
+      # minutes free. There is nothing to buy by spending our own hardware
+      # here, and a self-hosted tier on a public repo accepts work from any
+      # fork PR opened by anyone on GitHub. So: hosted runners, deliberately.
+      #
+      # The guard is adopted anyway, and this is the point of adopting it
+      # before it has anything to say: its value is the day somebody adds a
+      # self-hosted job, and a guard added on that day is a guard added by
+      # the person who most wants it to pass. If that day comes, the vouching
+      # input is `pr-code-runner-labels`, it names the UNTRUSTED tier only,
+      # and ci.yml's `rehearsal` job is not a candidate at any tier — it runs
+      # host/setup-host.sh as root from the PR's own checkout, so it needs a
+      # runner that IS the blast radius.
+      - name: no PR-code workflow runs on an unvouched self-hosted runner
+        uses: heavy-duty/ceremony/actions/runner-isolated@0.7.4
+      # Third-party actions and reusable workflows carry a full commit SHA
+      # and a readable trailing comment, not a moving tag. References owned
+      # by this repository's own owner are exempt, so every
+      # heavy-duty/ceremony@0.7.4 line above is out of scope and the one pin
+      # keeps governing them; what this guard covers here is actions/checkout,
+      # pinned to v4.4.0's commit in this same PR.
+      #
+      # Order matters and is why both halves are in one change: adding the
+      # step before pinning the references merely makes a known sweep red.
+      - name: third-party references are SHA-pinned
+        uses: heavy-duty/ceremony/actions/sha-pinned@0.7.4
 
   # The multi-user rehearsal, on a REAL incus — a GitHub runner is root on a
   # disposable VM, which is exactly the substrate the rehearsal needs. It runs
@@ -121,7 +169,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: install incus
         run: |
           sudo apt-get update
