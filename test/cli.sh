@@ -3047,8 +3047,18 @@ check "drill record: gives the numbers and the wall clock" 0 \
   "**85/85 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
 check "drill record: carries the per-phase ledger a single total cannot say" 0 \
   "B 49/49" emit "$CLEAN"
+check "drill record: states the floor and the table's total as two facts" 0 \
+  "Probe floor: 85 expected this run; the table declares 85." emit "$CLEAN"
+# DRILL_EXPECT can raise the floor above the table, and the record must not read
+# that as an error — the operator is deliberately demanding more than the table.
+check "drill record: ...which stays readable when DRILL_EXPECT raises the floor" 0 \
+  "Probe floor: 90 expected this run; the table declares 85." \
+  emit "DRILL_EXPECT=90; $CLEAN"
 # The record is pasted into a file and read months later. Escape codes in it are
 # the peculiar thing this issue found: every script emitted ANSI unconditionally.
+# Emitted here rather than read from the check above, so the assertion owns the
+# file it grades and a reordering cannot quietly grade a stale one.
+emit "$CLEAN; no 'a coloured failure' >/dev/null" >/dev/null
 check "drill record: contains no ANSI, whatever the terminal was" 1 "" \
   grep -q $'\033' "$RECOUT"
 

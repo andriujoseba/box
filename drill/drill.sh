@@ -301,8 +301,13 @@ record_sha() {   # <repo> <ref> → the seven-char commit, or 'unresolved'
   if [ "${#ref}" -eq 40 ] && [ -z "${ref//[0-9a-f]/}" ]; then
     printf '%s' "${ref:0:7}"; return 0
   fi
+  # GIT_TERMINAL_PROMPT=0 and a timeout are not belt-and-braces: a repo name
+  # that 404s (a typo'd --repo, a private fork) makes git ask for credentials
+  # on the terminal, and an unattended drill would sit at that prompt forever —
+  # forty minutes of work waiting on a username nobody is there to type.
   if command -v git >/dev/null 2>&1; then
-    sha="$(git ls-remote "https://github.com/$repo" "$ref" 2>/dev/null \
+    sha="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true timeout -k 5 25 \
+             git ls-remote "https://github.com/$repo" "$ref" 2>/dev/null \
            | awk 'NR == 1 { print substr($1, 1, 7) }')"
   fi
   if [ -z "$sha" ] && command -v curl >/dev/null 2>&1; then
@@ -357,7 +362,7 @@ record_check_path() {   # <path> — empty path means no record was asked for
 # a caller (the test, or an operator scripting around this) can pin any one of
 # them and have the rest collected around it.
 record_collect() {   # <box-repo> <box-ref> <keep-boxes:0|1>
-  local prefix=''
+  local prefix='' inv
   REC_VERSION="${REC_VERSION:-$(record_version)}"
   REC_DATE="${REC_DATE:-$(date -I 2>/dev/null)}"
   REC_RUN_ID="${REC_RUN_ID:-$(record_run_id "$REC_VERSION" "${REC_DATE//-/}")}"
@@ -382,7 +387,9 @@ record_collect() {   # <box-repo> <box-ref> <keep-boxes:0|1>
   [ -n "${RIG_REPO:-}" ]     && prefix="${prefix}RIG_REPO=$RIG_REPO "
   [ -n "${RIG_REF:-}" ]      && prefix="${prefix}RIG_REF=$RIG_REF "
   [ -n "${DRILL_EXPECT:-}" ] && prefix="${prefix}DRILL_EXPECT=$DRILL_EXPECT "
-  REC_INVOCATION="${REC_INVOCATION:-${prefix}bash drill/drill.sh --repo $1 --ref $2$( [ "$3" = 1 ] && printf ' --keep-boxes' )}"
+  inv="${prefix}bash drill/drill.sh --repo $1 --ref $2"
+  [ "$3" = 1 ] && inv="$inv --keep-boxes"
+  REC_INVOCATION="${REC_INVOCATION:-$inv}"
   return 0
 }
 
@@ -406,7 +413,10 @@ record_write() {   # <path> — composes the REC_* set and the ledger into a rec
     # a run that emitted 76 of 85 and failed none is not "76/76 passed", and a
     # record carrying that fraction is the exact artifact that issue exists to
     # stop being written. Declared skips are subtracted and named below.
-    printf '%s of the %s declared probes were expected this run.\n\n' \
+    # Two facts, not a fraction: DRILL_EXPECT can raise the floor ABOVE the
+    # table's own total, and "90 of the 85 declared" reads like an error where
+    # it is the operator deliberately demanding more than the table admits.
+    printf 'Probe floor: %s expected this run; the table declares %s.\n\n' \
       "$(ledger_expected)" "$(ledger_declared)"
     printf '```\n%s\n```\n' "$(ledger_line)"
     printf '\n## Result\n\n'
