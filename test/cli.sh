@@ -3021,8 +3021,9 @@ check "teardown-host: refuses without a TTY and names the override (#113)" 2 \
 
 # #102's race, pinned as a CLASS rather than at the one site that had it
 # (#107). A daemon-free run cannot exercise a UFW teardown, so the shape is
-# pinned instead: nowhere under host/ or drill/ may a known multi-line writer
-# be piped into a line reader. `Status: active` is ufw's FIRST line, so the
+# pinned instead: nowhere under host/, drill/, or bin/box may a known
+# multi-line writer be piped into a line reader. `Status: active` is ufw's
+# FIRST line, so the
 # reader matches, closes the pipe, ufw takes SIGPIPE, and the pipeline
 # yields 141 — under pipefail the branch silently reads false and the whole
 # firewall block is skipped on a host the operator was told is clean.
@@ -3030,8 +3031,9 @@ check "teardown-host: refuses without a TTY and names the override (#113)" 2 \
 # Swept, not per-file, because absence of pipefail is what made drill/wipe.sh
 # survive the same shape: a file is only ever one `set -o pipefail` — the kind
 # of robustness tweak that sails through review — from being #102 again. The
-# sweep closes the class, so a new host/ or drill/ script inherits the pin for
-# free instead of being one more site someone has to remember.
+# sweep closes the class, so a new host/ or drill/ script — or a new bin/box
+# site — inherits the pin for free instead of being one more site someone has
+# to remember. bin/box joined the sweep after #134 removed its existing class.
 # Comment lines are stripped before matching: each fix's own commentary quotes
 # the racing shape to explain it, and a pin that cannot tell prose from code
 # would fail on the very comment documenting why it exists.
@@ -3050,18 +3052,38 @@ check "teardown-host: refuses without a TTY and names the override (#113)" 2 \
 #
 #   · WRITERS. Enumerated, not generalised. `incus config trust list` joins
 #     `ufw status` because host/revoke-user.sh used it as a leftover-detection
-#     condition under `set -euo pipefail` (#124). A generic "no multi-line
-#     writer feeds a reader" matcher is unwritable here: ~150 legitimate
-#     `| grep` sites exist across host/ and drill/, nearly all reading an
-#     already-captured string back out of `printf '%s\n' "$var"`. So the
-#     sweep claims exactly what it can check — THESE writers are never piped
-#     — and grows one named writer at a time.
+#     condition under `set -euo pipefail` (#124). bin/box adds its multi-line
+#     `incus` writers, `boxes_csv`, and the export metadata reader (#134). A
+#     generic "no multi-line writer feeds a reader" matcher is unwritable here:
+#     ~150 legitimate `| grep` sites exist across host/ and drill/, nearly all
+#     reading an already-captured string back out of `printf '%s\n' "$var"`.
+#     So the sweep claims exactly what it can check — THESE writers are never
+#     piped — and grows one named writer at a time.
 # shellcheck disable=SC2016  # "$1" is the subshell's positional, passed below
-check "no multi-line writer is piped into a line reader under host/ or drill/" 0 "" \
+check "no multi-line writer is piped into a line reader under host/, drill/, or bin/box" 0 "" \
   bash -c 'bad=""
-    for f in "$1"/host/*.sh "$1"/drill/*.sh; do
-      grep -vE "^[[:space:]]*#" "$f" \
-        | grep -qE "(ufw status|incus config trust list)[^|]*\| *(grep|head|sed|awk|read)" \
+    for f in "$1"/host/*.sh "$1"/drill/*.sh "$1"/bin/box; do
+      if [ "$f" = "$1/bin/box" ]; then
+        writers="ufw status|incus [^|]*|boxes_csv|tar -xOf"
+      else
+        writers="ufw status|incus config trust list"
+      fi
+      awk '\''
+        /^[[:space:]]*#/ { next }
+        {
+          line = $0
+          if (logical != "") logical = logical line
+          else logical = line
+          if (line ~ /\\[[:space:]]*$/) {
+            sub(/\\[[:space:]]*$/, "", logical)
+            next
+          }
+          print logical
+          logical = ""
+        }
+        END { if (logical != "") print logical }
+      '\'' "$f" \
+        | grep -qE "($writers)[^|]*\| *(grep|head|sed|awk|read)" \
         && bad="$bad ${f#"$1"/}"
     done
     [ -z "$bad" ] || { printf "racing reads in:%s\n" "$bad"; exit 1; }' \
