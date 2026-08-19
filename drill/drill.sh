@@ -93,7 +93,8 @@ PHASE_ORDER=(I A B C E D M T)
 declare -A PHASE_EXPECT=(
   [I]=1     # install.sh left a complete host stack (#64)
   [A]=8     # A1–A6, A8, A9 — Incus semantics (A7 prints, it does not judge)
-  [B]=49    # the box surface: 6 + blank 10 + codex/grok 3×2 + the drill box 33
+  [B]=49    # the box surface: 6 templates/version + blank 10 + codex/grok 3×2
+            # + the drill box, its clone and the CLI contract 27
   [C]=9     # C1–C7, plus archive-is-up and the peer clone
   [E]=7     # box expose: add, list, info, the door, per-port, remove, shut
   [D]=0     # D states the settled contract; it judges only a failed baseline
@@ -1099,7 +1100,11 @@ else
 fi
 
 phase - "Summary"
-# The denominator, read BEFORE the floor's own verdict can move it.
+# Everything the floor grades on is read BEFORE the floor's own verdict, which
+# would otherwise count itself: the shortfall FAIL lands under phase '-' and so
+# in the '?' bucket, deliberately, and the per-phase line is already printed by
+# the time it fires. What it does move is `fail`, which is the point — a short
+# run leaves here non-zero.
 expected="$(ledger_expected)"
 ran=$(( pass + fail ))
 short="$(ledger_short)"
