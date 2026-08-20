@@ -111,19 +111,50 @@ ufw_dns_findings() {
 # (the gw_squat_signature seam, so test/cli.sh drives it against canned pool
 # config): 'incus storage show <pool>' output in, one line per finding.
 #
-# It JUDGES NOTHING — every line here is informational and none of them touch
-# the verdict. Where a pool lives is a choice, not a fault, and a doctor that
-# called the shipped loop-backed default DIRTY would red every stock host on
-# the day it shipped.
+
+# The value is read through yaml_scalar and not awk's $2, and that is not
+# tidiness: '$2' of "  source: /data/bulk/box pool" is "/data/bulk/box", so
+# this section answered "where do my boxes live" with a directory they are not
+# in — a wrong answer that looks exactly like a right one (#180, panel round
+# 2). Everything after the first ':' is the value, and Incus quotes any value
+# plain YAML would mangle, so the quotes come off here: single-quoted is
+# literal with '' for a quote, double-quoted needs \" and \\ undone.
+yaml_scalar() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    "'"*"'") v="${v#\'}"; v="${v%\'}"; v="${v//\'\'/\'}" ;;
+    '"'*'"') v="${v#\"}"; v="${v%\"}"; v="${v//\\\"/\"}"; v="${v//\\\\/\\}" ;;
+  esac
+  printf '%s' "$v"
+}
+
+# The scalar for one key of the pool's config. $1 is the key test, so a key
+# indented under 'config:' costs nothing; the value is everything past the
+# first colon. A bare pair of quotes is YAML's recorded-but-empty, i.e. the key
+# is absent — normalised once, in yaml_scalar, for every key rather than for
+# the one that happened to need it. (setup-host.sh carries the same pair: these
+# two scripts ship and run independently, as bin/box's storage_driver does.)
+yaml_value() {
+  local key="$1" show="$2" line
+  line="$(printf '%s\n' "$show" | awk -v k="$key:" '$1 == k { sub(/^[[:space:]]*[^:]*:/, ""); print; exit }')"
+  yaml_scalar "$line"
+}
+
+# The report. It JUDGES NOTHING — every line here is informational and none of
+# them touch the verdict. Where a pool lives is a choice, not a fault, and a
+# doctor that called the shipped loop-backed default DIRTY would red every
+# stock host on the day it shipped.
 pool_findings() {
   local show="$1" drv src ini
-  drv="$(printf '%s\n' "$show" | awk '/^driver:/ { print $2; exit }')"
-  src="$(printf '%s\n' "$show" | awk '$1 == "source:" { print $2; exit }')"
+  drv="$(yaml_value driver "$show")"
+  src="$(yaml_value source "$show")"
   # The pool made from a block device does NOT report that device: btrfs
   # formats it and overwrites 'source' with the new filesystem's UUID, keeping
   # what it was handed in 'volatile.initial_source'. Reporting the UUID alone
   # answers "where do my boxes live" with a string naming no disk on the host.
-  ini="$(printf '%s\n' "$show" | awk '$1 == "volatile.initial_source:" { print $2; exit }')"
+  ini="$(yaml_value volatile.initial_source "$show")"
   printf 'driver = %s\n' "${drv:-<unreadable>}"
   # The driver decides whether a clone is near-free; it is the same fact
   # bin/box reads before deciding whether to take a mark (#104, #130).
@@ -132,9 +163,10 @@ pool_findings() {
     printf 'source = <none reported> — the pool is placed under Incus own state directory, on the ROOT filesystem\n'
   else
     printf 'source = %s\n' "$src"
-    # '""' is how YAML renders the recorded-but-empty value a loop-backed pool
-    # carries: the key being absent, not a device named '""'.
-    if [ -n "$ini" ] && [ "$ini" != '""' ] && [ "$ini" != "$src" ]; then
+    # The recorded-but-empty initial source every loop-backed pool carries is
+    # already absence by here: yaml_scalar reads YAML's bare pair of quotes as
+    # the empty string, for this key and for 'source' alike.
+    if [ -n "$ini" ] && [ "$ini" != "$src" ]; then
       printf 'made from = %s — the device this pool was built on; the source above is the filesystem UUID Incus wrote onto it\n' "$ini"
     fi
     case "$src" in

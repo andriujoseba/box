@@ -311,9 +311,58 @@ fi
 # The preseed's storage_pools block, composed in one place so test/cli.sh can
 # drive every driver/source combination against it — and so the unset case is
 # provably the same bytes it has always been.
+#
+# The source is a SINGLE-QUOTED YAML scalar, never a plain one. A plain scalar
+# ends at ' #', YAML's comment marker, so '/data/bulk/a #archive' — a legal
+# directory name and a legal Incus source — would reach the daemon as
+# '/data/bulk/a', and where that prefix exists the pool is built somewhere
+# nobody named, silently. That is exactly the defect #180 came to close,
+# arriving through the front door instead. Quoting is also what makes the
+# pass-through VERBATIM rather than nearly: inside single quotes every
+# character is literal and only a quote needs escaping, by doubling it. The
+# alternative — refusing such a value at the gate — would make this script the
+# thing standing between the operator and a placement Incus accepts, which is
+# the guessing the pass-through exists to avoid.
+#
+# Unset still emits no 'source:' line at all, so an upgraded host's preseed is
+# byte-for-byte the one it has always had.
 pool_block() {
+  local src="$2"
   printf 'storage_pools:\n- name: default\n  driver: %s\n' "$1"
-  [ -z "$2" ] || printf '  source: %s\n' "$2"
+  [ -z "$src" ] || printf "  source: '%s'\n" "${src//\'/\'\'}"
+}
+
+# One YAML scalar, off a 'key: value' line, with none of it lost. Reading such
+# a line with awk's $2 stops at the first space — so a source with a space in
+# it read back as a DIFFERENT path than the pool is on, and every report built
+# from it named a directory that does not hold the boxes (#180, panel round 2).
+# Everything after the first ':' is the value; whitespace around it is YAML's,
+# not the value's.
+#
+# The quotes come off here because Incus puts them on: it emits any value plain
+# YAML would mangle as a quoted scalar. Single-quoted is literal with '' for a
+# quote; double-quoted needs \" and \\ undone. A bare pair of quotes is the
+# recorded-but-EMPTY value every loop-backed pool carries in
+# volatile.initial_source — the key being absent, not a source named '""', and
+# handled here once rather than at each reader.
+yaml_scalar() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    "'"*"'") v="${v#\'}"; v="${v%\'}"; v="${v//\'\'/\'}" ;;
+    '"'*'"') v="${v#\"}"; v="${v%\"}"; v="${v//\\\"/\"}"; v="${v//\\\\/\\}" ;;
+  esac
+  printf '%s' "$v"
+}
+
+# That scalar, for one key of 'incus storage show' output. $1 is the key test
+# (so indentation under 'config:' costs nothing), and the value is everything
+# past the first colon — never a field.
+yaml_value() {
+  local key="$1" show="$2" line
+  line="$(awk -v k="$key:" '$1 == k { sub(/^[[:space:]]*[^:]*:/, ""); print; exit }' <<<"$show")"
+  yaml_scalar "$line"
 }
 
 # One key of the live pool's config, or nothing. Two probes: 'get' answers with
@@ -327,13 +376,13 @@ pool_block() {
 pool_cfg() {
   local key="$1" out show
   out="$(incus storage get default "$key" 2>/dev/null || true)"
+  # 'get' prints the value itself, unquoted and whole — it is the read that
+  # needs no unpicking. The 'show' fallback is YAML, so it goes through
+  # yaml_value, which is where the quoting and the recorded-but-empty '""'
+  # of a loop-backed pool are dealt with.
   if [ -z "$out" ]; then
     show="$(incus storage show default 2>/dev/null || true)"
-    out="$(awk -v k="$key:" '$1 == k { print $2; exit }' <<<"$show")"
-    # YAML renders a recorded-but-empty value as a bare pair of quotes — which
-    # is 'volatile.initial_source' on every loop-backed pool. That is the key
-    # being absent, not a source named '""'.
-    case "$out" in '""') out="" ;; esac
+    out="$(yaml_value "$key" "$show")"
   fi
   printf '%s' "$out"
 }
@@ -454,11 +503,25 @@ PRESEED
   # Report both halves: the driver decides whether a clone is near-free, the
   # source decides which disk fills up (#180). Read back rather than echoed
   # from the inputs — the fallback above can have changed both.
+  #
+  # The driver comes off 'show' because it is not a config key and 'incus
+  # storage get' would not answer for it; the source goes through pool_cfg,
+  # the same read the re-run above uses, so this line says what that one says.
   pool_show="$(incus storage show default 2>/dev/null || true)"
-  echo "storage: pool 'default' driver = $(awk '/^driver:/ {print $2; exit}' <<<"$pool_show")"
-  pool_live="$(awk '$1 == "source:" {print $2; exit}' <<<"$pool_show")"
+  echo "storage: pool 'default' driver = $(yaml_value driver "$pool_show")"
+  pool_live="$(pool_cfg source)"
+  pool_initial="$(pool_cfg volatile.initial_source)"
   if [ -n "$pool_live" ]; then
-    echo "storage: pool 'default' source = $pool_live"
+    # Name the device the operator just typed, not the UUID it became. This is
+    # the ONE run where they are guaranteed to differ on the documented
+    # block-device form — btrfs has just formatted the disk and written the new
+    # filesystem's UUID over 'source' — and it was the one line still answering
+    # with the UUID alone, while the re-run and 'box doctor' name the disk.
+    if [ -n "$pool_initial" ] && [ "${pool_initial%/}" != "${pool_live%/}" ]; then
+      echo "storage: pool 'default' source = $pool_initial (Incus records it as '$pool_live')"
+    else
+      echo "storage: pool 'default' source = $pool_live"
+    fi
   else
     echo "storage: pool 'default' source = <none> — loop-backed under /var/lib/incus, i.e." \
          "on the root filesystem; BOX_STORAGE_SOURCE places a FRESH host's pool elsewhere (#180)"
