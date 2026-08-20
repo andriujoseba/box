@@ -4988,6 +4988,8 @@ check "multiuser: (p) restores its own box so later phases keep their premise" 0
   grep -qF 'box start all' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) proves the reserved name on a real daemon" 0 "" \
   grep -qF 'box new --name all' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) measures the admin direction too" 0 "" \
+  grep -qF "reached no restricted project" "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) is documented in the criteria list" 0 "" \
   grep -qF 'p. the fleet word' "$ROOT/drill/multiuser.sh"
 

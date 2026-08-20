@@ -349,6 +349,18 @@ as_u "$U2" box start all >/dev/null 2>&1 \
 as_u "$U2" box new --name all --template blank >/dev/null 2>&1 \
   && no "(p) a box named 'all' was minted — the fleet word is unreachable now" \
   || ok "(p) 'box new --name all' refused on a real daemon"
+# The other direction, and the one an admin gets wrong by having more power
+# rather than less: root's 'all' is scoped to the shared 'default' project, so
+# it must not reach into any user-<uid> project. Both users' boxes are read
+# back afterwards; whether the admin owns any box of their own is irrelevant
+# to the claim, and an admin with none exits 0 saying so.
+box down all >/dev/null 2>&1 || true
+a1="$(incus --project "$p1" list mine --format csv --columns s 2>/dev/null | head -n1)"
+ac1="$(incus --project "$p1" list c1 --format csv --columns s 2>/dev/null | head -n1)"
+a2="$(incus --project "$p2" list mine --format csv --columns s 2>/dev/null | head -n1)"
+{ [ "$a1" = RUNNING ] && [ "$ac1" = RUNNING ] && [ "$a2" = RUNNING ]; } \
+  && ok "(p) the admin's 'box down all' reached no restricted project" \
+  || no "(p) the admin's 'all' crossed into a user project: $U1 mine=$a1 c1=$ac1, $U2 mine=$a2"
 aud "p. fleet word: $U2's 'all' acted on 1 box, $U1's mine/c1 stayed RUNNING, 'all' refused as a name"
 
 phase "g. the isolation contract, measured from INSIDE the boxes"
