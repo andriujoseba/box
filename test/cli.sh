@@ -1615,10 +1615,18 @@ SHIM
 chmod +x "$MSHIM/incus"
 
 export FAKE_BASE_IMAGE=deadbeefcafe0123456789   # what the alias resolves to
+# The rig pin resolves off the network now (#150), so the mint drive carries
+# the same shim curl the render_userdata drive does — a suite that reached
+# github.com would be a suite that fails when github.com is down, and would
+# assert against whichever rig release happened to be latest that morning.
+# Every mint logs its probes to $log.curl, which is how "exactly one probe per
+# mint" and "no probe at all for a seed with no pin" become assertions.
+export FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9"
 mintbox() {  # mintbox <logfile> <args...> — the real box, shimmed, no TTY
   local log="$1"; shift
-  : > "$log"
-  env FAKE_INCUS_LOG="$log" PATH="$MSHIM:$PATH" "$BOX" "$@" </dev/null >"$log.out" 2>&1
+  : > "$log"; : > "$log.curl"
+  env FAKE_INCUS_LOG="$log" FAKE_CURL_LOG="$log.curl" PATH="$MSHIM:$RIGSHIM:$PATH" \
+      "$BOX" "$@" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
   return "$rc"
@@ -1654,8 +1662,22 @@ check "mint: stamps the rig role box will auto-run (#103)" \
   0 "user.box.role=claude-box" launchline "$MLOG"
 check "mint: stamps which rig converged it — repo (#103)" \
   0 "user.box.rig.repo=heavy-duty/rig" launchline "$MLOG"
-check "mint: stamps which rig converged it — ref (#103)" \
-  0 "user.box.rig.ref=main" launchline "$MLOG"
+# The ref is the RESOLVED release, not main (#150). The stamp is the only
+# record of which rig a box was handed, so it has to name the one that was.
+check "mint: stamps which rig converged it — the RESOLVED ref (#103, #150)" \
+  0 "user.box.rig.ref=9.9.9" launchline "$MLOG"
+# ONE probe for the whole mint. Two readers ask for the pin — this stamp and
+# the seed on the same launch line — and both ask inside a command
+# substitution, so a resolution that lived in either would be discarded with
+# its subshell and the other would probe again. Two probes can straddle a rig
+# release and stamp a ref the seed did not install; the count is what proves
+# the resolution happened in the parent.
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "mint: resolves the pin exactly ONCE, in the parent shell (#150)" 0 "1" \
+  bash -c 'grep -c "releases/latest" "$1"' _ "$MLOG.curl"
+# ...and the seed on that same line carries the same answer the stamp does.
+check "mint: ...and the seed it shipped carries that same resolved ref (#150)" 0 "" \
+  launch_has "$MLOG" 'heavy-duty/rig/9\.9\.9/install\.sh'
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
 # The timestamp's SHAPE, so a local-time or seconds-since-epoch spelling fails
 # here: UTC ISO 8601, which is the only form that sorts and travels.
@@ -1707,6 +1729,11 @@ check "mint: the 'blank' seed installs no rig, so no rig pin is stamped (#103)" 
   launch_has "$NOFP" 'user\.box\.rig\.'
 check "mint: ...and no role either — blank names none (#103)" 1 "" \
   launch_has "$NOFP" 'user\.box\.role'
+# ...and it asked the network NOTHING. A pin nobody uses is a pin nobody needs
+# to resolve, so 'blank' still mints on a host that cannot reach github.com —
+# the failure mode #150's default would otherwise have invented (#150).
+check "mint: the 'blank' seed resolves no pin, so it probes nothing (#150)" 1 "" \
+  grep -q . "$NOFP.curl"
 
 # --- the rig pin has ONE definition, and both readers get the same answer ---
 # The seed substitutes it and the stamp records it. Two spellings of the same
@@ -1723,6 +1750,22 @@ check "mint: ...both halves of it (#103)" 0 "" \
   launch_has "$RIGLOG" 'user\.box\.rig\.ref=probe-ref'
 check "mint: ...and the SEED it shipped with carries the same pin (#103)" 0 "" \
   launch_has "$RIGLOG" 'someone/rig/probe-ref'
+check "mint: ...and a pinned mint resolves nothing, so it probes nothing (#150)" 1 "" \
+  grep -q . "$RIGLOG.curl"
+
+# --- a pin that cannot be resolved ends the mint ----------------------------
+# The sharp edge of resolving a default at mint: the probe can fail. Falling
+# back to main would reintroduce #150's defect quietly, on the one host where
+# nobody would look — and a die() inside the launch line's own command
+# substitution would exit a SUBSHELL and let incus launch a box seeded with
+# nothing. So the mint must die, before the launch, saying what to pass.
+NORESOLVE="$MWORK/noresolve.log"
+export FAKE_CURL_RC=6
+check "mint: an unresolvable rig pin FAILS the mint (#150)" 1 "could not resolve rig's latest release" \
+  mintbox "$NORESOLVE" new --name w6 --template claude-box --container
+unset FAKE_CURL_RC
+check "mint: ...and nothing was launched — the refusal came first (#150)" 1 "" \
+  grep -q '^incus launch ' "$NORESOLVE"
 
 # --- the clone: the sharpest edge of the whole stamp ------------------------
 # 'incus copy' carries every user.* key forward (audit B2) — which is what
@@ -3129,23 +3172,65 @@ check "drill record: ...and the refusal says why that matters" 2 "destroys the j
 check "drill record: ...while an empty file is not a record and may be used" 0 "" \
   rec "record_check_path '$RECWORK/empty.md'"
 
-# --- the rig pin, read the way the mint reads it ----------------------------
-# bin/box resolves rig_repo/rig_ref to heavy-duty/rig@main when unset. The record
-# must say what the MINT used, so it reads the same defaults — and where that
-# default was in force it records `main`, which is the #81/#150 gap stated as a
-# fact about the run rather than hidden.
+# --- the rig pin, read off the mint rather than re-derived -------------------
+# The record must say what the MINT used. It used to re-derive that from the
+# environment, carrying bin/box's `main` default as a second spelling — and
+# #150 made that spelling a lie: RIG_REF unset now resolves rig's latest
+# RELEASE at mint, so an unpinned run would have recorded `main` while the
+# guest was handed a tag, asserting a combination nobody drilled. So the value
+# is read off the mint's own stamp (#103), and where there is no stamp to read
+# the record admits it instead of naming a ref.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: the rig pin defaults exactly as bin/box's does" 0 "[heavy-duty/rig][main]" \
+check "drill record: an unpinned run no longer claims 'main' (#150)" 0 "[heavy-duty/rig][unresolved]" \
   rec 'record_collect o/r main 0; printf "[%s][%s]" "$REC_RIG_REPO" "$REC_RIG_REF"'
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: ...and an overridden rig pin is what lands in the record" 0 "[you/rig][topic]" \
   rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r main 0; printf "[%s][%s]" "$REC_RIG_REPO" "$REC_RIG_REF"'
-# The invocation has to reproduce the run, so the env pins belong in it: the
-# flags alone name a different drill than the one that ran.
+# The stamp read itself, driven against a shim incus: this is what the mint
+# site above fills REC_RIG_* from, and it is the only place the resolved
+# default survives — bin/box resolved it, the environment never saw it.
+STAMPSHIM="$(mktemp -d)"
+cat > "$STAMPSHIM/incus" <<'SHIM'
+#!/usr/bin/env bash
+# Fake incus for the drill's stamp read: 'config get <box> <key>' answers from
+# $FAKE_STAMP ("<key> <value>" lines), and an unset key prints EMPTY, exits 0 —
+# which is what a real incus does (audit B4) and what 'unresolved' guards.
+case "$*" in
+  "config get "*)
+    [ -n "${FAKE_STAMP:-}" ] || exit 0
+    key="$*"; key="${key##* }"
+    awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_STAMP" ;;
+esac
+exit 0
+SHIM
+chmod +x "$STAMPSHIM/incus"
+STAMPF="$(mktemp)"
+printf 'user.box.rig.repo heavy-duty/rig\nuser.box.rig.ref 0.3.1\n' > "$STAMPF"
+stamped() { PATH="$STAMPSHIM:$PATH" FAKE_STAMP="$1" rec "$2"; }
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: the pin is read off the mint's stamp (#103, #150)" 0 "[0.3.1]" \
+  stamped "$STAMPF" 'printf "[%s]" "$(drill_stamp drill rig.ref)"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and a box with no stamp is 'unresolved', never blank (#150)" 0 "[unresolved]" \
+  stamped /dev/null 'printf "[%s]" "$(drill_stamp drill rig.ref)"'
+rm -rf "$STAMPSHIM" "$STAMPF"
+# The invocation has to reproduce the run, so the pin belongs in it: the flags
+# alone name a different drill than the one that ran — and after #150 so does
+# the same command left unpinned, which would resolve whatever is latest then.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: the invocation carries the env pins, not just the flags" 0 \
   "RIG_REF=topic bash drill/drill.sh --repo o/r --ref v1" \
   rec 'export RIG_REF=topic; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...the ref the MINT resolved, where the environment set none (#150)" 0 \
+  "RIG_REF=0.3.1 bash drill/drill.sh" \
+  rec 'REC_RIG_REF=0.3.1; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
+INVF="$(mktemp)"
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+rec 'record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"' > "$INVF" 2>/dev/null
+check "drill record: ...and 'unresolved' is never put in a command line (#150)" 1 "" \
+  grep -q unresolved "$INVF"
+rm -f "$INVF"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--keep-boxes" \
   rec 'record_collect o/r v1 1; printf "%s" "$REC_INVOCATION"'
@@ -3156,6 +3241,7 @@ check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--k
 RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=49 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
 REC_VERSION=9.9.9; REC_DATE=2026-07-21; REC_HOST='bare Debian 13, Incus 6.0.2'
 REC_RUN_ID=drill-9.9.9-20260721-01; REC_BOX_SHA=abc1234; REC_RIG_SHA=def5678
+REC_RIG_REF=0.3.1
 REC_ELAPSED=2460; record_collect heavy-duty/box release/9.9.9 0"
 emit() {   # emit <state> → the record that state produces, on stdout
   rm -f "$RECOUT"
@@ -3179,9 +3265,12 @@ check "drill record: pins box's candidate ref TO A SHA" 0 \
   'box `release/9.9.9` @ `abc1234`' emit "$CLEAN"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: ...and rig's, which is the other half of the combination" 0 \
-  'rig `main` @ `def5678`' emit "$CLEAN"
+  'rig `0.3.1` @ `def5678`' emit "$CLEAN"
+# The reproduction has to carry the rig pin the run used, not just the flags:
+# an unpinned run resolved a RELEASE at mint (#150), so a reproduction left
+# equally unpinned would resolve whatever is latest the day it is re-run.
 check "drill record: says what ran, as a command that reproduces it" 0 \
-  'bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
+  'RIG_REF=0.3.1 bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
 check "drill record: gives the numbers and the wall clock" 0 \
   "**85/85 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
 check "drill record: carries the per-phase ledger a single total cannot say" 0 \
