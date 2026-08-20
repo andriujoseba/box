@@ -603,6 +603,17 @@ Auth state rides along by design — the artifact carries the box's whole disk,
 logins included. That is the point (log in once, keep the file), and the same
 trust boundary as cloning an authed snapshot.
 
+ON THE RESTRICTED TIER, import is refused — before the transfer (#160). Your
+project is a restricted incus project, which is what the tier is made of, and
+a restricted project rejects the low-level 'volatile.*' config every artifact
+carries. Incus stamps those keys itself; nobody sets them, and there is no
+way to export without them. It applies an artifact's config through the same
+validation path as 'incus config set', so it rejects the restore as if you
+had typed them — and only after unpacking the whole disk. box reads the keys
+out of the artifact first and refuses up front, so the copy is never spent.
+Export still works: the artifact is good, it just takes the admin tier to
+land it. 'box export' is one-way from here until #160 says otherwise.
+
   box import work-20260718T120000Z.tar.gz
   box import work-20260718T120000Z.tar.gz --name work2
 EOF
@@ -2434,8 +2445,12 @@ cmd_import() {
       echo "box:"
       echo "box: this artifact carries $nkeys such key(s) — incus stamped them on the box"
       echo "box: it was exported from, and nobody chose them:"
-      printf '%s\n' "$blocked" | head -4 | sed 's/^/box:     /'
-      [ "$nkeys" -le 4 ] || echo "box:     ...and $((nkeys - 4)) more"
+      # ALL of them, never a head -N. The keys sort alphabetically and the one
+      # incus actually died on is 'volatile.uuid.generation' (#156), which is
+      # last in that order on a real VM artifact — so any truncation drops
+      # exactly the key this message exists to name. An instance carries a
+      # handful of these; the list is short and it is the evidence.
+      printf '%s\n' "$blocked" | sed 's/^/box:     /'
       echo "box:"
       echo "box: incus applies an artifact's config through the same validation path as"
       echo "box: 'incus config set', so it refuses the restore as if you had typed those"
