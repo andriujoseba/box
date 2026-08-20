@@ -361,6 +361,26 @@ a2="$(incus --project "$p2" list mine --format csv --columns s 2>/dev/null | hea
 { [ "$a1" = RUNNING ] && [ "$ac1" = RUNNING ] && [ "$a2" = RUNNING ]; } \
   && ok "(p) the admin's 'box down all' reached no restricted project" \
   || no "(p) the admin's 'all' crossed into a user project: $U1 mine=$a1 c1=$ac1, $U2 mine=$a2"
+# (p) is what stopped and restarted $U2's box, and (g) reads that box's address
+# on its second line. A container that has just started has not necessarily
+# taken a boxnet lease yet — and an EMPTY address does not red (g). It falls
+# into the "no ip for $U2's box — sibling probe skipped" note, silently
+# dropping a measurement drill/README.md names as part of what (g) proves.
+# $U1's box has a clone mint between its own restart and (g); $U2's would have
+# nothing at all. So (p) does not end until the lease it disturbed is back, and
+# it says so out loud if it never comes rather than leaving (g) to skip.
+ip_u2=""
+for _ in $(seq 1 30); do
+  ip_u2="$(incus --project "$p2" list mine --format csv --columns 4 2>/dev/null | tr -d '"' | sed 's/ (.*//' | grep . | head -n1)"
+  [ -n "$ip_u2" ] && break
+  sleep 2
+done
+case "$ip_u2" in
+  "$(boxnet_pfx)"*) ok "(p) $U2's box took its boxnet lease back after 'start all' — (g) measures rather than skips" ;;
+  "")               no "(p) $U2's box never took a lease after 'start all' — (g)'s sibling probe would skip, UNMEASURED" ;;
+  *)                no "(p) $U2's box came back on '$ip_u2', which is not boxnet" ;;
+esac
+
 aud "p. fleet word: $U2's 'all' acted on 1 box, $U1's mine/c1 stayed RUNNING, 'all' refused as a name"
 
 phase "g. the isolation contract, measured from INSIDE the boxes"

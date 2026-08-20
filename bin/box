@@ -395,6 +395,12 @@ the exit status is non-zero if any of them failed. With no boxes at all it
 succeeds and says so. It does not prompt — these are reversible acts on your
 own boxes — and 'rm' deliberately has no 'all' form.
 
+A fleet is usually mixed, so a box already where you sent it is a success and
+not a failure: 'down all' says 'already stopped' for the ones that were, and
+'restart all' starts a stopped box rather than erroring on it. The exit status
+stays a real signal that way — non-zero means something went wrong, not that
+one box had nothing to do.
+
 'all' is reserved as a name for this reason: 'box new --name all' is refused.
 
   box restart work

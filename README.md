@@ -573,6 +573,12 @@ fleet forms do not prompt — they are reversible acts on your own boxes — and
 `rm` deliberately has no `all` form. Because the word is taken, `all` is not
 a legal box name: `box new --name all` is refused.
 
+A fleet is usually mixed, so a box already in the state you asked for counts
+as a success: `box down all` reports the ones that were already down and
+`box restart all` starts a stopped box instead of erroring on it. That keeps
+the exit status meaningful — non-zero means something went wrong, not that a
+box had nothing to do.
+
 `new` fresh-launches from a template (default: `blank`), or with `--from`
 clones an existing box or snapshot. VM mode (`--vm`, the default where
 `/dev/kvm` exists) is the trust-less target; container mode (auto-fallback,
