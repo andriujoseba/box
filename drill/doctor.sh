@@ -428,7 +428,12 @@ if [ -n "$POOL_SHOW" ]; then
   # The config is a claim; the filesystem is the fact — and "how full is it"
   # is half of what anyone asking this question wants. Only for a directory
   # source: 'df' on a raw block device Incus owns outright answers nothing.
-  src="$(printf '%s\n' "$POOL_SHOW" | awk '$1 == "source:" { print $2; exit }')"
+  #
+  # Through yaml_value for the same reason the report is: read with awk's $2, a
+  # pool on '/data/bulk/box pool' asks '[ -d /data/bulk/box ]' — and either
+  # says nothing at all, or measures a DIFFERENT filesystem and labels it this
+  # pool's.
+  src="$(yaml_value source "$POOL_SHOW")"
   if [ -n "$src" ] && [ -d "$src" ]; then
     inf "$(df -h "$src" 2>/dev/null | awk 'NR == 2 { print "df " $6 ": " $2 " total, " $3 " used, " $4 " free (" $5 ") on " $1 }')"
   fi

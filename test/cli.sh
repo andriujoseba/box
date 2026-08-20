@@ -3091,6 +3091,19 @@ check "doctor: the placement section reports through pool_findings" 0 "" \
   grep -qF 'pool_findings "$POOL_SHOW"' "$ROOT/drill/doctor.sh"
 check "doctor: the placement section judges nothing (no DIRTY line in it)" 1 "" bash -c '
   awk "/^head_ \"Storage pool/,/^head_ \"ACL/" "'"$ROOT"'/drill/doctor.sh" | grep -qE "^ *no \""'
+# The 'df' line measures the pool's own filesystem, so it reads the source the
+# same way the report does: '$2' of "  source: /data/bulk/box pool" is
+# "/data/bulk/box", and '[ -d ]' on that either says nothing or measures a
+# DIFFERENT filesystem and labels it this pool's.
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "doctor: the df line reads the source through yaml_value too" 0 "" \
+  grep -qF 'src="$(yaml_value source "$POOL_SHOW")"' "$ROOT/drill/doctor.sh"
+# A drift guard on all four reads: nothing in either script may go back to
+# taking a source line's second FIELD, which is what threw half of a path away.
+# shellcheck disable=SC2016  # the $2 is the pattern being searched FOR
+check "the source is never read as awk's second field again (#180)" 1 "" bash -c '
+  grep -nE "(source:?\"?|== k) *\{? *print \\\$2" \
+    "'"$ROOT"'/drill/doctor.sh" "'"$ROOT"'/host/setup-host.sh"'
 
 # The wiring: the signature is judged on THIS machine before any daemon call
 # (the daemon answering could be the nested impostor), probed INSIDE boxes on
