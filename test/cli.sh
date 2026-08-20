@@ -246,45 +246,126 @@ rm -rf "$EVILROOT"
 
 # ---------------------------------------------------------------------------
 # render_userdata (#81) — the seed's ONE substitution, driven for real: the
-# rig pin point. Defaults resolve to heavy-duty/rig@main; RIG_REPO/RIG_REF
-# override at mint (how a rig branch under review reaches a guest); and a
-# hostile value — the tokens land inside a runcmd shell line — dies on the
-# host before touching the YAML. bash's =~ anchors the WHOLE string, so a
-# multi-line value cannot sneak one clean line past it (the line-oriented
-# grep -q failure mode).
+# rig pin point. RIG_REPO defaults to heavy-duty/rig and RIG_REF to rig's
+# LATEST RELEASE, resolved at mint off the releases/latest redirect (#150);
+# RIG_REPO/RIG_REF override at mint (how a rig branch under review reaches a
+# guest); and a hostile value — the tokens land inside a runcmd shell line —
+# dies on the host before touching the YAML. bash's =~ anchors the WHOLE
+# string, so a multi-line value cannot sneak one clean line past it (the
+# line-oriented grep -q failure mode).
+#
+# A shim curl serves canned redirects, the same way test/release.sh drives
+# install.sh's own channel probe: the suite must never depend on github.com
+# being up, or on which rig release is latest the day it runs.
 # ---------------------------------------------------------------------------
+RIGSHIM="$(mktemp -d)"
+cat > "$RIGSHIM/curl" <<'SHIM'
+#!/usr/bin/env bash
+# Fake curl for the rig pin probe. FAKE_REDIRECT is what GitHub's
+# releases/latest answers with; FAKE_CURL_RC makes the request itself fail;
+# FAKE_CURL_LOG records every URL asked for, which is how "how many probes
+# did one mint make?" becomes an assertion.
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o|--output|-w|--write-out|-m|--max-time) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+[ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
+case "$url" in
+  */releases/latest)
+    [ "${FAKE_CURL_RC:-0}" -eq 0 ] || exit "${FAKE_CURL_RC}"
+    printf '%s' "${FAKE_REDIRECT-}"; exit 0 ;;
+  *) exit 22 ;;
+esac
+SHIM
+chmod +x "$RIGSHIM/curl"
+
 RUFN="$(mktemp)"
-# The pin's DEFAULTS live in rig_repo/rig_ref, one definition shared with the
-# mint stamp (#103) — extract them alongside the function that reads them, or
-# the extracted copy silently renders an empty repo and every assertion below
-# goes green against nothing.
-{ grep -cE '^rig_(repo|ref)\(\)' "$ROOT/bin/box" | grep -qx 2 || echo 'die "the rig pin helpers moved — this extraction is stale"'
+# The pin's DEFAULTS live in rig_repo/rig_ref and the resolution behind them in
+# rig_latest_release/rig_pin_resolve (#150) — extract them alongside the
+# function that reads them, or the extracted copy silently renders an empty
+# repo and every assertion below goes green against nothing. The count guards
+# the extraction the way it always has: four helpers, four definitions.
+{ grep -cE '^rig_(repo|ref|latest_release|pin_resolve)\(\)' "$ROOT/bin/box" | grep -qx 4 || echo 'die "the rig pin helpers moved — this extraction is stale"'
   grep -E '^rig_(repo|ref)\(\)' "$ROOT/bin/box"
+  awk '/^rig_latest_release\(\) \{/,/^\}/' "$ROOT/bin/box"
+  awk '/^rig_pin_resolve\(\) \{/,/^\}/' "$ROOT/bin/box"
   awk '/^render_userdata\(\) \{/,/^\}/' "$ROOT/bin/box"; } > "$RUFN"
 check "render_userdata: extracted from bin/box (guards the awk)" 0 "RIG_REPO" cat "$RUFN"
 check "render_userdata: the pin's defaults came with it (guards the grep)" 0 "heavy-duty/rig" cat "$RUFN"
+check "render_userdata: the pin's RESOLUTION came with it too (#150)" 0 "releases/latest" cat "$RUFN"
 check "render_userdata: the extracted function is valid bash"    0 "" bash -n "$RUFN"
 
 SEED="$(mktemp)"
 printf '#cloud-config\nruncmd:\n  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash\n' > "$SEED"
+# A seed that installs no rig — 'blank' is the real one. It carries no token,
+# so it needs no pin, and must therefore need no NETWORK either (#150).
+NORIG="$(mktemp)"
+printf '#cloud-config\npackages:\n  - tmux\n' > "$NORIG"
+RIGLOGF="$(mktemp)"
+SEEDFILE="$SEED"   # which fixture rud renders; the no-token case swaps it
 # shellcheck disable=SC2016  # $0/$1 expand in the child shell, by design
 rud() { # rud [VAR=val ...] — render the fixture seed through the real function
-  env "$@" bash -c 'die() { echo "box: $*" >&2; exit 1; }; . "$0"; render_userdata "$1"' "$RUFN" "$SEED"
+  : > "$RIGLOGF"
+  env FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" \
+      FAKE_CURL_LOG="$RIGLOGF" PATH="$RIGSHIM:$PATH" "$@" \
+      bash -c 'die() { echo "box: $*" >&2; exit 1; }; . "$0"; render_userdata "$1"' "$RUFN" "$SEEDFILE"
 }
-check "render_userdata: defaults pin heavy-duty/rig" 0 "githubusercontent.com/heavy-duty/rig/main/install.sh" rud
-check "render_userdata: defaults feed the installer's own env too" 0 'RIG_REPO="heavy-duty/rig" RIG_REF="main"' rud
+# The default is the LATEST RELEASE, not main: a released box that converged
+# its guests against rig's development tip shipped a combination nobody
+# drilled, which is the whole of #150.
+check "render_userdata: the default pin is rig's LATEST RELEASE (#150)" 0 \
+  "githubusercontent.com/heavy-duty/rig/9.9.9/install.sh" rud
+check "render_userdata: ...and it reached the installer's own env too (#150)" 0 \
+  'RIG_REPO="heavy-duty/rig" RIG_REF="9.9.9"' rud
+check "render_userdata: ...and it was read off the releases/latest redirect (#150)" 0 \
+  "https://github.com/heavy-duty/rig/releases/latest" cat "$RIGLOGF"
+# The dev channel survives as an explicit opt-in — and asks the network
+# nothing, because there is nothing left to resolve.
+check "render_userdata: RIG_REF=main is still the dev channel, explicitly (#150)" 0 \
+  "githubusercontent.com/heavy-duty/rig/main/install.sh" rud RIG_REF=main
+check "render_userdata: ...and an explicit ref probes nothing (#150)" 1 "" \
+  grep -q . "$RIGLOGF"
 check "render_userdata: RIG_REPO/RIG_REF override at mint" 0 "dan-claude-bot/rig/feat/bootstrap-roles/install.sh" \
   rud RIG_REPO=dan-claude-bot/rig RIG_REF=feat/bootstrap-roles
+# The probe follows the repo, so a fork's own releases are what a fork's seeds
+# get — one default, not a hardcoded heavy-duty/rig channel.
+rud RIG_REPO=you/rig >/dev/null 2>&1
+check "render_userdata: an overridden RIG_REPO is the repo the probe asks (#150)" 0 \
+  "https://github.com/you/rig/releases/latest" cat "$RIGLOGF"
+# A seed with no pin token needs no pin: it must render untouched AND ask the
+# network nothing. 'blank' mints on a host that cannot reach github.com.
+SEEDFILE="$NORIG"
+check "render_userdata: a seed with no pin token renders untouched (#150)" 0 "packages:" rud
+check "render_userdata: ...and never probes for a pin it will not use (#150)" 1 "" \
+  grep -q . "$RIGLOGF"
+SEEDFILE="$SEED"
+# Failing to resolve is LOUD. Falling back to main would reintroduce the exact
+# defect, quietly, on the one host where the probe could not run.
+check "render_userdata: an unresolvable pin dies rather than falling back (#150)" 1 \
+  "could not resolve rig's latest release" rud FAKE_CURL_RC=6
+check "render_userdata: ...and a repo with no releases dies the same way (#150)" 1 \
+  "could not resolve rig's latest release" \
+  rud FAKE_REDIRECT=https://github.com/heavy-duty/rig/releases
+check "render_userdata: ...naming both escape hatches, so the operator can move" 1 \
+  "RIG_REF=main" rud FAKE_CURL_RC=6
+# The resolved tag is untrusted input — it arrives off an HTTP redirect header
+# — so it meets the same allowlist an operator's RIG_REF does.
+check "render_userdata: a hostile RESOLVED tag dies on the host too (#150)" 1 "RIG_REF" \
+  rud 'FAKE_REDIRECT=https://github.com/heavy-duty/rig/releases/tag/v1"; rm -rf /; "'
 # shellcheck disable=SC2016  # $0/$1 expand in the child shells, by design
 check "render_userdata: no token survives the render" 1 "" \
-  bash -c 'env bash -c "die() { echo box: \$*; exit 1; }; . \"\$0\"; render_userdata \"\$1\"" "$1" "$2" | grep -q @RIG_' _ "$RUFN" "$SEED"
+  bash -c 'env FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" PATH="$3:$PATH" bash -c "die() { echo box: \$*; exit 1; }; . \"\$0\"; render_userdata \"\$1\"" "$1" "$2" | grep -q @RIG_' _ "$RUFN" "$SEED" "$RIGSHIM"
 check "render_userdata: a shell-shaped RIG_REPO dies on the host" 1 "RIG_REPO" \
   rud 'RIG_REPO=evil"; rm -rf /; "/rig'
 check "render_userdata: a spaced RIG_REF dies on the host" 1 "RIG_REF" \
   rud 'RIG_REF=main plus junk'
 check "render_userdata: a newline-smuggled RIG_REPO dies (whole-string anchor)" 1 "RIG_REPO" \
   rud "RIG_REPO=$(printf 'a/b\nevil')"
-rm -f "$RUFN" "$SEED"
+rm -f "$RUFN" "$SEED" "$NORIG" "$RIGLOGF"
 
 # YAML well-formedness needs python3 + pyyaml; the CI runner has both. Skip
 # gracefully (never silently) where they are missing.
