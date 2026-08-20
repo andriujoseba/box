@@ -2714,6 +2714,71 @@ check "signature: duplicate routes alone still fire" \
   0 "duplicate connected routes" sig "$R_POISON" "$A_DUPONLY"
 rm -f "$SIGFN"
 
+# ---------------------------------------------------------------------------
+# The doctor's placement report (#180). pool_findings is the same seam: pure
+# 'incus storage show' text in, report lines out, driven against canned pool
+# config. The question it exists to answer without an Incus lesson is "my
+# boxes filled the root disk" — so the loop-backed default must be RECOGNISED
+# and named, and a placed pool must not carry that warning.
+# ---------------------------------------------------------------------------
+PFFN="$(mktemp)"
+awk '/^pool_findings\(\) \{/,/^\}/' "$ROOT/drill/doctor.sh" > "$PFFN"
+check "pool_findings: extracted from doctor.sh (guards the awk)" 0 "driver = " cat "$PFFN"
+check "pool_findings: the extracted function is valid bash" 0 "" bash -n "$PFFN"
+pf() { bash -c ". '$PFFN'; pool_findings \"\$1\"" _ "$1"; }
+
+# What a stock host looks like today: btrfs, and a source Incus chose itself
+# inside its own state directory — i.e. on '/'.
+P_LOOP="name: default
+driver: btrfs
+status: Created
+config:
+  size: 30GiB
+  source: /var/lib/incus/storage-pools/default"
+# What #180 buys: the pool on a disk of its own.
+P_DEV="name: default
+driver: btrfs
+config:
+  source: /dev/sdb"
+# A pool that reports no source at all, on the driver with no CoW.
+P_BARE="name: default
+driver: dir
+config: {}"
+check "pool_findings: the driver is reported" 0 "driver = btrfs" pf "$P_LOOP"
+check "pool_findings: ...and so is the source" \
+  0 "source = /var/lib/incus/storage-pools/default" pf "$P_LOOP"
+check "pool_findings: the loop-backed default is named as the ROOT filesystem" \
+  0 "charged against" pf "$P_LOOP"
+check "pool_findings: ...and the way out is a FRESH host, not a re-run" \
+  0 "BOX_STORAGE_SOURCE=/dev/sdb box setup-host" pf "$P_LOOP"
+check "pool_findings: ...saying so, because a re-run cannot move a pool" \
+  0 "migration, not a re-run" pf "$P_LOOP"
+check "pool_findings: a placed pool reports its device" 0 "source = /dev/sdb" pf "$P_DEV"
+check "pool_findings: ...and carries no root-disk warning" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "'"$P_DEV"'" | grep -q "charged against"'
+check "pool_findings: a pool with no source at all is still reported" \
+  0 "source = <none reported>" pf "$P_BARE"
+check "pool_findings: ...and named as the root filesystem too" 0 "ROOT filesystem" pf "$P_BARE"
+check "pool_findings: dir is named as the driver with no copy-on-write" \
+  0 "no copy-on-write" pf "$P_BARE"
+check "pool_findings: btrfs is not" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "'"$P_LOOP"'" | grep -q "copy-on-write"'
+check "pool_findings: an unreadable pool says so rather than inventing a driver" \
+  0 "driver = <unreadable>" pf ""
+rm -f "$PFFN"
+
+# The wiring, and the judgement inside it: the pool is read off the profile
+# that PLACES every box, and the whole section is informational. Placement is
+# a choice, not a fault — a DIRTY line here would red every stock host on the
+# day it shipped, and the verdict is what the drill reads.
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "doctor: the pool is read off the box-net profile, not guessed" 0 "" \
+  grep -qF 'incus profile device get box-net root pool' "$ROOT/drill/doctor.sh"
+check "doctor: the placement section reports through pool_findings" 0 "" \
+  grep -qF 'pool_findings "$POOL_SHOW"' "$ROOT/drill/doctor.sh"
+check "doctor: the placement section judges nothing (no DIRTY line in it)" 1 "" bash -c '
+  awk "/^head_ \"Storage pool/,/^head_ \"ACL/" "'"$ROOT"'/drill/doctor.sh" | grep -qE "^ *no \""'
+
 # The wiring: the signature is judged on THIS machine before any daemon call
 # (the daemon answering could be the nested impostor), probed INSIDE boxes on
 # both tiers, and the egress-broken-DNS-fine split names the fingerprint.
