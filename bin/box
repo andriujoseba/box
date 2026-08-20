@@ -1469,6 +1469,40 @@ cmd_templates() {
 # thing on every host that reads it back.
 mint_time() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# WHICH box is this? (#181) The name is the key and the name is not stable:
+# 'rename' is a passthrough Incus is right to accept — same instance, every
+# user.box.* key riding along — while to anything outside the host that kept a
+# record it is indistinguishable from an rm and a fresh mint. And the name is
+# not even unique: two restricted users each hold their own 'work' in their own
+# user-<uid> project, and an admin a third in 'default'. So identity is a key
+# box writes, not a name box reads.
+#
+# It lives HOST-side, in the instance config, because that is the only place
+# that is readable while the box is STOPPED (an inventory's main audience),
+# unforgeable by a guest that runs coding agents, and re-stampable by box with
+# one 'incus config set'. The guest's /etc/machine-id fails all three, plus a
+# fourth: it does not exist until systemd's first boot, so a box that never
+# boots would never have one.
+#
+# A v4 UUID from the KERNEL — no uuidgen, nothing added to the image — drawn on
+# the host, which is the long-lived well-seeded machine, before incus creates
+# anything. The guest's entropy is never involved, so the cloned-guest RNG
+# hazard does not apply. Uniqueness is probabilistic and that is fine: 122
+# random bits puts a 50% collision at ~2^61 ids, which is not a failure mode
+# this fleet meets.
+#
+# The shape is VERIFIED rather than trusted, and a host that cannot answer gets
+# an empty string, not a lie: /proc unreadable, a truncated read, a kernel
+# without the file. Callers degrade — absence is already how the whole stamp
+# renders what it does not know, and a box minted before #181 has no id either.
+box_id() {
+  local id
+  id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+  printf '%s' "$id" \
+    | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || return 1
+  printf '%s\n' "$id"
+}
+
 # Which storage driver is under this box? The placement contract answers it:
 # every box launches with --profile box-net, and that profile hardcodes the
 # root disk's pool (profiles/box-net.yaml), so the pool is not a guess — it is
@@ -1626,6 +1660,12 @@ cmd_new() {
     # being, and leave the rest alone:
     #   · version / created / schema — the clone was made HERE, NOW, by THIS box
     #   · origin=clone, origin.from=<srcref> — how, and from what
+    #   · id (#181) — a clone is a DIFFERENT box, so it gets a different id.
+    #     Here 'incus copy' carrying user.* keys is not a convenience but the
+    #     bug: an inherited id would have the clone claim to BE its source, to
+    #     every reader that trusts the id to be one box. And where no id can be
+    #     drawn the inherited one is UNSET rather than kept, the same call
+    #     mode.asked makes below — a false identity is worse than none.
     # Deliberately NOT re-stamped, because they are lineage and stay true: the
     # clone's disk really did come from that image, that template, that user and
     # that rig role — reading them off the source is the whole point of a clone.
@@ -1645,17 +1685,28 @@ cmd_new() {
     # origin.from records ONE hop. A clone of a clone names its parent and
     # forgets its grandparent: the alternative is an unbounded chain in a config
     # value, and the parent is the box an operator can actually go look at.
-    incus config set "$instance" \
-      user.box.schema="$BOX_STAMP_SCHEMA" \
-      user.box.version="$(box_version)" \
-      user.box.created="$(mint_time)" \
-      user.box.origin=clone \
+    local restamp=(
+      user.box.schema="$BOX_STAMP_SCHEMA"
+      user.box.version="$(box_version)"
+      user.box.created="$(mint_time)"
+      user.box.origin=clone
       user.box.origin.from="$srcref"
+    )
+    local bid; bid="$(box_id || true)"
+    [ -z "$bid" ] || restamp+=(user.box.id="$bid")
+    incus config set "$instance" "${restamp[@]}"
     # Cleared, not set-to-empty: an empty value is still a key, and a reader
     # that greps the config would find it. Tolerated failure because the source
     # may predate the stamp and never have carried the key at all — a clone
     # must not die over a key that was already absent.
     incus config unset "$instance" user.box.mode.asked >/dev/null 2>&1 || true
+    # The degraded clone: no id could be drawn, so the source's rides in on the
+    # copy. Take it off — with an id, "these are the same box" is a claim
+    # something acts on, and the clone is not that box.
+    if [ -z "$bid" ]; then
+      incus config unset "$instance" user.box.id >/dev/null 2>&1 || true
+      echo "box: note — no host UUID source, so this clone gets no stable id (#181)" >&2
+    fi
     incus start "$instance"
     wait_agent "$instance"
     reset_identity "$instance"
@@ -1730,6 +1781,8 @@ cmd_new() {
     # cloud-init and before rig, and nothing later edits it.
     #
     #   schema   the stamp's shape, so a future reader knows what it is holding
+    #   id       WHICH box this is (#181) — the one fact the name cannot carry,
+    #            because 'rename' moves the name and nothing else survives it
     #   version  the box that minted it — 'box --version' is a fact about the
     #            binary in front of you, never about the box you are looking at
     #   image    the alias asked for. It is an UNPINNED alias on a moving
@@ -1759,6 +1812,16 @@ cmd_new() {
       --config user.box.created="$(mint_time)"
       --config user.box.origin=mint
     )
+    # The identity, drawn before the launch so the box is never observable
+    # without one. A host that cannot answer gets no key at all rather than a
+    # mint that dies over a metadata field: absence is exactly how every
+    # pre-#181 box already reads, and 'box info' renders it as silence. Said
+    # out loud, because a box with no id is a box no inventory can follow
+    # across a rename, and that is worth knowing at the moment it happens.
+    local bid; bid="$(box_id || true)"
+    if [ -n "$bid" ]; then stamp+=(--config user.box.id="$bid")
+    else echo "box: note — no host UUID source, so this box gets no stable id (#181)" >&2
+    fi
     [ -z "$T_BOOTSTRAP_ROLE" ] || stamp+=(--config user.box.role="$T_BOOTSTRAP_ROLE")
     if grep -q '@RIG_REPO@' "$root/templates/$t/user-data.yaml" 2>/dev/null; then
       # Resolve the pin HERE, in the parent shell, before either reader asks
@@ -2131,8 +2194,18 @@ cmd_info() {
 
   local state type snaps
   IFS=, read -r _ state type snaps <<<"$row"
-  printf '%-11s%s\n' NAME "$box" STATE "${state:--}" TYPE "$(short_type "$type")" \
-    IPV4 "$(box_ipv4 "$inst")"
+  # The id belongs in the identity header and not in the provenance block
+  # below (#181): that block answers how this box came to BE, while the id
+  # answers which box it IS — the fact the NAME line above only appears to
+  # carry, since a rename moves the name and leaves the id where it was.
+  # Absent for every box minted before #181, and absence renders as silence
+  # here as everywhere else: nothing is synthesised at read time, because an
+  # id a reader invents is not stable, which is the whole point of having one.
+  local hdr=(NAME "$box") bid
+  bid="$(box_cfg "$inst" user.box.id)"
+  [ -z "$bid" ] || hdr+=(ID "$bid")
+  hdr+=(STATE "${state:--}" TYPE "$(short_type "$type")" IPV4 "$(box_ipv4 "$inst")")
+  printf '%-11s%s\n' "${hdr[@]}"
 
   # A box with a hole says so — an exposure visible only to --list is a hole
   # info would deny. One line per open door.
@@ -2361,6 +2434,18 @@ cmd_import() {
   # carried by the artifact forever after, so a box on its third host still
   # names the trip that started it.
   [ -n "$first_at" ] || istamp+=(user.box.imported="$now" user.box.imported.by="$(box_version)")
+  # The identity is RE-MINTED, and it is the one stamp key this path rewrites
+  # (#181). Everything else here is the artifact's truth and stays; an id is
+  # not truth about the artifact but about a box on a host, and the box this
+  # one was exported from may still be running somewhere — quite possibly on
+  # this same host, since re-importing beside the original is what the MAC
+  # regeneration below already exists to survive. Two boxes wearing one id is
+  # the collision that makes the id worthless, so importing is minting here
+  # too. What the trip cost is the OLD id, deliberately not preserved: lineage
+  # is #131's question (user.box.id.from is the natural companion to
+  # origin.from) and this key only owes the identity itself.
+  local bid; bid="$(box_id || true)"
+  [ -z "$bid" ] || istamp+=(user.box.id="$bid")
   # No 'user.box.schema' is written here, on either path. "Absent schema means
   # pre-stamp" is load-bearing for the MINTED line, and stamping schema=1 onto
   # a legacy artifact that carries no mint stamp would claim a shape it does
@@ -2372,6 +2457,13 @@ cmd_import() {
   # imported box is never observable — not for a second, not by a concurrent
   # 'box info' — without the record of how it got here.
   incus config set "$target" "${istamp[@]}"
+  # No id could be drawn, so the artifact's rode in unchallenged. Unset it for
+  # the reason the clone path unsets its inherited one: the source box may be
+  # alive, and an id two boxes share is worse than an id one box lacks.
+  if [ -z "$bid" ]; then
+    incus config unset "$target" user.box.id >/dev/null 2>&1 || true
+    echo "box: note — no host UUID source, so this box gets no stable id (#181)" >&2
+  fi
   # Placement: the artifact carries its profile list, but the isolation
   # contract is THIS host's box-net profile. A box export already says
   # box-net; anything else (a pre-0.4.0 artifact, a hand-rolled export) gets
