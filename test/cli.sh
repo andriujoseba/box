@@ -3130,6 +3130,22 @@ check "pool_findings: ...with the DEVICE it was made from named too" \
   0 "made from = /dev/sdb" pf "$P_UUID"
 check "pool_findings: ...saying which of the two is the filesystem UUID" \
   0 "the source above is the filesystem UUID" pf "$P_UUID"
+# ...in the PAST tense, and that is the point rather than the grammar: this
+# function probes nothing, so 'made from' is the path Incus was HANDED at
+# creation and not a claim about what that name points at today. setup-host
+# refuses a re-run it cannot bind back to this filesystem for exactly that
+# reason; the report says which fact it has instead of borrowing the other
+# one (#180, panel round 3).
+check "pool_findings: ...as the path Incus was GIVEN, not a claim about today" \
+  0 "the path Incus was given when this pool was created" pf "$P_UUID"
+check "pool_findings: ...warning that a device name can move and a UUID cannot" \
+  0 "can move between reboots" pf "$P_UUID"
+check "pool_findings: ...and naming the command that settles it" \
+  0 "lsblk -o NAME,UUID" pf "$P_UUID"
+# The caveat belongs to the two-fact case only: a pool whose source Incus kept
+# has no second name to be confused about.
+check "pool_findings: a pool Incus did not mangle gets no device-name caveat" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "'"$P_DEV"'" | grep -q "can move between reboots"'
 check "pool_findings: ...and carrying no root-disk warning" 1 "" bash -c '
   . "'"$PFFN"'"; pool_findings "'"$P_UUID"'" | grep -q "charged against"'
 # It is a report of a DIFFERENCE, not an echo: where Incus kept the path it was
@@ -3207,28 +3223,38 @@ check "doctor: the df line reads the source through yaml_value too" 0 "" \
   grep -qF 'src="$(yaml_value source "$POOL_SHOW")"' "$ROOT/drill/doctor.sh"
 # A drift guard on all five reads: nothing in either script may go back to
 # taking a source line's second FIELD, which is what threw half of a path away.
-# Widened from a pattern requiring the key and 'print $2' to be ADJACENT — that
-# one was narrower than its own name, missing 'awk "/^  source:/ {print $2}"'
-# and 'grep "^  source:" | awk "{print $2}"' (@claude-bot-andresmgsl, panel
-# round 3). A bare 'print $2' over these two files costs nothing: neither
-# script has one for any other purpose, and if one ever needs one it can say so
-# here rather than reintroducing this bug in a new spelling.
+#
+# Widened from a pattern that required the KEY and 'print $2' to be ADJACENT.
+# That one was narrower than its own name: it missed 'awk "/^  source:/ {print
+# $2}"' and 'grep "^  source:" | awk "{print $2}"' (@claude-bot-andresmgsl,
+# panel round 3). The offered widening was a BARE 'print $2' over both files,
+# on the grounds that neither has another one — but doctor.sh has two, the ACL
+# destination read and the resolv.conf nameserver read, and a guard that reds
+# on unrelated correct code gets deleted rather than obeyed. So: the key and
+# 'print $2' on one LINE, in any order and any distance apart, which catches
+# every spelling named and neither innocent one. A read split across two lines
+# is out of a grep's reach and is not claimed here.
 # shellcheck disable=SC2016  # the $2 is the pattern being searched FOR
-check "the source is never read as awk's second field again (#180)" 1 "" bash -c '
-  grep -nE "print[[:space:]]+\\\$2" \
-    "'"$ROOT"'/drill/doctor.sh" "'"$ROOT"'/host/setup-host.sh"'
-# ...and the guard is only worth its name if it can see those spellings, so
-# hold it against them rather than trusting the regex by eye. The two the old
-# pattern let through are the first two here; the third is the one it caught.
+check "the source is never read as awk's second field again (#180)" 1 "" \
+  grep -nE 'source.*print[[:space:]]*\$2' "$ROOT/drill/doctor.sh" "$ROOT/host/setup-host.sh"
+# ...and a guard is only worth its name if it can see those spellings, so hold
+# it against them rather than trusting the regex by eye. The first two are the
+# ones the narrow pattern let through; the third is the one it caught.
 DRIFTF="$(mktemp)"
 cat > "$DRIFTF" <<'DRIFT'
 awk '/^  source:/ {print $2}' "$show"
 grep '^  source:' <<<"$show" | awk '{print $2}'
 awk -v k=source: '$1 == k { print $2 }' <<<"$show"
 DRIFT
-# shellcheck disable=SC2016  # the $2 is the pattern, and $1 the inner bash's arg
-check "...and that guard catches the spellings the narrow one missed" 0 "" bash -c '
-  n="$(grep -cE "print[[:space:]]+\$2" "$1")"; [ "$n" = 3 ] || { echo "caught $n of 3"; exit 1; }' _ "$DRIFTF"
+# shellcheck disable=SC2016  # the $2 is the pattern being searched FOR
+driftcount() { grep -cE 'source.*print[[:space:]]*\$2' "$1"; }
+check "...and that guard catches all three spellings, not just the adjacent one" \
+  0 "3" driftcount "$DRIFTF"
+# ...while leaving doctor.sh's two unrelated second-field reads alone, which is
+# why the pattern is not the bare one.
+# shellcheck disable=SC2016  # the $2 is the pattern being searched FOR
+check "...and does not red on the reads that are nothing to do with a source" \
+  0 "" grep -qE 'nameserver.*print[[:space:]]*\$2' "$ROOT/drill/doctor.sh"
 rm -f "$DRIFTF"
 
 # The wiring: the signature is judged on THIS machine before any daemon call

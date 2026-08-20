@@ -232,9 +232,10 @@ esac
 case "$BOX_STORAGE_SOURCE" in
   *[[:cntrl:]]*)
      echo "ERROR: BOX_STORAGE_SOURCE contains a control character (a newline or a tab)." >&2
-     echo "       The preseed carries the source as a YAML scalar, and YAML folds a line" >&2
-     echo "       break inside one to a space — so Incus would be handed a DIFFERENT path" >&2
-     echo "       than you named, and the pool would be built somewhere nobody asked for." >&2
+     echo "       The preseed carries the source as a YAML scalar, and YAML" >&2
+     echo "       folds a line break inside one to a space — so Incus would be handed a" >&2
+     echo "       DIFFERENT path than you named, and the pool would be built somewhere" >&2
+     echo "       nobody asked for." >&2
      echo "       Refusing rather than mangling it. Rename the directory, or place the" >&2
      echo "       pool on a path without one." >&2
      echo "       Nothing was changed." >&2
