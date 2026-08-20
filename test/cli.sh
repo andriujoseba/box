@@ -2446,6 +2446,10 @@ case "$*" in
 esac
 case "$*" in
   "storage show default")         [ -n "${FAKE_HAVE_STORAGE:-}" ] || exit 1 ;;
+  # The live pool's placement (#180): FAKE_POOL_SOURCE unset answers the way a
+  # pool whose source was never recorded does — an empty line, not a refusal.
+  "storage get default source")   printf '%s\n' "${FAKE_POOL_SOURCE:-}" ;;
+  *"admin init --preseed"*)       [ -z "${FAKE_PRESEED_FAIL:-}" ] || exit 1 ;;
   "network show boxnet")          [ -n "${FAKE_HAVE_BOXNET:-}" ]  || exit 1 ;;
   "network acl show box-isolate") [ -n "${FAKE_HAVE_ACL:-}" ]     || exit 1 ;;
   "profile show box-net")         [ -n "${FAKE_HAVE_PROFILE:-}" ] || exit 1 ;;
@@ -2520,6 +2524,120 @@ check "setup-host: ...the bridge follows the pick" 0 "" \
   grep -qF 'network create boxnet ipv4.address=10.89.0.1/24' "$W80/g3.log"
 check "setup-host: ...the ACL carve-out follows the pick" 0 "" \
   grep -qF 'destination: 10.89.0.1/32' "$W80/g3.log"
+
+# --- Where the pool LIVES (#180) -------------------------------------------
+# pool_block is pure — driver and source in, the preseed's storage block out —
+# so it is extracted and driven, the valid_subnet seam. The unset case is
+# compared BYTE-FOR-BYTE against the block that shipped before the knob
+# existed: "the pool is byte-for-byte the pool created today" is the issue's
+# own named regression, and a substring match would not prove it.
+W180="$(mktemp -d)"
+POOLFN="$(mktemp)"
+awk '/^pool_block\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$POOLFN"
+check "pool_block: extracted from setup-host.sh (guards the awk)" 0 "storage_pools" cat "$POOLFN"
+check "pool_block: the extracted function is valid bash" 0 "" bash -n "$POOLFN"
+pblock() { bash -c ". '$POOLFN'; pool_block \"\$1\" \"\$2\"" _ "$1" "${2:-}"; }
+printf 'storage_pools:\n- name: default\n  driver: btrfs\n' > "$W180/pre180.yaml"
+pblock btrfs "" > "$W180/unset.yaml"
+check "pool_block: with no source, byte-for-byte the pre-#180 block" 0 "" \
+  cmp -s "$W180/pre180.yaml" "$W180/unset.yaml"
+check "pool_block: a source is emitted verbatim" 0 "  source: /dev/sdb" pblock btrfs /dev/sdb
+check "pool_block: ...and the driver line is untouched beside it" 0 "  driver: btrfs" pblock btrfs /dev/sdb
+check "pool_block: ...as a key OF the pool, i.e. under the driver" 0 "" bash -c '
+  . "'"$POOLFN"'"; [ "$(pool_block btrfs /dev/sdb | tail -1)" = "  source: /dev/sdb" ]'
+# AC6: the dir fallback is a DRIVER decision and placement is not — a host that
+# cannot do btrfs still places its pool where it was told to.
+check "pool_block: the dir fallback carries the source too" 0 "  source: /data/bulk/incus" \
+  pblock dir /data/bulk/incus
+check "pool_block: ...and is still the dir driver" 0 "  driver: dir" pblock dir /data/bulk/incus
+
+# Driven, end to end under the shims. A fresh host that sets nothing must send
+# a preseed with no source: key at all — anything else changes an upgraded
+# host's pool.
+check "setup-host: a fresh host with no BOX_STORAGE_SOURCE completes" 0 "Host ready" \
+  runsetup BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" \
+           FAKE_INCUS_LOG="$W180/p1.log"
+check "setup-host: ...and its preseed carries NO source: key" 1 "" \
+  grep -qE '^  \|   source:' "$W180/p1.log"
+check "setup-host: ...while the storage block is the one that always shipped" 0 "" \
+  grep -qF '  | - name: default' "$W180/p1.log"
+check "setup-host: a fresh host places the pool where BOX_STORAGE_SOURCE says" 0 "Host ready" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p2.log"
+check "setup-host: ...the preseed carrying it verbatim" 0 "" \
+  grep -qF '  |   source: /dev/sdb' "$W180/p2.log"
+# D3, the defect: the pool is created once, so a re-run cannot move it. It used
+# to skip in silence; now it names both sources and dies.
+check "setup-host: an existing pool placed ELSEWHERE refuses" 1 "already exists somewhere else" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/var/lib/incus/storage-pools/default \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" \
+           FAKE_INCUS_LOG="$W180/p3.log"
+check "setup-host: ...naming the LIVE source" 1 "live:      /var/lib/incus/storage-pools/default" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/var/lib/incus/storage-pools/default \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...and the REQUESTED one" 1 "requested: /dev/sdb" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/var/lib/incus/storage-pools/default \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...pointing at the migration it is NOT (D4)" 1 "that is a migration, not a re-run" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/var/lib/incus/storage-pools/default \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...and the refusal never reached a preseed" 1 "" \
+  grep -q 'admin init' "$W180/p3.log"
+check "setup-host: ...nor the bridge it would have built after it" 1 "" \
+  grep -q 'network create' "$W180/p3.log"
+# The pool exists and IS where it was asked to be: an ordinary clean re-run.
+check "setup-host: an existing pool that MATCHES re-runs clean" 0 "Host ready" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 FAKE_POOL_SOURCE=/dev/sdb \
+           FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...saying the pool is already placed there" 0 "already placed there" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 FAKE_POOL_SOURCE=/dev/sdb \
+           FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: a trailing slash is not a mismatch" 0 "Host ready" \
+  runsetup BOX_STORAGE_SOURCE=/data/bulk/incus/ FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/data/bulk/incus FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 \
+           FAKE_HAVE_PROFILE=1 BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# Fail closed: a live pool whose source cannot be read cannot be proven to
+# match, and proceeding would be the silence this whole change removes.
+check "setup-host: an existing pool with no readable source refuses" 1 "reports NO source at all" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# An unset variable on an existing pool is today's behaviour exactly: no read,
+# no refusal, nothing said.
+check "setup-host: with the variable unset an existing pool is not judged at all" 0 "Host ready" \
+  runsetup FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" \
+           FAKE_INCUS_LOG="$W180/p4.log"
+check "setup-host: ...not even reading the live source" 1 "" \
+  grep -q 'storage get' "$W180/p4.log"
+# The value dies at the gate, before anything is touched: a relative path would
+# be resolved by the DAEMON, somewhere nobody named.
+check "setup-host: a relative BOX_STORAGE_SOURCE is refused by name" 1 "must be an absolute path" \
+  runsetup BOX_STORAGE_SOURCE=bulk/incus BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p5.log"
+check "setup-host: ...having made no incus call at all" 1 "" test -e "$W180/p5.log"
+# The --minimal fallback creates the pool under /var/lib/incus and cannot carry
+# a source, so honouring one is impossible there: refuse rather than build a
+# host whose boxes live somewhere the operator did not name.
+check "setup-host: a failed preseed with a placement requested refuses" 1 "cannot be honored" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_PRESEED_FAIL=1 BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p6.log"
+check "setup-host: ...never falling back to --minimal" 1 "" \
+  grep -q 'admin init --minimal' "$W180/p6.log"
+check "setup-host: a failed preseed with NO placement still falls back" 0 "falling back to --minimal" \
+  runsetup FAKE_PRESEED_FAIL=1 BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p7.log"
+check "setup-host: ...and reaches --minimal to do it" 0 "" \
+  grep -q 'admin init --minimal' "$W180/p7.log"
+rm -f "$POOLFN"
+rm -rf "$W180"
+
 rm -rf "$W80" "$SETUPSHIM"
 
 # The decision must be the FIRST effective act — before the incus install, the
