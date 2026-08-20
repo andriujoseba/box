@@ -1091,7 +1091,7 @@ fleet_op() {   # $1 = incus subcommand, $2 = the box's state. Echoes the sub to
 }
 
 run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
-  local sub="$1" tmpl="$2" rows fleet n st op err rc=0 ran=0 failed=0
+  local sub="$1" tmpl="$2" rows fleet n st stu op err rc=0 ran=0 failed=0
   # Captured first, then read — never 'boxes_csv | awk'. A multi-line writer
   # piped into a line reader is the racing read #134 swept out of this file,
   # and the sweep names boxes_csv as a writer for exactly this reason.
@@ -1110,15 +1110,17 @@ run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
   while IFS=, read -r n st; do
     [ -n "$n" ] || continue
     ran=$((ran + 1))
-    op="$(fleet_op "$sub" "$st")"
+    # Incus prints these uppercase, but require_stopped() has accepted three
+    # spellings of STOPPED here since long before this verb existed, so match
+    # on a normalised copy rather than on Incus's current habit.
+    stu="$(printf '%s' "$st" | tr '[:lower:]' '[:upper:]')"
+    op="$(fleet_op "$sub" "$stu")"
     # Already where it was asked to be: a success that calls nothing, counted
     # as one in the aggregate, and said on stdout because it is an outcome and
-    # not a complaint.
+    # not a complaint. The state names itself, so this line cannot fall silent
+    # if fleet_op ever learns another pair.
     if [ -z "$op" ]; then
-      case "$sub" in
-        stop)  echo "box: $n is already stopped." ;;
-        start) echo "box: $n is already running." ;;
-      esac
+      echo "box: $n is already $(printf '%s' "$stu" | tr '[:upper:]' '[:lower:]')."
       continue
     fi
     # </dev/null per box: without it the first incus call drains the 'while'
