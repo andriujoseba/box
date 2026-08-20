@@ -33,6 +33,9 @@
 #   o. an incus-admin-ONLY member is provisioned for real: the group step
 #      opens incus-user's socket, the lazy project appears, and dropping
 #      incus-admin lands them in it with no re-grant (#99, #101 review)
+#   p. the fleet word 'all' stops at the tier boundary: a restricted user's
+#      'box down all' acts on their own box and leaves the other user's
+#      boxes RUNNING, and 'all' is refused as a box name (#179)
 #
 # ok/no/note return 0 by design — the 'A && ok || no' idiom below is the
 # same one drill.sh is built on (and the reason for the SC2015 disable).
@@ -314,6 +317,39 @@ else
   no "(c) foreign box root refusal was not proved (rc=$rc, said: $(printf '%s' "$out" | head -1))"
 fi
 aud "c. cross-user visibility: $U1=$n1 'mine', $U2=$n2 'mine', foreign project listing refused"
+
+phase "p. the fleet word — 'all' stops at the tier boundary"
+# #179 gave the lifecycle verbs an 'all' form that acts on every box 'box list'
+# prints. That makes it the first verb whose blast radius is a SET, so the
+# boundary (c) measures for reading has to be measured again for WRITING: a
+# shim can prove box acts on exactly what the daemon showed it, and only a real
+# two-user daemon can prove what it shows a restricted caller in the first
+# place. Run as $U2, who owns exactly one box, while $U1 owns two.
+out="$(as_u "$U2" box down all 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "(p) $U2's 'box down all' succeeded" \
+  || no "(p) 'box down all' failed for $U2 (rc=$rc): $(printf '%s' "$out" | head -1)"
+[ "$(printf '%s\n' "$out" | grep -c '^box: stopped ')" = 1 ] \
+  && ok "(p) it acted on exactly one box — $U2 owns one" \
+  || no "(p) 'all' acted on $(printf '%s\n' "$out" | grep -c '^box: stopped ') boxes, $U2 owns 1"
+printf '%s' "$out" | grep -q 'c1' \
+  && no "(p) $U2's 'all' named $U1's box c1 — the fleet word crossed the tier" \
+  || ok "(p) $U1's c1 was never named by $U2's 'all'"
+# The measurement that matters is not what box PRINTED but what the daemon
+# DID, so both of $U1's boxes are read back from the admin socket.
+s1="$(incus --project "$p1" list mine --format csv --columns s 2>/dev/null | head -n1)"
+sc1="$(incus --project "$p1" list c1 --format csv --columns s 2>/dev/null | head -n1)"
+{ [ "$s1" = RUNNING ] && [ "$sc1" = RUNNING ]; } \
+  && ok "(p) $U1's boxes are both still RUNNING — untouched by $U2's 'all'" \
+  || no "(p) $U2's 'all' reached $U1's project: mine=$s1 c1=$sc1"
+as_u "$U2" box start all >/dev/null 2>&1 \
+  && ok "(p) 'box start all' brought $U2's own box back" \
+  || no "(p) 'box start all' failed for $U2 — later phases run on a stopped box"
+# 'all' is reserved precisely because it is a fleet word, and the refusal must
+# hold on a real daemon and not only in the unit drive.
+as_u "$U2" box new --name all --template blank >/dev/null 2>&1 \
+  && no "(p) a box named 'all' was minted — the fleet word is unreachable now" \
+  || ok "(p) 'box new --name all' refused on a real daemon"
+aud "p. fleet word: $U2's 'all' acted on 1 box, $U1's mine/c1 stayed RUNNING, 'all' refused as a name"
 
 phase "g. the isolation contract, measured from INSIDE the boxes"
 ip1="$(incus --project "$p1" list mine --format csv --columns 4 2>/dev/null | tr -d '"' | sed 's/ (.*//' | head -n1)"

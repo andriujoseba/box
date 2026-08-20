@@ -4973,6 +4973,24 @@ check "import under an ordinary name is not caught by the guard" 1 "" \
   import_says_reserved
 rm -rf "$FSHIM" "$FWORK"
 
+# --- the real-daemon half, pinned so it cannot be deleted quietly -----------
+# The shim above proves box acts on exactly the set the daemon showed it. What
+# that set IS for a restricted caller is Incus's answer, and only the two-user
+# rehearsal on a real daemon asks it. These greps are the same guard the other
+# multiuser criteria carry here: a probe removed from the rehearsal reds this
+# suite instead of silently reducing what CI measures.
+check "multiuser: criterion (p) drives the fleet word" 0 "" \
+  grep -qF 'box down all' "$ROOT/drill/multiuser.sh"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "multiuser: (p) reads the other user's boxes back from the admin socket" 0 "" \
+  grep -qF 'untouched by $U2' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) restores its own box so later phases keep their premise" 0 "" \
+  grep -qF 'box start all' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) proves the reserved name on a real daemon" 0 "" \
+  grep -qF 'box new --name all' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) is documented in the criteria list" 0 "" \
+  grep -qF 'p. the fleet word' "$ROOT/drill/multiuser.sh"
+
 # --- the three help texts mention the fleet form ----------------------------
 for v in start down restart; do
   check "box help $v mentions the 'all' form" 0 "all" "$BOX" help "$v"
