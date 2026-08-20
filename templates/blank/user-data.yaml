@@ -22,4 +22,7 @@ packages:
   - tmux
   - chrony
 runcmd:
-  - systemctl enable --now chrony
+  - systemctl enable chrony
+  # Containers share the host clock and cannot run a clock-setting daemon;
+  # VMs own their clock and must start chrony after cloud-init installs it.
+  - systemd-detect-virt --quiet --container || systemctl start chrony

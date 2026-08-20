@@ -326,8 +326,10 @@ for d in "$ROOT"/templates/*/; do
     grep -qE '^[[:space:]]*-[[:space:]]+path:[[:space:]]+/etc/chrony/conf\.d/box-makestep\.conf$' "$d/user-data.yaml"
   check "template '$t': permits steps after every update (#174)" 0 "" \
     grep -qE '^[[:space:]]+makestep[[:space:]]+1\.0[[:space:]]+-1$' "$d/user-data.yaml"
-  check "template '$t': enables and starts chrony (#174)" 0 "" \
-    grep -qE '^[[:space:]]*-[[:space:]]+systemctl enable --now chrony$' "$d/user-data.yaml"
+  check "template '$t': enables chrony (#174)" 0 "" \
+    grep -qE '^[[:space:]]*-[[:space:]]+systemctl enable chrony$' "$d/user-data.yaml"
+  check "template '$t': starts chrony on clock-owning VM guests (#174)" 0 "" \
+    grep -qE '^[[:space:]]*-[[:space:]]+systemd-detect-virt --quiet --container \|\| systemctl start chrony$' "$d/user-data.yaml"
   # BOX_USER is duplicated into the cloud-init by hand (the file reaches
   # Incus verbatim) — assert the two halves actually agree, per template.
   tuser="$(tpl "$ROOT" "$t" | sed -n 's/.*USER=\([^ ]*\).*/\1/p')"

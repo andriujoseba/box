@@ -27,7 +27,9 @@ packages:
   - ca-certificates
   - chrony
 runcmd:
-  - systemctl enable --now chrony
+  - systemctl enable chrony
+  # Containers share the host clock; VM guests must start chrony (#174).
+  - systemd-detect-virt --quiet --container || systemctl start chrony
   # Preinstall rig so the box can converge — and re-converge — via
   # 'rig bootstrap kimi-box'. @RIG_REPO@/@RIG_REF@ are the pin point (#81):
   # box substitutes them at mint from the RIG_REPO/RIG_REF environment
