@@ -542,8 +542,9 @@ box export <box> [<file>] [--instance-only]
 box import <file> [--name <box>]
                              # mint a box back from an exported file, re-stamped
 box rename <box> <new>       # rename a box (stop it first)
-box down <box>               # stop (state kept; `start` resumes)
-box start <box>              # start a stopped box
+box down <box>|all           # stop (state kept; `start` resumes)
+box start <box>|all          # start a stopped box
+box restart <box>|all        # restart — one incus call, not down-then-start
 box rm <box> [--force]       # delete the box + its snapshots (asks first)
 box expose <box> <port> [<host-port>] | --list | --remove <port>
                              # forward a box port to host loopback — see a dev server
@@ -560,6 +561,17 @@ box help [<command>]         # full help, or one command's page
 Every command takes `--help`, and options come after the command
 (`box list --json`). Exit status: `0` ok, `1` it went wrong, `2` you asked
 wrong.
+
+The three lifecycle verbs also take `all` where a box name goes — `box
+restart all`, `box start all`, `box down all`. `all` means exactly the boxes
+`box list` prints for you, so it respects the tier boundary already in force:
+an admin's `all` never reaches a restricted user's boxes, and a restricted
+user's never reaches anything but their own. Each box is reported on its own
+line, one failing box does not stop the others, and the exit status is
+non-zero if any of them failed; with no boxes it succeeds and says so. The
+fleet forms do not prompt — they are reversible acts on your own boxes — and
+`rm` deliberately has no `all` form. Because the word is taken, `all` is not
+a legal box name: `box new --name all` is refused.
 
 `new` fresh-launches from a template (default: `blank`), or with `--from`
 clones an existing box or snapshot. VM mode (`--vm`, the default where
