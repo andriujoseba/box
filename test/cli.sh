@@ -1279,6 +1279,12 @@ check "root: a stopped box preserves Incus's failure" 1 "Instance is not running
 # shellcheck disable=SC2016  # $inst and the command substitution are literal bin/box source.
 check "root: shell implementation remains the tenant-user contract" 0 "" \
   grep -qFx 'cmd_shell() { incus exec "$inst" -- sudo -u "$(box_user "$inst")" -i; }' "$BOX"
+check "root: live rehearsal removes the tenant sudoers entry" 0 "" \
+  grep -qF 'box root precondition:' "$ROOT/drill/multiuser.sh"
+check "root: live rehearsal measures tenant and root entry identities" 0 "" \
+  grep -qF 'entry identities after removing' "$ROOT/drill/multiuser.sh"
+check "root: live rehearsal refuses a foreign root shell" 0 "" \
+  grep -qF 'cannot box root' "$ROOT/drill/multiuser.sh"
 
 # --- restore: the gate refuses, and nothing is destroyed --------------------
 RLOG="$CWORK/restore.log"
