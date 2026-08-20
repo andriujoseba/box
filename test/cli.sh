@@ -2567,11 +2567,13 @@ check "pool_block: ...and is still the dir driver" 0 "  driver: dir" pblock dir 
 # Held from both sides. First WITHOUT a parser, so a runner missing pyyaml
 # still fails on the regression rather than skipping it: the emitted source
 # must be a QUOTED scalar, which is exactly what makes the value survive.
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
 check "pool_block: the source is emitted as a QUOTED yaml scalar" 0 "" bash -c '
   . "'"$POOLFN"'"; [ "$(pool_block btrfs "/data/bulk/a #archive" | tail -1)" \
      = "  source: '"'"'/data/bulk/a #archive'"'"'" ]'
 check "pool_block: ...so the comment marker is inside the quotes, not opening one" 0 "" bash -c '
   . "'"$POOLFN"'"; pool_block btrfs "/data/bulk/a #archive" | tail -1 | grep -qE "^  source: .*archive.$"'
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
 check "pool_block: a quote in the source is doubled, as yaml escapes it" 0 "" bash -c '
   . "'"$POOLFN"'"; [ "$(pool_block btrfs "/data/o'"'"'brien" | tail -1)" \
      = "  source: '"'"'/data/o'"'"''"'"'brien'"'"'" ]'
@@ -2624,10 +2626,12 @@ check "yaml_scalar: a single-quoted scalar loses only its quotes" 0 "/data/bulk/
 check "yaml_scalar: a doubled quote inside one is a single quote" 0 "/data/o'brien" \
   ys " '/data/o''brien'"
 check "yaml_scalar: a double-quoted scalar is unescaped too" 0 '/data/a"b' ys ' "/data/a\"b"'
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
 check "yaml_scalar: trailing whitespace is yaml's, not the value's" 0 "" bash -c '
   . "'"$YSFN"'"; [ "$(yaml_scalar "  /dev/sdb   ")" = "/dev/sdb" ]'
 # The recorded-but-empty value every loop-backed pool carries, in both
 # spellings: absence, not a source named '""'. One normalisation, every key.
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
 check "yaml_scalar: a bare pair of quotes is absence" 0 "" bash -c '
   . "'"$YSFN"'"; [ -z "$(yaml_scalar "\"\"")" ] && [ -z "$(yaml_scalar "'"''"'")" ]'
 check "yaml_scalar: a lone quote is not a quoted scalar" 0 "'" ys "'"
@@ -2712,6 +2716,7 @@ if [ -n "${HAVE_YAML:-}" ]; then
   # The preseed as the daemon receives it: the shim logs every stdin verb's
   # input under its own call line with a '  | ' prefix, so take the block that
   # follows the preseed call, strip the prefix, and parse what Incus was handed.
+  # shellcheck disable=SC2016  # $1/$2 are the inner bash's positional args
   check "setup-host: ...and the preseed Incus was handed parses to that source" 0 "" bash -c '
     awk "/^incus admin init --preseed/ { f = 1; next }
          f && /^  \\| / { sub(/^  \\| /, \"\"); print; next }
@@ -2805,6 +2810,7 @@ check "setup-host: a fresh path-source host reports that path plainly" \
   runsetup BOX_STORAGE_SOURCE=/data/bulk/incus BOX_SUBNET=10.89.0.0/24 \
            FAKE_POOL_SOURCE=/data/bulk/incus FAKE_IP4_DEFAULT="$D_INBOX" \
            FAKE_IP4_ADDRS="$A_GUEST"
+# shellcheck disable=SC2016  # $PATH and $@ belong to the inner bash
 check "setup-host: ...saying nothing about a UUID it does not have" 1 "" bash -c '
   runsetup() { env FAKE_UID=1000 FAKE_GROUPS="users incus-admin" \
       PATH="'"$SETUPSHIM:$SHIMDIR"':$PATH" "$@" bash "'"$ROOT"'/host/setup-host.sh"; }

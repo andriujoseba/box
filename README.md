@@ -171,7 +171,10 @@ charged against `/`, competing with the operating system for one partition
 `BOX_STORAGE_SOURCE=/dev/sdb box setup-host` places the pool on a disk of its
 own (Incus formats and owns it outright — the recommended form), and
 `BOX_STORAGE_SOURCE=/data/bulk/incus` places it on an already-mounted
-filesystem. Unset is exactly today's pool, so upgrading changes nothing.
+filesystem. Unset is exactly today's pool, so upgrading changes nothing. The
+value must be an absolute path and reaches Incus exactly as typed, so a
+directory whose name contains a space or a `#` is placed — and reported —
+as the path you named rather than as the part before it.
 
 This is a **fresh-host** setting: a pool is created once, and setting the
 variable never moves one that exists. On a host that already has a pool

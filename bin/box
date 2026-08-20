@@ -679,6 +679,10 @@ recommended form) or a path on an already-mounted filesystem.
   BOX_STORAGE_SOURCE=/dev/sdb box setup-host        # a disk of its own
   BOX_STORAGE_SOURCE=/data/bulk/incus box setup-host # a mounted filesystem
 
+The value must be an absolute path, and it is passed to Incus exactly as you
+typed it — a directory whose name contains a space, or a '#', is placed and
+reported as the path you named, not as the part before it.
+
 FRESH HOSTS ONLY. A pool is created once, so this places a pool that does
 not exist yet; it never moves one that does. On a host that already has a
 pool, setup-host REFUSES when the variable disagrees with the live source
