@@ -4993,6 +4993,14 @@ check "mixed: an unmodelled state passes straight through to incus" 0 "stopped o
   mixedbox "one=FROZEN" "one" "" down all
 check "mixed: ...as a real call, not a skip" 0 "1" fleet_calls stop
 
+# require_stopped() has accepted three spellings of STOPPED in this file since
+# long before the fleet word existed, so the state match does not trust Incus's
+# current casing habit either.
+check "mixed: the state match is case-insensitive, as require_stopped's is" 0 "two is already stopped" \
+  mixedbox "two=stopped" "one two" "" down all
+check "mixed: ...and it still calls incus for the box that needed it" 0 "stopped one" \
+  mixedbox "two=stopped" "one two" "" down all
+
 # --- D5: no prompt on the fleet forms, and 'rm' has no 'all' ----------------
 # No TTY here, so a confirm() would exit 2 with "refusing to ... without
 # --force" — which is exactly how this asserts the absence of a prompt.
