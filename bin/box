@@ -669,6 +669,24 @@ disagrees with an existing bridge.
   box setup-host                           # picks/converges by itself
   BOX_SUBNET=10.90.0.0/24 box setup-host   # scripted hosts: pin it
 
+Where the boxes live: the storage pool carries every box's root device, and
+by default Incus builds it inside its own state directory — on the ROOT
+filesystem. A fleet of 60GiB boxes is then charged against '/', competing
+with the operating system for one partition. BOX_STORAGE_SOURCE places it
+somewhere else: a whole block device (formatted and owned by Incus — the
+recommended form) or a path on an already-mounted filesystem.
+
+  BOX_STORAGE_SOURCE=/dev/sdb box setup-host        # a disk of its own
+  BOX_STORAGE_SOURCE=/data/bulk/incus box setup-host # a mounted filesystem
+
+FRESH HOSTS ONLY. A pool is created once, so this places a pool that does
+not exist yet; it never moves one that does. On a host that already has a
+pool, setup-host REFUSES when the variable disagrees with the live source
+(naming both) and re-runs clean when it agrees — moving a pool that already
+carries boxes means moving every box's root device, which is a migration,
+not a re-run. 'box doctor' prints the pool's driver and source, which is
+the answer to "what is filling my root disk".
+
 Multi-user hosts: setup-host builds the stack once, for everyone. An admin
 then hands individual users the restricted tier with 'box grant <user>' —
 their own boxes, on this same hardened network, seeing nobody else's.

@@ -2543,6 +2543,7 @@ check "pool_block: with no source, byte-for-byte the pre-#180 block" 0 "" \
   cmp -s "$W180/pre180.yaml" "$W180/unset.yaml"
 check "pool_block: a source is emitted verbatim" 0 "  source: /dev/sdb" pblock btrfs /dev/sdb
 check "pool_block: ...and the driver line is untouched beside it" 0 "  driver: btrfs" pblock btrfs /dev/sdb
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
 check "pool_block: ...as a key OF the pool, i.e. under the driver" 0 "" bash -c '
   . "'"$POOLFN"'"; [ "$(pool_block btrfs /dev/sdb | tail -1)" = "  source: /dev/sdb" ]'
 # AC6: the dir fallback is a DRIVER decision and placement is not — a host that
@@ -2771,9 +2772,9 @@ rm -f "$PFFN"
 # that PLACES every box, and the whole section is informational. Placement is
 # a choice, not a fault — a DIRTY line here would red every stock host on the
 # day it shipped, and the verdict is what the drill reads.
-# shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "doctor: the pool is read off the box-net profile, not guessed" 0 "" \
   grep -qF 'incus profile device get box-net root pool' "$ROOT/drill/doctor.sh"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "doctor: the placement section reports through pool_findings" 0 "" \
   grep -qF 'pool_findings "$POOL_SHOW"' "$ROOT/drill/doctor.sh"
 check "doctor: the placement section judges nothing (no DIRTY line in it)" 1 "" bash -c '
