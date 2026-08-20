@@ -681,7 +681,10 @@ recommended form) or a path on an already-mounted filesystem.
 
 The value must be an absolute path, and it is passed to Incus exactly as you
 typed it — a directory whose name contains a space, or a '#', is placed and
-reported as the path you named, not as the part before it.
+reported as the path you named, not as the part before it. A newline or a
+tab is refused: the preseed carries the source as a YAML scalar and YAML
+folds a line break inside one to a space, so that value cannot be handed
+over faithfully and is declined rather than quietly changed.
 
 FRESH HOSTS ONLY. A pool is created once, so this places a pool that does
 not exist yet; it never moves one that does. On a host that already has a
@@ -691,9 +694,21 @@ carries boxes means moving every box's root device, which is a migration,
 not a re-run. Agreement is judged against the source Incus was HANDED: on a
 block device it formats the disk and then records the new filesystem's UUID
 as the pool's source, so '/dev/sdb' re-runs clean rather than refusing at
-its own pool. 'box doctor' prints the pool's driver and source — and, where
-those differ, the device it was built on — which is the answer to "what is
-filling my root disk".
+its own pool.
+
+That recorded path is a string kept once, at creation, and a device NAME is
+assigned in enumeration order — it can move to another disk across a reboot
+while the filesystem UUID cannot. So a re-run naming a block device is
+checked against what that path holds NOW: the same disk re-runs clean;
+another disk, or a device this run cannot read at all, refuses and names the
+live UUID, the path the pool was made from, and what the path holds instead.
+'lsblk -o NAME,UUID' finds the disk that does hold it; unsetting
+BOX_STORAGE_SOURCE re-runs against the host as it stands. Mounted-path
+sources are unaffected: Incus keeps those verbatim.
+
+'box doctor' prints the pool's driver and source — and, where those differ,
+the path it was built from — which is the answer to "what is filling my root
+disk".
 
 Multi-user hosts: setup-host builds the stack once, for everyone. An admin
 then hands individual users the restricted tier with 'box grant <user>' —

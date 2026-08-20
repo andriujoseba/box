@@ -174,7 +174,11 @@ own (Incus formats and owns it outright — the recommended form), and
 filesystem. Unset is exactly today's pool, so upgrading changes nothing. The
 value must be an absolute path and reaches Incus exactly as typed, so a
 directory whose name contains a space or a `#` is placed — and reported —
-as the path you named rather than as the part before it.
+as the path you named rather than as the part before it. The one shape it
+refuses is a path containing a newline or a tab: the preseed carries the
+source as a YAML scalar and YAML folds a line break inside one to a space, so
+that value cannot be transmitted faithfully and is declined rather than
+quietly changed.
 
 This is a **fresh-host** setting: a pool is created once, and setting the
 variable never moves one that exists. On a host that already has a pool
@@ -184,10 +188,22 @@ boxes means moving every box's root device, which is a migration rather than
 a re-run. Agreement is judged against the source Incus was *handed*, not the
 one it reports: on a block device it formats the disk and then records the new
 filesystem's UUID as the pool's source, so `BOX_STORAGE_SOURCE=/dev/sdb`
-re-runs clean forever rather than refusing at its own pool. `box doctor`
-prints the pool's driver and its source — and, where those differ, the device
-it was built on — which is what answers "what is filling my root disk"
-without an Incus lesson.
+re-runs clean rather than refusing at its own pool.
+
+That recorded path is a string kept at creation, though, and a device *name*
+is assigned in enumeration order — it can move to another disk across a
+reboot, an added controller or a hot-plug, while the filesystem UUID cannot.
+So a re-run naming a block device is checked against what that path holds
+**now**: same disk, it re-runs clean; another disk, or a device this run
+cannot read at all, it refuses and names the live UUID, the path the pool was
+made from, and what that path holds instead. `lsblk -o NAME,UUID` finds the
+disk that does hold it; unsetting `BOX_STORAGE_SOURCE` re-runs the script
+against the host as it stands. Mounted-path sources are unaffected — Incus
+keeps those verbatim, so the path itself is the current fact.
+
+`box doctor` prints the pool's driver and its source — and, where those
+differ, the path it was built from, with the same caveat about device names —
+which is what answers "what is filling my root disk" without an Incus lesson.
 
 A host still carrying the pre-0.4.0 stack: `box migrate-host --all-boxes`
 re-homes each legacy box onto `boxnet` (authed state preserved), and

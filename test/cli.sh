@@ -2671,6 +2671,53 @@ rm -f "$YSFN"
 # driver_btrfs.go). So the live source of the DOCUMENTED form is a bare UUID
 # forever after, and a match test reading only 'source' refuses every re-run of
 # a pool it had just placed correctly.
+# The identity probe itself, pure-ish: two tools, either of which answers, and
+# NOTHING is not an answer. lsblk first because it needs no privilege — a
+# non-root run must not be silently identity-blind — and blkid behind it
+# because that is the read Incus itself does to fill 'source'. The fallback is
+# driven here rather than only through the end-to-end shim, which uses the
+# primary: an untested fallback is a fallback that works until it is needed.
+UUIDFN="$(mktemp)"
+awk '/^dev_fs_uuid\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$UUIDFN"
+check "dev_fs_uuid: extracted from setup-host.sh (guards the awk)" 0 "lsblk" cat "$UUIDFN"
+check "dev_fs_uuid: the extracted function is valid bash" 0 "" bash -n "$UUIDFN"
+UUIDSHIM="$(mktemp -d)"
+mkdir -p "$UUIDSHIM/both" "$UUIDSHIM/none"
+cat > "$UUIDSHIM/both/lsblk" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_LSBLK_UUID:-}"
+SHIM
+cat > "$UUIDSHIM/both/blkid" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_BLKID_UUID:-}"
+SHIM
+cat > "$UUIDSHIM/driver" <<'SHIM'
+#!/usr/bin/env bash
+# dev_fs_uuid, run with no privilege escalation and a PATH holding only what
+# the caller put there. Prints the answer and nothing else. PATH is set HERE
+# rather than through env, so 'no tools at all' does not also mean 'no bash'.
+PATH="$1"
+. "$2"
+SUDO=""
+dev_fs_uuid /dev/sdb
+echo
+SHIM
+chmod +x "$UUIDSHIM/both/lsblk" "$UUIDSHIM/both/blkid" "$UUIDSHIM/driver"
+devuuid() { # devuuid <PATH> [VAR=val ...] — dev_fs_uuid under a chosen PATH
+  local p="$1"; shift
+  env "$@" bash "$UUIDSHIM/driver" "$p" "$UUIDFN"
+}
+# The shim dir comes FIRST, so the shims win wherever a real lsblk or blkid
+# also exists; the rest of PATH is there only so their '#!/usr/bin/env bash'
+# can find a bash.
+check "dev_fs_uuid: lsblk answers when it can, without any privilege" 0 "u-from-lsblk" \
+  devuuid "$UUIDSHIM/both:/usr/bin:/bin" FAKE_LSBLK_UUID=u-from-lsblk FAKE_BLKID_UUID=u-from-blkid
+check "dev_fs_uuid: ...and blkid answers when lsblk says nothing" 0 "u-from-blkid" \
+  devuuid "$UUIDSHIM/both:/usr/bin:/bin" FAKE_LSBLK_UUID= FAKE_BLKID_UUID=u-from-blkid
+check "dev_fs_uuid: with neither tool present the answer is NOTHING, not a guess" 0 "" \
+  devuuid "$UUIDSHIM/none"
+rm -rf "$UUIDSHIM"; rm -f "$UUIDFN"
+
 PLACEDFN="$(mktemp)"
 awk '/^pool_placed_at\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$PLACEDFN"
 check "pool_placed_at: extracted from setup-host.sh (guards the awk)" 0 "initial" cat "$PLACEDFN"
