@@ -220,6 +220,26 @@ case "$BOX_STORAGE_SOURCE" in
      echo "       Nothing was changed." >&2
      exit 1 ;;
 esac
+# The one shape the pass-through cannot carry. Everything else survives being
+# quoted (below), but YAML FOLDS a line break inside a quoted scalar to a
+# space, so '/data/a<newline>b' would reach Incus as '/data/a b' — a different
+# path, silently, which is the whole defect #180 exists to close. Refusing a
+# value this preseed cannot transmit faithfully is the opposite of refusing one
+# Incus would have accepted: the gate is not second-guessing the placement, it
+# is declining to lie about it. A tab and the other control characters go with
+# it — same class, same reason, and none of them is a path anyone typed on
+# purpose (panel round 3).
+case "$BOX_STORAGE_SOURCE" in
+  *[[:cntrl:]]*)
+     echo "ERROR: BOX_STORAGE_SOURCE contains a control character (a newline or a tab)." >&2
+     echo "       The preseed carries the source as a YAML scalar, and YAML folds a line" >&2
+     echo "       break inside one to a space — so Incus would be handed a DIFFERENT path" >&2
+     echo "       than you named, and the pool would be built somewhere nobody asked for." >&2
+     echo "       Refusing rather than mangling it. Rename the directory, or place the" >&2
+     echo "       pool on a path without one." >&2
+     echo "       Nothing was changed." >&2
+     exit 1 ;;
+esac
 
 # apt, unattended-safe. install.sh now runs us without a human watching, and
 # a fresh cloud image has apt-daily/unattended-upgrades holding the dpkg lock
@@ -387,8 +407,31 @@ pool_cfg() {
   printf '%s' "$out"
 }
 
-# Is the live pool already at the requested source? Pure — requested, live and
-# initial in, exit status out — so test/cli.sh drives it directly.
+# What filesystem does this path hold RIGHT NOW, as a UUID? Empty for anything
+# that is not a block device, for a path that does not exist, and for a host
+# with neither tool — all of which are "cannot be established", which the
+# matcher below treats as a refusal and never as a pass.
+#
+# 'lsblk' first, deliberately: it answers out of udev/sysfs and needs no
+# privilege, so a non-root run is not silently identity-blind. 'blkid' reads
+# the superblock itself and therefore needs the device open, i.e. root — but it
+# is the read INCUS ITSELF does to fill 'source' after formatting (fsUUID(),
+# driver_btrfs.go, lxc/incus@90429bf), so the two answers are the same string
+# by construction and the fallback cannot disagree with the primary.
+dev_fs_uuid() {
+  local dev="$1" uuid=""
+  if command -v lsblk >/dev/null 2>&1; then
+    uuid="$(lsblk --nodeps -rno UUID -- "$dev" 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$uuid" ] && command -v blkid >/dev/null 2>&1; then
+    uuid="$($SUDO blkid -s UUID -o value -- "$dev" 2>/dev/null | head -1 || true)"
+  fi
+  printf '%s' "$uuid"
+}
+
+# Is the live pool already at the requested source? Pure — requested, live,
+# initial and what the request resolves to NOW in, exit status out — so
+# test/cli.sh drives it directly.
 #
 # Two sources, because Incus keeps two. Handed a BLOCK DEVICE, the btrfs driver
 # records what you gave it in 'volatile.initial_source', formats the device,
@@ -401,12 +444,35 @@ pool_cfg() {
 # fall back to live 'source' is not a courtesy for old pools — it is the only
 # correct read for that driver, and for every path-shaped source.
 #
-# A trailing slash is not a mismatch, on either.
+# But an initial source is a STRING RECORDED ONCE, at creation, and it was
+# being used as proof of what a path names TODAY. Those are different facts,
+# and they come apart the first time the kernel enumerates disks in a different
+# order — a reboot, an added controller, a hot-plug. Then '/dev/sdb' is disk B
+# while the pool is still on disk A, and the documented identical invocation
+# used to answer "already placed there" about a disk it is not on: D3's silence
+# wearing a success message (panel round 3). So where live 'source' is NOT a
+# path — i.e. it is the UUID btrfs wrote after formatting a device — the
+# historical string is proof only if the path still resolves to that
+# filesystem. Where live 'source' IS a path, or absent, Incus mangled nothing,
+# the string is the answer, and the textual comparison stands unchanged: every
+# 'dir' pool, every mounted-path source.
+#
+# Three outcomes, because there are three facts: 0 placed, 1 placed somewhere
+# else entirely, 2 made from this path but the path is not that disk now (or
+# cannot be shown to be). 1 and 2 both refuse, and they refuse differently.
+#
+# A trailing slash is not a mismatch, on any of them.
 pool_placed_at() {
-  local want="$1" live="$2" initial="${3:-}"
+  local want="$1" live="$2" initial="${3:-}" now="${4:-}"
   [ -n "$want" ] || return 1
   if [ "${want%/}" = "${live%/}" ]; then return 0; fi
-  if [ -n "$initial" ] && [ "${want%/}" = "${initial%/}" ]; then return 0; fi
+  if [ -n "$initial" ] && [ "${want%/}" = "${initial%/}" ]; then
+    case "$live" in
+      ''|/*) return 0 ;;
+    esac
+    if [ -n "$now" ] && [ "$now" = "$live" ]; then return 0; fi
+    return 2
+  fi
   return 1
 }
 
@@ -429,7 +495,37 @@ if incus storage show default >/dev/null 2>&1; then
       echo "       Nothing was changed." >&2
       exit 1
     fi
-    if ! pool_placed_at "$BOX_STORAGE_SOURCE" "$live" "$initial"; then
+    # What the requested path names on this machine at this moment — read once,
+    # here, so the matcher stays pure and the suite can contradict it.
+    now="$(dev_fs_uuid "$BOX_STORAGE_SOURCE")"
+    placed=0; pool_placed_at "$BOX_STORAGE_SOURCE" "$live" "$initial" "$now" || placed=$?
+    if [ "$placed" -eq 2 ]; then
+      # The pool WAS made from this path, and the path is not that disk now.
+      # Refusing here is not pedantry: proceeding would tell an operator their
+      # boxes are on the disk currently answering to that name, and they are
+      # not — which is exactly the belief #180 exists to stop a script creating.
+      echo "ERROR: the storage pool 'default' was made from $BOX_STORAGE_SOURCE, but that" >&2
+      echo "       path does not name the disk the pool is on now." >&2
+      echo "         live:      ${live:-<none reported>}  (the filesystem UUID Incus wrote when it formatted the device)" >&2
+      echo "         made from: $initial" >&2
+      echo "         requested: $BOX_STORAGE_SOURCE" >&2
+      if [ -n "$now" ]; then
+        echo "         and $BOX_STORAGE_SOURCE now holds: $now" >&2
+      else
+        echo "         and $BOX_STORAGE_SOURCE holds no filesystem this run could read" >&2
+        echo "                    (no such device, not a block device, or no lsblk/blkid here)" >&2
+      fi
+      echo "       A device NAME is assigned in enumeration order and can move across a" >&2
+      echo "       reboot; the filesystem UUID above cannot. So this run cannot prove the" >&2
+      echo "       pool is where you asked, and saying it is would be the silence this" >&2
+      echo "       check exists to remove." >&2
+      echo "       Find the disk that holds it:  lsblk -o NAME,UUID   |   blkid -t UUID=${live:-<uuid>}" >&2
+      echo "       ...then name THAT device, or unset BOX_STORAGE_SOURCE to re-run this" >&2
+      echo "       script against the host as it stands." >&2
+      echo "       Nothing was changed." >&2
+      exit 1
+    fi
+    if [ "$placed" -ne 0 ]; then
       echo "ERROR: the storage pool 'default' already exists somewhere else." >&2
       echo "         live:      ${live:-<none reported>}" >&2
       # The device the operator actually named, whenever Incus still knows it:

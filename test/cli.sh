@@ -2468,7 +2468,21 @@ cat > "$SETUPSHIM/sudo" <<'SHIM'
 [ -n "${FAKE_SUDO_LOG:-}" ] && printf 'sudo %s\n' "$*" >> "$FAKE_SUDO_LOG"
 exit 0
 SHIM
-chmod +x "$SETUPSHIM/incus" "$SETUPSHIM/sudo"
+cat > "$SETUPSHIM/lsblk" <<'SHIM'
+#!/usr/bin/env bash
+# Fake lsblk: what filesystem UUID does the requested path hold RIGHT NOW
+# (#180, panel round 3)? FAKE_DEV_UUID answers for the device named in
+# FAKE_DEV_UUID_FOR (default /dev/sdb); every other path, and an unset
+# FAKE_DEV_UUID, exit non-zero with no output — the way lsblk answers for a
+# path that is not a block device. Without this shim the matcher could not be
+# contradicted, which is how the class it guards survived two rounds.
+[ -n "${FAKE_INCUS_LOG:-}" ] && printf 'lsblk %s\n' "$*" >> "$FAKE_INCUS_LOG"
+dev="${*: -1}"
+[ -n "${FAKE_DEV_UUID:-}" ] || exit 32
+[ "$dev" = "${FAKE_DEV_UUID_FOR:-/dev/sdb}" ] || exit 32
+printf '%s\n' "$FAKE_DEV_UUID"
+SHIM
+chmod +x "$SETUPSHIM/incus" "$SETUPSHIM/sudo" "$SETUPSHIM/lsblk"
 
 runsetup() { # runsetup [VAR=val ...] — the real setup-host, under shims
   env FAKE_UID=1000 FAKE_GROUPS="users incus-admin" \
@@ -2580,7 +2594,7 @@ check "pool_block: a quote in the source is doubled, as yaml escapes it" 0 "" ba
 # ...then WITH one, which is the assertion that actually means it: parse the
 # block Incus is handed and compare the source it would read against the value
 # the operator set. Every shape a plain scalar mangles, round-tripped.
-if [ -n "${HAVE_YAML:-}" ]; then
+if [ "$HAVE_YAML" = 1 ]; then
   roundtrip() { # roundtrip <value> — emitted, parsed, compared
     bash -c '. "'"$POOLFN"'"; pool_block btrfs "$1" > "$2"' _ "$1" "$W180/rt.yaml" \
       && python3 -c '
@@ -2661,13 +2675,39 @@ PLACEDFN="$(mktemp)"
 awk '/^pool_placed_at\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$PLACEDFN"
 check "pool_placed_at: extracted from setup-host.sh (guards the awk)" 0 "initial" cat "$PLACEDFN"
 check "pool_placed_at: the extracted function is valid bash" 0 "" bash -n "$PLACEDFN"
-placed() { bash -c ". '$PLACEDFN'; pool_placed_at \"\$1\" \"\$2\" \"\$3\"" _ "$1" "${2:-}" "${3:-}"; }
+placed() { bash -c ". '$PLACEDFN'; pool_placed_at \"\$1\" \"\$2\" \"\$3\" \"\$4\"" _ "$1" "${2:-}" "${3:-}" "${4:-}"; }
 UUID=4ff9b8f1-6e6a-4d0f-9a3c-0d1f2e3a4b5c
-# The regression the panel found: same device, same request, second run.
+UUID_B=0e1d2c3b-4a59-4687-b1a2-c3d4e5f60718
+# The regression round 1 found: same device, same request, second run — the
+# fourth argument being what /dev/sdb resolves to NOW, which on the honest
+# re-run is the filesystem Incus wrote onto it.
 check "pool_placed_at: a UUID live source MATCHES the device it was made from" \
-  0 "" placed /dev/sdb "$UUID" /dev/sdb
+  0 "" placed /dev/sdb "$UUID" /dev/sdb "$UUID"
 check "pool_placed_at: ...and a DIFFERENT device still does not" \
-  1 "" placed /dev/sdc "$UUID" /dev/sdb
+  1 "" placed /dev/sdc "$UUID" /dev/sdb "$UUID"
+# The regression round 3 found, and the reason the fourth argument exists: an
+# initial source is a STRING RECORDED AT CREATION, not a claim about what that
+# name points at today. Enumeration reuses /dev/sdb for another disk; the pool
+# is still on the first one; the documented identical invocation used to say
+# "already placed there" about a disk it is not on.
+check "pool_placed_at: the device NAME moved — same string, different disk — refuses" \
+  2 "" placed /dev/sdb "$UUID" /dev/sdb "$UUID_B"
+check "pool_placed_at: ...and the same name still on the same disk re-runs clean" \
+  0 "" placed /dev/sdb "$UUID" /dev/sdb "$UUID"
+# Fail CLOSED where identity cannot be established at all: the device is gone,
+# it is not a block device, or the host has neither lsblk nor blkid. Silence
+# there would be the same silence one layer down.
+check "pool_placed_at: a request whose identity cannot be read refuses" \
+  2 "" placed /dev/sdb "$UUID" /dev/sdb ""
+# ...and it is a distinct refusal from "placed somewhere else entirely",
+# because they are distinct facts and the way out of each one differs.
+check "pool_placed_at: that refusal is NOT the placed-elsewhere one" \
+  1 "" placed /dev/sdb /var/lib/incus/disks/default.img "" ""
+# Where Incus mangled nothing, identity is not consulted and nothing changes:
+# live 'source' is the path itself, so the string IS the current fact. Every
+# 'dir' pool and every mounted-path source lands here.
+check "pool_placed_at: a path-shaped live source never needs a device identity" \
+  0 "" placed /data/bulk/incus /var/lib/incus/x /data/bulk/incus ""
 # The 'dir' driver sets no initial source and mangles nothing: the fall back to
 # live 'source' is the only correct read there, not a courtesy for old pools.
 check "pool_placed_at: with no initial source, live source decides" \
@@ -2712,7 +2752,7 @@ check "setup-host: a source containing ' #' reaches the preseed whole" 0 "Host r
            FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p10.log"
 check "setup-host: ...quoted, so yaml does not read the rest as a comment" 0 "" \
   grep -qF "  |   source: '/data/bulk/a #archive'" "$W180/p10.log"
-if [ -n "${HAVE_YAML:-}" ]; then
+if [ "$HAVE_YAML" = 1 ]; then
   # The preseed as the daemon receives it: the shim logs every stdin verb's
   # input under its own call line with a '  | ' prefix, so take the block that
   # follows the preseed call, strip the prefix, and parse what Incus was handed.
@@ -2729,6 +2769,8 @@ want = \"/data/bulk/a #archive\"
 if got != want:
     print(\"preseed carried %r, wanted %r\" % (got, want)); sys.exit(1)
 " "$2"' _ "$W180/p10.log" "$W180/p10.yaml"
+else
+  echo "skip: setup-host preseed yaml parse (no python3+pyyaml here; CI has both)"
 fi
 # D3, the defect: the pool is created once, so a re-run cannot move it. It used
 # to skip in silence; now it names both sources and dies.
@@ -2771,10 +2813,15 @@ check "setup-host: a trailing slash is not a mismatch" 0 "Host ready" \
 # second run. Incus reports the filesystem UUID it wrote onto /dev/sdb as the
 # live source and keeps the device in volatile.initial_source, so this used to
 # refuse to re-run against the pool it had itself just placed.
+# FAKE_DEV_UUID is what /dev/sdb resolves to NOW: on the honest re-run that is
+# the filesystem Incus wrote onto it, which is what makes the recorded initial
+# source proof rather than a hopeful string (panel round 3). Overridable, so
+# the moved-name and unreadable shapes drive the same path.
 runblockdev() { # runblockdev <requested> [extra=val ...]
   local want="$1"; shift
   runsetup "BOX_STORAGE_SOURCE=$want" FAKE_HAVE_STORAGE=1 \
            "FAKE_POOL_SOURCE=$UUID" FAKE_POOL_INITIAL_SOURCE=/dev/sdb \
+           "FAKE_DEV_UUID=$UUID" \
            FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
            BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" \
            FAKE_IP4_ADDRS="$A_GUEST" "$@"
@@ -2789,6 +2836,44 @@ check "setup-host: ...with the UUID Incus records named beside it" \
   0 "Incus records it as '$UUID'" runblockdev /dev/sdb
 check "setup-host: ...having actually asked for the initial source" 0 "" \
   grep -qF 'storage get default volatile.initial_source' "$W180/p8.log"
+check "setup-host: ...and having actually PROBED the device's identity" 0 "" \
+  grep -qF 'lsblk --nodeps -rno UUID -- /dev/sdb' "$W180/p8.log"
+# The round-3 regression, end to end: the operator types the same command on
+# the same host, and /dev/sdb is a different disk than the one the pool is on.
+# 'already placed there' would be a lie with a success exit code.
+check "setup-host: a block-device pool refuses when the NAME moved to another disk" \
+  1 "does not name the disk the pool is on now" \
+  runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B" FAKE_INCUS_LOG="$W180/p11.log"
+check "setup-host: ...naming the filesystem the pool actually is on" \
+  1 "live:      $UUID" runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B"
+check "setup-host: ...and what that path holds instead" \
+  1 "now holds: $UUID_B" runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B"
+check "setup-host: ...saying why a device name is not an identity" \
+  1 "assigned in enumeration order" runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B"
+check "setup-host: ...and how to find the disk that does hold it" \
+  1 "lsblk -o NAME,UUID" runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B"
+check "setup-host: ...that refusal reaching no preseed" 1 "" \
+  grep -q 'admin init' "$W180/p11.log"
+check "setup-host: ...nor the bridge it would have built after it" 1 "" \
+  grep -q 'network create' "$W180/p11.log"
+# Fail closed, not open: no device, not a block device, or no lsblk/blkid to
+# ask. The old code called that a match; it is the absence of an answer.
+check "setup-host: a device whose identity cannot be read refuses too" \
+  1 "does not name the disk the pool is on now" \
+  runblockdev /dev/sdb FAKE_DEV_UUID= FAKE_INCUS_LOG="$W180/p12.log"
+check "setup-host: ...saying that is what happened, not that it mismatched" \
+  1 "holds no filesystem this run could read" runblockdev /dev/sdb FAKE_DEV_UUID=
+check "setup-host: ...and offering the unset way out" \
+  1 "unset BOX_STORAGE_SOURCE" runblockdev /dev/sdb FAKE_DEV_UUID=
+check "setup-host: ...that refusal reaching no preseed either" 1 "" \
+  grep -q 'admin init' "$W180/p12.log"
+# The path shapes are untouched by any of it: where live 'source' is a path,
+# Incus mangled nothing, and no device identity is consulted or needed.
+check "setup-host: a path-source re-run never probes a device identity" 0 "Host ready" \
+  runsetup BOX_STORAGE_SOURCE=/data/bulk/incus FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/data/bulk/incus FAKE_POOL_INITIAL_SOURCE=/data/bulk/incus \
+           FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
 # The FRESH run reports the same way, and this is the run where it matters
 # most: the operator has just typed /dev/sdb, and btrfs has just written a
 # filesystem UUID over 'source'. Answering with the UUID alone names no disk
@@ -2848,6 +2933,28 @@ check "setup-host: a relative BOX_STORAGE_SOURCE is refused by name" 1 "must be 
   runsetup BOX_STORAGE_SOURCE=bulk/incus BOX_SUBNET=10.89.0.0/24 \
            FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p5.log"
 check "setup-host: ...having made no incus call at all" 1 "" test -e "$W180/p5.log"
+# The one shape quoting cannot carry: YAML FOLDS a line break inside a quoted
+# scalar to a space, so '/data/a<newline>b' would reach the daemon as
+# '/data/a b'. That is the #180 defect through a third door, and the gate
+# refuses it rather than mangling it (panel round 3). This is not the gate
+# second-guessing a placement Incus would accept — it is declining to transmit
+# a value it would transmit WRONG.
+check "setup-host: a newline in BOX_STORAGE_SOURCE is refused by name" 1 "control character" \
+  runsetup "BOX_STORAGE_SOURCE=$(printf '/data/a\nb')" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p13.log"
+check "setup-host: ...saying WHY, in terms of what yaml would do to it" \
+  1 "folds a line break inside one to a space" \
+  runsetup "BOX_STORAGE_SOURCE=$(printf '/data/a\nb')" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...and having made no incus call at all" 1 "" test -e "$W180/p13.log"
+check "setup-host: a tab is the same class and refused the same way" 1 "control character" \
+  runsetup "BOX_STORAGE_SOURCE=$(printf '/data/a\tb')" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# ...and every shape that IS carried verbatim still passes the gate: the
+# refusal is one class wide, not a general tightening of what a source may be.
+check "setup-host: a space, a quote and a ' #' still pass the gate untouched" 0 "Host ready" \
+  runsetup "BOX_STORAGE_SOURCE=/data/o'brien/a #archive b" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
 # The --minimal fallback creates the pool under /var/lib/incus and cannot carry
 # a source, so honouring one is impossible there: refuse rather than build a
 # host whose boxes live somewhere the operator did not name.
@@ -3098,12 +3205,31 @@ check "doctor: the placement section judges nothing (no DIRTY line in it)" 1 "" 
 # shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "doctor: the df line reads the source through yaml_value too" 0 "" \
   grep -qF 'src="$(yaml_value source "$POOL_SHOW")"' "$ROOT/drill/doctor.sh"
-# A drift guard on all four reads: nothing in either script may go back to
+# A drift guard on all five reads: nothing in either script may go back to
 # taking a source line's second FIELD, which is what threw half of a path away.
+# Widened from a pattern requiring the key and 'print $2' to be ADJACENT — that
+# one was narrower than its own name, missing 'awk "/^  source:/ {print $2}"'
+# and 'grep "^  source:" | awk "{print $2}"' (@claude-bot-andresmgsl, panel
+# round 3). A bare 'print $2' over these two files costs nothing: neither
+# script has one for any other purpose, and if one ever needs one it can say so
+# here rather than reintroducing this bug in a new spelling.
 # shellcheck disable=SC2016  # the $2 is the pattern being searched FOR
 check "the source is never read as awk's second field again (#180)" 1 "" bash -c '
-  grep -nE "(source:?\"?|== k) *\{? *print \\\$2" \
+  grep -nE "print[[:space:]]+\\\$2" \
     "'"$ROOT"'/drill/doctor.sh" "'"$ROOT"'/host/setup-host.sh"'
+# ...and the guard is only worth its name if it can see those spellings, so
+# hold it against them rather than trusting the regex by eye. The two the old
+# pattern let through are the first two here; the third is the one it caught.
+DRIFTF="$(mktemp)"
+cat > "$DRIFTF" <<'DRIFT'
+awk '/^  source:/ {print $2}' "$show"
+grep '^  source:' <<<"$show" | awk '{print $2}'
+awk -v k=source: '$1 == k { print $2 }' <<<"$show"
+DRIFT
+# shellcheck disable=SC2016  # the $2 is the pattern, and $1 the inner bash's arg
+check "...and that guard catches the spellings the narrow one missed" 0 "" bash -c '
+  n="$(grep -cE "print[[:space:]]+\$2" "$1")"; [ "$n" = 3 ] || { echo "caught $n of 3"; exit 1; }' _ "$DRIFTF"
+rm -f "$DRIFTF"
 
 # The wiring: the signature is judged on THIS machine before any daemon call
 # (the daemon answering could be the nested impostor), probed INSIDE boxes on

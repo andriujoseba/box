@@ -166,8 +166,15 @@ pool_findings() {
     # The recorded-but-empty initial source every loop-backed pool carries is
     # already absence by here: yaml_scalar reads YAML's bare pair of quotes as
     # the empty string, for this key and for 'source' alike.
+    # Past tense, and deliberately: this is the path Incus was HANDED at
+    # creation, not a claim about what that name points at today. A device name
+    # is assigned in enumeration order and can move across a reboot, while the
+    # UUID above cannot — setup-host refuses a re-run it cannot bind back to
+    # this filesystem for exactly that reason (#180, panel round 3). This
+    # function judges nothing and probes nothing, so it says which fact it has.
     if [ -n "$ini" ] && [ "$ini" != "$src" ]; then
-      printf 'made from = %s — the device this pool was built on; the source above is the filesystem UUID Incus wrote onto it\n' "$ini"
+      printf 'made from = %s — the path Incus was given when this pool was created; the source above is the filesystem UUID it wrote onto that device\n' "$ini"
+      printf 'a device NAME can move between reboots and that UUID cannot, so check with "lsblk -o NAME,UUID" before trusting the name\n'
     fi
     case "$src" in
       /var/lib/incus/*|/var/lib/lxd/*)
