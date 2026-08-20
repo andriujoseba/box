@@ -62,6 +62,7 @@ check "option before command exits 2"          2 "options come after the command
 # A missing required positional is a usage error carrying that command's synopsis.
 check "new without --name exits 2"             2 "usage: box new"    "$BOX" new
 check "shell without a box exits 2"            2 "usage: box shell"  "$BOX" shell
+check "root without a box exits 2"             2 "usage: box root"   "$BOX" root
 check "restore without arg2 needs a box first" 2 "usage: box restore" "$BOX" restore
 # An unknown flag is refused, not swallowed as a positional (the --labl bug).
 check "unknown flag on list exits 2"           2 "unknown option"   "$BOX" list --nope
@@ -1255,6 +1256,20 @@ runbox() {  # runbox <logfile> <args...> — the real box, shimmed, no TTY
   cat "$log.out"
   return "$rc"
 }
+
+# --- root: a named host-authorized path that never depends on guest sudo ----
+ROOTLOG="$CWORK/root.log"
+check "root: help explains Incus-socket authorization" 0 "Authorization comes from the host's" \
+  "$BOX" help root
+check "root: help says guest sudo is not required" 0 "does not use or require sudo" \
+  "$BOX" help root
+check "root: dispatches a root login shell" 0 "" runbox "$ROOTLOG" root work
+check "root: reaches Incus directly as root, without guest sudo" 0 "" \
+  grep -qFx 'incus exec work -- bash -l' "$ROOTLOG"
+check "root: a nonexistent box fails through the shared box guard" 1 "no such box" \
+  runbox "$CWORK/root-missing.log" root missing
+check "root: shell implementation remains the tenant-user contract" 0 "" \
+  grep -qFx 'cmd_shell() { incus exec "$inst" -- sudo -u "$(box_user "$inst")" -i; }' "$BOX"
 
 # --- restore: the gate refuses, and nothing is destroyed --------------------
 RLOG="$CWORK/restore.log"

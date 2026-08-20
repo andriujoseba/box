@@ -92,6 +92,7 @@ CMDS=(
   "list^[--json]^^List your boxes^fn:cmd_list^"
   "info^<box> [--json]^box^One box: state, type, IP, what minted it, snapshot labels^fn:cmd_info^"
   "shell^<box>^box^Open a shell in a box, as its template's user^fn:cmd_shell^"
+  "root^<box>^box^Open a root shell in a box — authorized by the host's Incus socket^fn:cmd_root^"
   "exec^<box> -- <cmd...>^box^Run a command inside a box^fn:cmd_exec^"
   "tmux^<box> [<session>]^box^Attach or create a tmux session in a box — survives disconnects^fn:cmd_tmux^"
   "snapshot^<box> [<label>]^box^Checkpoint a box (label defaults to manual-<epoch>)^fn:cmd_snapshot^"
@@ -204,6 +205,9 @@ EXAMPLES
   # mint a claude box and log in inside it — the tool never handles your token
   box new --name work --template claude-box
   box shell work                    # then: run 'claude', then /login
+
+  # operator access uses the host's existing Incus authorization, not guest sudo
+  box root work
 
   # log in once, reuse forever: checkpoint the authed box, clone from it
   box snapshot work authed
@@ -379,6 +383,15 @@ Open an interactive shell in a running box as the 'claude' user. This is the
 only entry path — there is no SSH and no inbound route to a box.
 
   box shell work
+EOF
+;;
+    root) cat <<'EOF'
+Open a root login shell in a running box. Authorization comes from the host's
+Incus socket: this grants nothing beyond the access already implied by
+'box shell' and the 'box incus' escape hatch. It does not use or require sudo
+inside the guest, so it also works when the tenant has no sudoers entry.
+
+  box root work
 EOF
 ;;
     exec) cat <<'EOF'
@@ -1859,6 +1872,7 @@ box_user() {
 }
 
 cmd_shell() { incus exec "$inst" -- sudo -u "$(box_user "$inst")" -i; }
+cmd_root()  { incus exec "$inst" -- bash -l; }
 # sudo -i joins its command argv into one shell string. In that join, a
 # backslash-newline becomes a shell continuation and silently deletes the
 # newline from a multi-line `box exec` payload (#169). Keep the login
