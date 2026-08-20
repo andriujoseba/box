@@ -33,6 +33,11 @@
 #   o. an incus-admin-ONLY member is provisioned for real: the group step
 #      opens incus-user's socket, the lazy project appears, and dropping
 #      incus-admin lands them in it with no re-grant (#99, #101 review)
+#   p. the fleet word 'all' stops at the tier boundary, in BOTH directions: a
+#      restricted user's 'box down all' acts on their own box and leaves the
+#      other user's RUNNING, an admin's stops the admin's own box in 'default'
+#      and reaches into no user-<uid> project, and 'all' is refused as a box
+#      name (#179)
 #
 # ok/no/note return 0 by design — the 'A && ok || no' idiom below is the
 # same one drill.sh is built on (and the reason for the SC2015 disable).
@@ -84,6 +89,9 @@ phase(){ printf '\n%s══ %s%s\n' "$C_B" "$*" "$C_0"; }
 aud()  { audit+=("$*"); }
 
 U1=boxdrill1; U2=boxdrill2
+# The admin's OWN box, minted in 'default' by criterion (p) and removed by it.
+# Named up here because cleanup() refers to it and this file runs under set -u.
+ADMINBOX=drill-admin
 
 # Run as a rehearsal user. runuser resets HOME/USER to the target (we are
 # root), and stdin is pinned: an incus with a terminal can go interactive and
@@ -135,6 +143,11 @@ cleanup() {
   [ "$KEEP" = 1 ] && { echo "(--keep: users and boxes left for inspection)"; return; }
   echo
   echo "── cleanup"
+  # (p)'s admin-owned box lives in 'default', which no 'box revoke --purge'
+  # below will ever reach. (p) removes it itself; this is the copy that runs
+  # when the drill dies before it gets there.
+  box rm "$ADMINBOX" --force >/dev/null 2>&1 \
+    && echo "  removed the admin's $ADMINBOX (criterion p)"
   for u in "$U1" "$U2" boxdrill3 boxdrill4 boxdrill5; do
     id "$u" >/dev/null 2>&1 || continue
     # A half-failed purge followed by userdel leaves a project owned by
@@ -314,6 +327,95 @@ else
   no "(c) foreign box root refusal was not proved (rc=$rc, said: $(printf '%s' "$out" | head -1))"
 fi
 aud "c. cross-user visibility: $U1=$n1 'mine', $U2=$n2 'mine', foreign project listing refused"
+
+phase "p. the fleet word — 'all' stops at the tier boundary"
+# #179 gave the lifecycle verbs an 'all' form that acts on every box 'box list'
+# prints. That makes it the first verb whose blast radius is a SET, so the
+# boundary (c) measures for reading has to be measured again for WRITING: a
+# shim can prove box acts on exactly what the daemon showed it, and only a real
+# two-user daemon can prove what it shows a restricted caller in the first
+# place. Run as $U2, who owns exactly one box, while $U1 owns two.
+out="$(as_u "$U2" box down all 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "(p) $U2's 'box down all' succeeded" \
+  || no "(p) 'box down all' failed for $U2 (rc=$rc): $(printf '%s' "$out" | head -1)"
+[ "$(printf '%s\n' "$out" | grep -c '^box: stopped ')" = 1 ] \
+  && ok "(p) it acted on exactly one box — $U2 owns one" \
+  || no "(p) 'all' acted on $(printf '%s\n' "$out" | grep -c '^box: stopped ') boxes, $U2 owns 1"
+printf '%s' "$out" | grep -q 'c1' \
+  && no "(p) $U2's 'all' named $U1's box c1 — the fleet word crossed the tier" \
+  || ok "(p) $U1's c1 was never named by $U2's 'all'"
+# The measurement that matters is not what box PRINTED but what the daemon
+# DID, so both of $U1's boxes are read back from the admin socket.
+s1="$(incus --project "$p1" list mine --format csv --columns s 2>/dev/null | head -n1)"
+sc1="$(incus --project "$p1" list c1 --format csv --columns s 2>/dev/null | head -n1)"
+{ [ "$s1" = RUNNING ] && [ "$sc1" = RUNNING ]; } \
+  && ok "(p) $U1's boxes are both still RUNNING — untouched by $U2's 'all'" \
+  || no "(p) $U2's 'all' reached $U1's project: mine=$s1 c1=$sc1"
+as_u "$U2" box start all >/dev/null 2>&1 \
+  && ok "(p) 'box start all' brought $U2's own box back" \
+  || no "(p) 'box start all' failed for $U2 — later phases run on a stopped box"
+# 'all' is reserved precisely because it is a fleet word, and the refusal must
+# hold on a real daemon and not only in the unit drive.
+as_u "$U2" box new --name all --template blank >/dev/null 2>&1 \
+  && no "(p) a box named 'all' was minted — the fleet word is unreachable now" \
+  || ok "(p) 'box new --name all' refused on a real daemon"
+# The other direction, and the one an admin gets wrong by having more power
+# rather than less: root's 'all' is scoped to the shared 'default' project, so
+# it must not reach into any user-<uid> project.
+#
+# This needs a box of the admin's own, and the reason is the whole point of the
+# probe. Every other mint in this file runs as $U1, $U2 or $U5, so root's
+# 'box list' is empty — and an admin's 'all' over zero boxes enumerates nothing,
+# prints "no boxes", and leaves both user projects RUNNING for the trivial
+# reason that it did nothing at all. That assertion would pass with run_fleet()
+# deleted. It is the ABSENCE of an action, not a scoped one, and the claim this
+# criterion makes is that the action was scoped. So mint one in 'default' and
+# require it to be the box that stopped.
+if box new --name "$ADMINBOX" --template blank --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1; then
+  ok "(p) the admin owns a box in 'default' — the admin direction has something to act ON"
+else
+  no "(p) the admin's own box could not be minted — the admin direction would measure nothing"
+fi
+box down all >/dev/null 2>&1 || true
+aa="$(incus --project default list "$ADMINBOX" --format csv --columns s 2>/dev/null | head -n1)"
+a1="$(incus --project "$p1" list mine --format csv --columns s 2>/dev/null | head -n1)"
+ac1="$(incus --project "$p1" list c1 --format csv --columns s 2>/dev/null | head -n1)"
+a2="$(incus --project "$p2" list mine --format csv --columns s 2>/dev/null | head -n1)"
+# Two halves of one claim, asserted apart so a failure says which half broke:
+# the admin's 'all' DID act on the admin's own box, and it did NOT act on
+# anyone else's. Neither alone is the criterion — the first without the second
+# is a hole in the boundary, the second without the first is the vacuum above.
+[ "$aa" = STOPPED ] \
+  && ok "(p) the admin's 'box down all' stopped the admin's own box" \
+  || no "(p) the admin's 'all' did not act on the admin's own box (state=${aa:-<none>}) — the direction is unmeasured"
+{ [ "$a1" = RUNNING ] && [ "$ac1" = RUNNING ] && [ "$a2" = RUNNING ]; } \
+  && ok "(p) ...and reached no restricted project" \
+  || no "(p) the admin's 'all' crossed into a user project: $U1 mine=$a1 c1=$ac1, $U2 mine=$a2"
+# Removed here rather than left to cleanup: later phases measure a host whose
+# 'default' project is empty, and this box is (p)'s scaffolding, not a fixture.
+# The trap keeps a copy of this removal for an early exit.
+box rm "$ADMINBOX" --force >/dev/null 2>&1 || true
+# (p) is what stopped and restarted $U2's box, and (g) reads that box's address
+# on its second line. A container that has just started has not necessarily
+# taken a boxnet lease yet — and an EMPTY address does not red (g). It falls
+# into the "no ip for $U2's box — sibling probe skipped" note, silently
+# dropping a measurement drill/README.md names as part of what (g) proves.
+# $U1's box has a clone mint between its own restart and (g); $U2's would have
+# nothing at all. So (p) does not end until the lease it disturbed is back, and
+# it says so out loud if it never comes rather than leaving (g) to skip.
+ip_u2=""
+for _ in $(seq 1 30); do
+  ip_u2="$(incus --project "$p2" list mine --format csv --columns 4 2>/dev/null | tr -d '"' | sed 's/ (.*//' | grep . | head -n1)"
+  [ -n "$ip_u2" ] && break
+  sleep 2
+done
+case "$ip_u2" in
+  "$(boxnet_pfx)"*) ok "(p) $U2's box took its boxnet lease back after 'start all' — (g) measures rather than skips" ;;
+  "")               no "(p) $U2's box never took a lease after 'start all' — (g)'s sibling probe would skip, UNMEASURED" ;;
+  *)                no "(p) $U2's box came back on '$ip_u2', which is not boxnet" ;;
+esac
+
+aud "p. fleet word: $U2's 'all' acted on 1 box, $U1's mine/c1 stayed RUNNING; the admin's 'all' stopped its own $ADMINBOX (=$aa) and left every user-<uid> box RUNNING; 'all' refused as a name"
 
 phase "g. the isolation contract, measured from INSIDE the boxes"
 ip1="$(incus --project "$p1" list mine --format csv --columns 4 2>/dev/null | tr -d '"' | sed 's/ (.*//' | head -n1)"

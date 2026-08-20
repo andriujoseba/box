@@ -60,9 +60,21 @@ box_tier() {
 #   box      first positional is a box: resolve it, and REFUSE if the instance
 #            isn't tagged user.box=1 (or the legacy user.claudebox=1) — the boundary, enforced, not assumed
 #   arg2     a second positional is required
+#   newname  the second positional is a name the box will CARRY afterwards, so
+#            it goes through the reserved-word guard — 'rename' is a mint door
+#            in the only sense D2 cares about (#179). Not on 'restore', whose
+#            second positional is a snapshot label and a different namespace.
 #   stopped  the box must not be running
 #   confirm  destructive: prompt unless --force. The row supplies the words
 #            (last field) — see 'confirm prompt' below.
+#   fleet    the verb also takes the literal 'all' where a box name goes: the
+#            'box' precondition then resolves nothing and the action runs once
+#            per box in 'box list', reporting each and failing if any did
+#            (#179). It rides BESIDE 'box', never instead of it — a fleet verb
+#            is a single-box verb that also accepts 'all', and the boundary
+#            'box' enforces is the same one boxes_csv() draws.
+#            Deliberately NOT on 'rm': deletion is a different class, and a
+#            confirm over six boxes trains the operator to answer 'y'.
 #
 # action:
 #   incus:<subcommand>   run `incus <subcommand> <instance> [rest...]`
@@ -99,9 +111,10 @@ CMDS=(
   "restore^<box> <snapshot> [--force]^box,arg2,confirm^Roll a box back to one of its snapshots — irreversible, and it asks first^incus:snapshot restore^restored {} to {1}^roll {} back to snapshot '{1}' and discard everything in the box since it was taken"
   "export^<box> [<file>] [--instance-only]^box^Export a stopped box to one portable file — it survives 'box rm' and this host^fn:cmd_export^"
   "import^<file> [--name <box>]^^Mint a box from an exported file, re-stamped onto this host's stack^fn:cmd_import^"
-  "rename^<box> <new-name>^box,arg2,stopped^Rename a box (it must be stopped first)^incus:rename^renamed {} to {1}"
-  "down^<box>^box^Stop a box, keeping its state ('start' resumes it)^incus:stop^stopped {}"
-  "start^<box>^box^Start a stopped box^incus:start^started {}"
+  "rename^<box> <new-name>^box,arg2,newname,stopped^Rename a box (it must be stopped first)^incus:rename^renamed {} to {1}"
+  "down^<box>|all^box,fleet^Stop a box — or all of yours — keeping state ('start' resumes it)^incus:stop^stopped {}"
+  "start^<box>|all^box,fleet^Start a stopped box, or all of yours^incus:start^started {}"
+  "restart^<box>|all^box,fleet^Restart a box, or all of yours — one incus call, not stop-then-start^incus:restart^restarted {}"
   "rm^<box> [--force]^box,confirm^Delete a box and its snapshots — irreversible, and it asks first^incus:delete -f^removed {}^delete {} and all its snapshots"
   "expose^<box> <port> [<host-port>] | --list | --remove <port>^box^Forward a box port to the host's loopback — see a dev server^fn:cmd_expose^"
   "incus^<box> -- <args...>^box^Escape hatch: run any incus command against a box^fn:cmd_incus^"
@@ -371,6 +384,37 @@ Takes no box — for one box, that's 'box info <box>'.
   box list
 EOF
 ;;
+    down|start|restart) cat <<'EOF'
+A lifecycle verb: it takes one box, or the word 'all'.
+
+'restart' is a single Incus restart, not 'down' followed by 'start' — there
+is no window in which the box is stopped and only your shell remembers it is
+meant to come back.
+
+'all' means exactly the boxes 'box list' prints for you, which is the tier
+boundary already in force: an admin's 'all' never reaches a restricted user's
+boxes, and a restricted user's never reaches anything but their own. Every
+box is reported, one line each; one box failing does not stop the others, and
+the exit status is non-zero if any of them failed. With no boxes at all it
+succeeds and says so. It does not prompt — these are reversible acts on your
+own boxes — and 'rm' deliberately has no 'all' form.
+
+A fleet is usually mixed, so a box already where you sent it is a success and
+not a failure: 'down all' says 'already stopped' for the ones that were, and
+'restart all' starts a stopped box rather than erroring on it. The exit status
+stays a real signal that way — non-zero means something went wrong, not that
+one box had nothing to do. That leniency is the FLEET form's: named on its own,
+'box restart <box>' is a straight Incus restart and still errors on a box that
+is stopped, so use 'box start' for that one.
+
+'all' is reserved as a name for this reason: 'box new --name all' is refused.
+
+  box restart work
+  box restart all
+  box down all
+  box start all
+EOF
+;;
     info) cat <<'EOF'
 Show one box: state, type, IP address, and — the reason this exists — the
 labels of its snapshots, with the --from line to clone one.
@@ -568,6 +612,10 @@ Rename a box. Incus cannot rename a running instance, so stop it first:
 
 Snapshots and Claude auth follow the box; anything referring to the old name by
 hand (a --from line, a script) does not.
+
+'all' is not available as a new name: it is the fleet word 'box start|down|
+restart' take instead of a box name, so a box called 'all' could not be
+started, stopped or restarted by name.
 EOF
 ;;
     rm) cat <<'EOF'
@@ -984,6 +1032,160 @@ need_arg2() {
 fill() {   # $1 = template, $2 = what {} stands for
   local t="${1//\{\}/$2}"
   printf '%s\n' "${t//\{1\}/${args[1]:-}}"
+}
+
+# 'all' is the fleet word, and it is a VALUE the 'box' precondition recognises
+# rather than a flag or a verb of its own — which is why 'start', 'down' and
+# 'restart' gained it in one change and the table kept its shape (#179).
+#
+# The set it names is exactly what 'box list' prints for THIS caller, because
+# it is read from the same boxes_csv(). That is not a convenience: the tier
+# boundary is already drawn there — an admin sees the shared 'default'
+# project, a restricted user sees only 'user-<uid>' — so an admin's 'all'
+# cannot reach a restricted user's boxes and a restricted user's cannot reach
+# anything but their own. Any fleet set derived some other way would have to
+# re-implement that boundary, and a second implementation of a boundary is how
+# you get a hole in one of them.
+FLEET_WORD=all
+
+# The collision the fleet word creates: a box literally named 'all' would be
+# unreachable by every verb that took the word, and the alternative — an escape
+# syntax — buys one pathological name at the cost of a rule on every lifecycle
+# command (#179 D2). Refused where the name is SET rather than papered over at
+# use.
+#
+# The rule is "every door that leaves a box carrying a name", and it is stated
+# that way on purpose. This comment used to name the doors instead — "the only
+# two that can mint one" — and the census was wrong: 'rename' sets a name too,
+# through a table row rather than a function, so it had no guard while the
+# README said flatly that 'all' is not a legal box name. A census in a comment
+# is a thing that goes stale silently; the rule is what a new row should be
+# read against. Today: cmd_new, cmd_import, and the 'newname' precondition
+# token that carries it into the table.
+refuse_fleet_word() {   # $1 = the name being set
+  if [ "$1" = "$FLEET_WORD" ]; then
+    die "'$FLEET_WORD' is reserved — it is the fleet word 'box start|down|restart' take instead of a box name. Pick another name."
+  fi
+}
+
+# A fleet is MIXED-STATE in the ordinary case — that is most of why you reach
+# for 'all' — and Incus errors when an instance is already in the state you
+# asked for ("The instance is already stopped", "The container is already
+# running"). Handing every box to the verb unconditionally therefore reds a
+# 'down all' whenever one box was already down, which breaks two things at
+# once: the run does not do what #179's test plan asks ("two boxes up, one
+# down: 'box restart all' ... leaves all three running"), and D4's aggregate
+# exit status stops separating a fleet that half-acted from one that fully did.
+# An operator who sees 'down all' exit 1 for a box that needed nothing learns
+# to ignore the status.
+#
+# So the state is read rather than thrown away — boxes_csv() already selects
+# it, this just stops discarding column 2. Three exact pairs, no more:
+#
+#   stop    + STOPPED  -> nothing to do, reported as the success it is
+#   start   + RUNNING  -> ditto
+#   restart + STOPPED  -> ONE 'incus start'
+#
+# The last is not the composite D1 forbids. D1 rules out "call down, then call
+# start", which owns a half-failed state between the two calls; starting a
+# stopped box is a single Incus operation with no intermediate state at all, so
+# this satisfies D1 and the test plan together instead of trading one for the
+# other. It is reported as a start, not as a restart: a box that was never
+# running was not restarted, and that one line is all the operator reads.
+#
+# Every other state — FROZEN, ERROR, whatever a later Incus adds — goes down
+# the ordinary path and Incus decides. This is not a state machine; it is a
+# refusal to make the two calls that are guaranteed to error.
+#
+# The snapshot is a TOCTOU by nature. If a box moves between the list and the
+# call, Incus errors and the failure path below reports it correctly, which is
+# the right answer — engineering around the race would buy nothing.
+fleet_op() {   # $1 = incus subcommand, $2 = the box's state. Echoes the sub to
+               # run, or "" when the box is already where it was asked to be.
+  case "$1:$2" in
+    stop:STOPPED|start:RUNNING) echo "" ;;
+    restart:STOPPED)            echo "start" ;;
+    *)                          echo "$1" ;;
+  esac
+}
+
+run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
+  local sub="$1" tmpl="$2" rows fleet n st stu op err rc=0 ran=0 failed=0
+  # Captured first, then read — never 'boxes_csv | awk'. A multi-line writer
+  # piped into a line reader is the racing read #134 swept out of this file,
+  # and the sweep names boxes_csv as a writer for exactly this reason.
+  # And READ its status. A daemon that never answered leaves 'rows' empty,
+  # which is indistinguishable from a host with no boxes — so without this,
+  # "I could not ask" lands in the D6 branch below and comes out as "there is
+  # nothing to do", exit 0. That is the one case where D4's aggregate status
+  # says all-fine about a run in which nothing happened at all, and it is
+  # #179's own motivating scenario: a 'box start all' fired before incusd is
+  # up would answer "nothing to start" and give the operator no reason to look
+  # again.
+  #
+  # An explicit check and not errexit, because there is none to lean on here:
+  # run_fleet is called as 'run_fleet ... || exit $?', and a function on the
+  # left of || runs with set -e suppressed through its whole body. Nothing in
+  # this function is protected by it.
+  #
+  # require_stack() is not the answer either — it no-ops when --remote is set,
+  # so an unreachable remote would still come back as an empty fleet. Its
+  # WORDING is, though: the two doors should say one thing about a daemon that
+  # is not there.
+  rows="$(boxes_csv)" || die "the incus daemon is not answering — diagnose it: box doctor"
+  # Name AND state. Neither can contain a comma or a newline — boxes_csv says
+  # so and says why — so a plain -F, split is safe here as it is there.
+  fleet="$(awk -F, 'NF && $1 != "" { print $1 "," $2 }' <<<"$rows")"
+  # A fresh host restarting nothing has done what it was asked, so this is a
+  # success with a message and not an error (#179 D6). It goes to stdout: it
+  # is the answer, not a complaint.
+  if [ -z "$fleet" ]; then
+    echo "box: no boxes — nothing to $cmd."
+    return 0
+  fi
+  err="$(mktemp)"
+  while IFS=, read -r n st; do
+    [ -n "$n" ] || continue
+    ran=$((ran + 1))
+    # Incus prints these uppercase, but require_stopped() has accepted three
+    # spellings of STOPPED here since long before this verb existed, so match
+    # on a normalised copy rather than on Incus's current habit.
+    stu="$(printf '%s' "$st" | tr '[:lower:]' '[:upper:]')"
+    op="$(fleet_op "$sub" "$stu")"
+    # Already where it was asked to be: a success that calls nothing, counted
+    # as one in the aggregate, and said on stdout because it is an outcome and
+    # not a complaint. The state names itself, so this line cannot fall silent
+    # if fleet_op ever learns another pair.
+    if [ -z "$op" ]; then
+      echo "box: $n is already $(printf '%s' "$stu" | tr '[:upper:]' '[:lower:]')."
+      continue
+    fi
+    # </dev/null per box: without it the first incus call drains the 'while'
+    # loop's stdin and the fleet silently stops after one box.
+    # word-split intentionally, as in the single-box path below.
+    # shellcheck disable=SC2086
+    if incus $op "$(iname_of "$n")" </dev/null >/dev/null 2>"$err"; then
+      if [ "$op" != "$sub" ]; then
+        # 'restart' on a stopped box. Say what happened, not what was typed.
+        echo "box: started $n — it was stopped."
+      else
+        [ -z "$tmpl" ] || echo "box: $(fill "$tmpl" "$n")"
+      fi
+    else
+      failed=$((failed + 1)); rc=1
+      # One box failing must not abort the rest (#179 D4) — a fleet left half
+      # acted on is a state the operator has to discover by hand. And never
+      # swallow incus's reason: "3 failed" with no cause makes them re-run the
+      # verb one box at a time to find out what this run already knew.
+      echo "box: $n FAILED to $cmd:" >&2
+      sed 's/^/  /' "$err" >&2
+    fi
+  done <<<"$fleet"
+  rm -f "$err"
+  if [ "$failed" -gt 0 ]; then
+    echo "box: $((ran - failed)) of $ran succeeded, $failed failed." >&2
+  fi
+  return "$rc"
 }
 
 confirm() {   # $1 = prompt. --force, or a TTY to ask on, or we refuse.
@@ -1403,6 +1605,7 @@ snapshot_bootstrapped() {
 
 cmd_new() {
   [ -n "$name" ] || usage_error "usage: $(synopsis_of new)"
+  refuse_fleet_word "$name"
   require_stack
   local instance; instance="$(iname_of "$name")"
   if [ -n "$from" ]; then
@@ -2082,6 +2285,10 @@ cmd_import() {
   embedded="$(awk '$1 == "name:" { print $2; exit }' <<<"$index")"
   [ -n "$embedded" ] || die "$file is not an incus/box export (no backup/index.yaml inside)"
   local target="${name:-$embedded}"
+  # Import is a mint too, and the reserved word binds every door that can put
+  # a name on this host — including the artifact's own embedded one, which no
+  # --name was given to override.
+  refuse_fleet_word "$target"
   # The boundary resolve_box enforces, seen from the other side: box will not
   # occupy a name ANY existing instance holds — not a box's (import is not
   # restore), and not an unmanaged VM's (not ours to shadow or clobber).
@@ -2674,7 +2881,42 @@ cmd_expose() {
 row="$(cmd_row "$cmd")" || unknown_command "$cmd"
 IFS='^' read -r _ _ pre _ action ok cnf <<<"$row"
 
-case ",$pre," in *,box,*)     need_name; inst="$(resolve_box "${args[0]}")" ;; esac
+# The reserved word, refused before anything is asked of the daemon — the same
+# order 'new' and 'import' put it in, where the guard precedes require_stack, so
+# the refusal never depends on a reachable Incus. Ahead of the 'box'
+# precondition for exactly that reason: resolving the FIRST positional is a
+# daemon round trip, and whether 'all' is a legal new name does not depend on
+# the answer. ':-' because rows without the token may have no second positional
+# at all, and this runs before need_arg2 under set -u; the empty string is not
+# the fleet word, so the usage errors below still come from need_name and
+# need_arg2 as they always did.
+case ",$pre," in *,newname,*) refuse_fleet_word "${args[1]:-}" ;; esac
+
+# 'all' short-circuits the resolve and nothing else: the name is still
+# required, so 'box restart' with no argument is still a usage error, and a
+# verb without 'fleet' resolves 'all' as an ordinary name and gets the
+# ordinary "no such box: all" — which is what makes 'box rm all' not a
+# command (#179 D5).
+fleet=0
+case ",$pre," in *,box,*)
+  need_name
+  # Spelled out rather than 'test && assign': under set -e a failing AND-list
+  # is a failing statement, and this one fails on every ordinary box name
+  # (SC2015).
+  case ",$pre," in
+    *,fleet,*) if [ "${args[0]}" = "$FLEET_WORD" ]; then fleet=1; fi ;;
+  esac
+  # The single-box path forwards everything after the name to incus; the fleet
+  # path cannot, because "this flag, once" and "this flag, to each of six
+  # boxes" are different acts and no lifecycle row asks for the second. Refuse
+  # rather than drop: a trailing word that silently vanishes is the one outcome
+  # with no way for the operator to notice.
+  if [ "$fleet" -eq 1 ] && [ "${#args[@]}" -gt 1 ]; then
+    usage_error "'$cmd $FLEET_WORD' takes nothing else — got '${args[1]}'. usage: $(synopsis_of "$cmd")"
+  fi
+  [ "$fleet" -eq 1 ] || inst="$(resolve_box "${args[0]}")"
+  ;;
+esac
 case ",$pre," in *,arg2,*)    need_arg2 ;; esac
 case ",$pre," in *,stopped,*) require_stopped "$inst" "${args[0]}" ;; esac
 # The prompt comes from the ROW, never from here. A shared string can only be
@@ -2692,6 +2934,13 @@ case "$action" in
     ;;
   incus:*)
     sub="${action#incus:}"
+    if [ "$fleet" -eq 1 ]; then
+      # The exit status is the aggregate (#179 D4): non-zero if any box
+      # failed, and 'exit' rather than a bare call so the status is the one
+      # the operator sees whatever set -e would otherwise make of it.
+      run_fleet "$sub" "$ok" || exit $?
+      exit 0
+    fi
     # word-split intentionally: a subcommand may carry a flag ("delete -f")
     # shellcheck disable=SC2086
     incus $sub "$inst" "${args[@]:1}"

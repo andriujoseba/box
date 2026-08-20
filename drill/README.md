@@ -109,8 +109,23 @@ lifecycle works (b), no cross-user visibility (c), names don't collide (d),
 `expose`/`setup-host`/`doctor` answer honestly at the tier (e/f), the boxes
 ride `boxnet` under the full isolation contract including the cross-user
 sibling drop (g), the private-bridge escape hatches are closed (h), the grant
-survives an incus-user restart (k), and `revoke --purge` erases one user
-without touching the other (l). Everything it makes, it deletes.
+survives an incus-user restart (k), `revoke --purge` erases one user
+without touching the other (l), and the fleet word `all` stops at the tier
+boundary (p) — one user's `box down all` acts on their own box and leaves the
+other's RUNNING, and an admin's stops the admin's own box in `default` while
+reaching into no `user-<uid>` project, all read back from the admin socket
+rather than off box's own output. Everything it makes, it deletes.
+
+Criterion (p) is here rather than only in `test/cli.sh` because of what the
+two can prove. The unit drive shims Incus, so it can show box acts on exactly
+the set the daemon hands it; only a real two-user daemon can show what that
+set *is* for a restricted caller. `all` was the first verb whose blast radius
+is a set, so the boundary (c) measures for reading is measured again for
+writing (#179). It mints one box of the admin's own before the admin probe,
+because every other mint in the file belongs to a rehearsal user: with an
+empty `default`, root's `all` would enumerate nothing and leave both user
+projects untouched for the trivial reason that it did nothing — the absence of
+an action passing for a scoped one.
 
 `--container` skips VM mints (CI runs it this way on every PR — the tier's
 semantics are instance-type-independent); on real hardware run it bare so the
