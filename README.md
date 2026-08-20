@@ -284,17 +284,31 @@ carries `@RIG_REPO@`/`@RIG_REF@` tokens that box resolves at mint from the
 environment:
 
 ```sh
-box new --name work --template claude-box              # heavy-duty/rig @ main
+box new --name work --template claude-box              # heavy-duty/rig @ its LATEST RELEASE
+RIG_REF=0.3.0 box new --name pinned --template claude-box   # a rig release you pick
+RIG_REF=main  box new --name tip    --template claude-box   # rig's development tip
 RIG_REPO=you/rig RIG_REF=my-branch \
   box new --name trial --template claude-box           # a rig branch under review
 ```
 
-Both directions of that edge track `main` unpinned today — said honestly,
-the same way rig documents box's unpinned install
-([rig#29](https://github.com/heavy-duty/rig/issues/29)) — until the release
-flow lands ([rig#32](https://github.com/heavy-duty/rig/issues/32),
-[#83](https://github.com/heavy-duty/box/issues/83)). The pin covers both the
-installer fetched and the tree it installs, and the values are
+**`RIG_REF` unset means rig's latest release**, resolved at mint off
+`https://github.com/<repo>/releases/latest` — the same channel shape
+`install.sh` gives box itself (unset = latest release, a tag pins, `main` is
+the development tip), and the same one-`HEAD`-request probe, so no API token
+and no rate limit. It is resolved rather than written into the tree because a
+pin that has to be rewritten every release is a pin that eventually is not
+([#150](https://github.com/heavy-duty/box/issues/150), closing the last step
+of [rig#32](https://github.com/heavy-duty/rig/issues/32) /
+[#83](https://github.com/heavy-duty/box/issues/83)).
+
+A mint that cannot resolve the pin **fails, and says so** — falling back to
+`main` is the defect that rule exists to close, and doing it quietly would
+hide it exactly where nobody looks. Pass `RIG_REF` yourself to move on. Only
+a seed that actually installs rig resolves anything: `blank` carries no pin
+token, so it mints on a host that cannot reach github.com at all.
+
+The pin covers both the installer fetched and the tree it installs, and the
+values — the resolved tag included, since it arrives off an HTTP header — are
 allowlist-validated on the host before they touch the YAML.
 
 ```sh

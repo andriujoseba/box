@@ -104,7 +104,8 @@ converge an *existing* box to a newer spec. Anything that joins a tailnet or
 holds a key (the staging-box tenant's workload join) stays operator-run
 through `box shell`; box prints it as a next step and never sees the key. The
 seed's rig install is pinned by `RIG_REPO`/`RIG_REF` at mint (default
-`heavy-duty/rig@main`, unpinned — the honest edge until rig#32's releases),
+`heavy-duty/rig` at its latest release, resolved at mint — box#150 closed the
+unpinned `main` edge rig#32's releases had been waiting on),
 and box's template suite holds the line with fail-closed absence greps: no
 agent CLI, no docker, no tailscale, no context-file heredocs in any
 template, ever again.

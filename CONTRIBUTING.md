@@ -81,10 +81,12 @@ same fixed candidate refs: rig’s drill uses the candidate box ref, while
 box’s drill mints with the candidate rig ref. Static refs dissolve the
 box↔rig runtime recursion; no repository needs to release first.
 
-A known gap remains from box#81: released box templates still default
-`RIG_REF` to `main`, so a later mint may consume a rig revision other than
-the one drilled. This conversion does not change that behavior or claim the
-gap is closed.
+That gap from box#81 — released box templates defaulting `RIG_REF` to `main`,
+so a later mint consumed a rig revision other than the one drilled — is
+closed by box#150. An unset `RIG_REF` now resolves rig’s latest release at
+mint, so the combination a user receives is a released box against a released
+rig. A drill still pins both refs explicitly, because a candidate is a branch
+on a fork and no release names it yet.
 
 ## Scope labels
 
