@@ -2076,6 +2076,29 @@ check "info: ...and neither does a stamped box that predates the key (#181)" 1 "
   info_has "$STAMPED" '^ID '
 check "info: ...while the box itself still renders, exit 0 (#181)" \
   0 "NAME       work" infobox "$STAMPED"
+# 'list' is the human table and stays four narrow columns: a full UUID would
+# dominate it, and the audience that wants an id is reading --json or 'info'.
+# Driven, not asserted on the source — the fixture carries an id and the table
+# must simply never show one.
+listbox() {  # listbox <cfg-file> — 'box list' against a canned config
+  env FAKE_INCUS_LOG=/dev/null FAKE_CFG="$1" FAKE_ROW='work,RUNNING,VIRTUAL-MACHINE,0' \
+    PATH="$MSHIM:$PATH" "$BOX" list </dev/null 2>&1
+}
+list_has_id() { listbox "$1" | grep -qE '(^|[[:space:]])ID([[:space:]]|$)|[0-9a-f]{8}-[0-9a-f]{4}-'; }
+check "list: still prints the box it always did (#181)" 0 "work" listbox "$IDCFG"
+check "list: ...and never the id — that is what --json and 'info' are for (#181)" 1 "" \
+  list_has_id "$IDCFG"
+# A snapshot and a restore are the SAME box, so neither writes the key. cmd_new
+# and cmd_import are the only minting doors, and only they re-stamp.
+snapshot_leaves_id_alone() {
+  ! awk '/^cmd_snapshot\(\) \{/,/^\}/' "$ROOT/bin/box" | grep -q 'user\.box\.id'
+}
+check "snapshot: leaves the id alone — a snapshot is the same box (#181)" 0 "" \
+  snapshot_leaves_id_alone
+# 'restore' is a table row straight to 'incus snapshot restore', so there is no
+# function to inspect: what proves it is that the row has no re-stamp in it.
+check "restore: is a passthrough row, so it cannot rewrite the id (#181)" 0 "" \
+  bash -c 'grep -F "\"restore^" "'"$ROOT"'/bin/box" | grep -qv "user.box.id"'
 # A pre-rename box carries user.claudebox=1 and no metadata at all, and is
 # always a Claude box — the same mapping box_user() makes, honored forever.
 PRERENAME="$MWORK/prerename.cfg"; printf 'user.claudebox 1\n' > "$PRERENAME"
@@ -5350,6 +5373,12 @@ check "an ordinary rename target still reaches incus" 0 "renamed work to archive
   renamebox archive
 check "...as a real 'incus rename' call" 0 "1" \
   fleet_calls rename
+# ...and the identity rides straight through it, which is the whole of #181:
+# 'rename' moves the NAME and touches no config, so a box that was renamed is
+# still provably the same box. Asserted on the drive rather than on the source,
+# because what matters is that no call was made.
+check "rename: the id is never written, so it survives the rename (#181)" 1 "" \
+  grep -qE 'config (set|unset) .*user\.box\.id' "$FLOG"
 # Same contract as the mint doors, and the reason the token runs ahead of the
 # 'box' precondition: refusing a name box will never carry must not depend on a
 # reachable daemon. This suite runs with no incus on PATH, so the bare call is
