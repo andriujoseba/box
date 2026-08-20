@@ -356,14 +356,18 @@ record_sha() {   # <repo> <ref> → the seven-char commit, or 'unresolved'
   # that 404s (a typo'd --repo, a private fork) makes git ask for credentials
   # on the terminal, and an unattended drill would sit at that prompt forever —
   # forty minutes of work waiting on a username nobody is there to type.
-  # An ANNOTATED tag answers with two lines: the tag OBJECT first, then the
-  # commit it points at as `refs/tags/<t>^{}`. Taking line 1 there records a
-  # 40-hex string that is a valid object and not a tree anyone can check out —
-  # and the validator below cannot tell, because it is hex. Prefer the peeled
-  # line when the remote sends one; the first line is right for everything else.
+  # An ANNOTATED tag resolves to the tag OBJECT: a 40-hex string that is a valid
+  # object and not a tree anyone can check out — and the validator below cannot
+  # tell, because it is hex. The commit lives on a SECOND ref, `refs/tags/<t>^{}`,
+  # and ls-remote matches a pattern against the ref's tail component, so an exact
+  # `<t>` selects the tag object ALONE. Asking for the peel is the only way to be
+  # sent it; a peel-preferring reader over a `"$ref"`-only query prefers a line
+  # that never arrives. Both patterns go out, the peeled answer wins where there
+  # is one, and a branch or lightweight tag — which has no peeled ref — is
+  # unaffected, because a pattern matching nothing changes no output.
   if command -v git >/dev/null 2>&1; then
     sha="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true timeout -k 5 25 \
-             git ls-remote "https://github.com/$repo" "$ref" 2>/dev/null \
+             git ls-remote "https://github.com/$repo" "$ref" "$ref^{}" 2>/dev/null \
            | awk '$2 ~ /\^\{\}$/ { peeled = substr($1, 1, 7); exit }
                   NR == 1       { first  = substr($1, 1, 7) }
                   END           { if (peeled != "") print peeled; else print first }')"

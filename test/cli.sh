@@ -2930,18 +2930,38 @@ check "drill record: ...and neither is a mangled one" 0 "[wall clock not measure
 RECSHIM="$RECWORK/shim"; mkdir -p "$RECSHIM"
 cat > "$RECSHIM/git" <<'SHIM'
 #!/usr/bin/env bash
-# Fake git: 'ls-remote <url> <ref>' prints $FAKE_LSREMOTE as the SHA, or nothing
-# (an unknown ref). Anything else exits 1, as a git that cannot would.
+# Fake git: 'ls-remote <url> <pattern>...' prints $FAKE_LSREMOTE as the SHA, or
+# nothing (an unknown ref). Anything else exits 1, as a git that cannot would.
 # FAKE_PEELED, when set, makes it answer the way a real remote answers for an
 # ANNOTATED tag: the tag object first, then the commit as refs/tags/<t>^{}.
+#
+# It answers PATTERN BY PATTERN, which is the whole point of it. `refs/tags/<t>`
+# and `refs/tags/<t>^{}` are two separate refs, and ls-remote matches a pattern
+# against the ref's tail component — so an exact `<t>` selects the tag object
+# ALONE and the peeled line is only ever sent to a caller that asked for `<t>^{}`
+# by name. A shim that appends the peeled line regardless models the response
+# somebody expected instead of the protocol, and confirms their expectation by
+# construction: that is how a version of this file shipped a peel-preferring awk
+# over a query that could never return a peeled line to prefer.
 [ "${1:-}" = ls-remote ] || exit 1
 [ -n "${FAKE_LSREMOTE:-}" ] || exit 0
+ref=''; peel=''
+for pat in "${@:3}"; do
+  case "$pat" in
+    *'^{}') peel=1 ;;
+    *)      [ -n "$ref" ] || ref="$pat" ;;
+  esac
+done
 if [ -n "${FAKE_PEELED:-}" ]; then
-  printf '%s\trefs/tags/%s\n'      "$FAKE_LSREMOTE" "${3:-v1}"
-  printf '%s\trefs/tags/%s^{}\n'   "$FAKE_PEELED"   "${3:-v1}"
+  printf '%s\trefs/tags/%s\n' "$FAKE_LSREMOTE" "${ref:-v1}"
+  # Only for a caller that named the peeled ref. A real remote sends nothing
+  # here otherwise, however annotated the tag is.
+  [ -n "$peel" ] && printf '%s\trefs/tags/%s^{}\n' "$FAKE_PEELED" "${ref:-v1}"
   exit 0
 fi
-printf '%s\trefs/heads/%s\n' "$FAKE_LSREMOTE" "${3:-main}"
+# A branch or a lightweight tag has no peeled ref at all, so the extra pattern
+# matches nothing and the answer is one line whether or not it was asked for.
+printf '%s\trefs/heads/%s\n' "$FAKE_LSREMOTE" "${ref:-main}"
 SHIM
 cat > "$RECSHIM/curl" <<'SHIM'
 #!/usr/bin/env bash
@@ -2963,17 +2983,32 @@ check "drill record: ...without asking any remote about it" 0 "[1234567]" \
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: a branch resolves through git ls-remote" 0 "[abcdef1]" \
   shim 'export FAKE_LSREMOTE=abcdef1234567890abcdef1234567890abcdef12; printf "[%s]" "$(record_sha o/r main)"'
-# An ANNOTATED tag answers with the tag OBJECT first and the commit second. The
-# first line is 40 hex characters, so the validator below cannot catch it: the
-# record would name an object nobody can check out, which is the exact failure
-# this function's whole apparatus exists to refuse. --ref v0.10.0 is a shape a
-# release drill plausibly takes.
+# An ANNOTATED tag resolves to the tag OBJECT, 40 hex characters, so the
+# validator cannot catch it: the record would name an object nobody can check
+# out, which is the exact failure this function's whole apparatus exists to
+# refuse. --ref v0.10.0 is a shape a release drill plausibly takes.
+#
+# This passes ONLY because record_sha asks for `<ref>^{}` by name. The shim
+# below sends the peeled line to a caller that requested it and to nobody else,
+# which is what a real remote does — verified against github.com/git/git, where
+# `ls-remote … v2.51.0` answers with the tag object 6d075e4 alone and the commit
+# c44beea arrives only when `v2.51.0^{}` is asked for too. An earlier shim here
+# appended the peel unconditionally and so proved nothing about the query.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: an annotated tag records the COMMIT, not the tag object" 0 \
   "[beef111]" \
   shim 'export FAKE_LSREMOTE=dead0000dead0000dead0000dead0000dead0000
         export FAKE_PEELED=beef1111beef1111beef1111beef1111beef1111
         printf "[%s]" "$(record_sha o/r v0.10.0)"'
+# ...and the shim is only worth that if it withholds the peel from a caller who
+# did not ask. Asserted directly, because every claim above rests on it.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and the fake remote peels only when the peel is REQUESTED" 0 \
+  "[1 lines][2 lines]" \
+  shim 'export FAKE_LSREMOTE=dead0000dead0000dead0000dead0000dead0000
+        export FAKE_PEELED=beef1111beef1111beef1111beef1111beef1111
+        printf "[%s lines]" "$(git ls-remote https://x v0.10.0 | grep -c .)"
+        printf "[%s lines]" "$(git ls-remote https://x v0.10.0 "v0.10.0^{}" | grep -c .)"'
 # ...and a lightweight tag or a branch, which send one unpeeled line, are
 # unaffected — the peel is preferred where offered, not required.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
@@ -3343,8 +3378,15 @@ pty_verdicts() {   # pty_verdicts <env...> — the verdicts, on a real terminal
     "bash -c 'set -u; . \"$VERDFN\"; ok x; no y; note z; phase A B'" /dev/null
 }
 pty_has_ansi() { pty_verdicts "$@" | grep -q "$(printf '\033')"; }
-if command -v script >/dev/null 2>&1 && pty_verdicts >/dev/null 2>&1; then
-  check "drill colour: on a real terminal the verdicts ARE coloured" 0 "" pty_has_ansi
+# Every case PINS the variable — the baseline unsets it, the other two set it.
+# Inheriting it is what a suite must not do here: NO_COLOR=1 is a valid thing
+# for a developer or a review host to have set, and a baseline that inherits it
+# asserts "ANSI is present" while being told to suppress ANSI. It then fails in
+# precisely the environment whose behaviour it exists to test, and the green it
+# gives anywhere else is a fact about the caller's shell, not about the guard.
+if command -v script >/dev/null 2>&1 && pty_verdicts -u NO_COLOR >/dev/null 2>&1; then
+  check "drill colour: on a real terminal the verdicts ARE coloured" 0 "" \
+    pty_has_ansi -u NO_COLOR
   check "drill colour: ...and NO_COLOR alone turns them off, terminal or not" 1 "" \
     pty_has_ansi NO_COLOR=1
   # The empty case is the one implementations get wrong, and the only one the
@@ -3378,8 +3420,11 @@ check "drills/README says the emitted record is a starting point" 0 "" \
 check "drills/README says where the shared run ID comes from" 0 "" \
   grep -qF -- '--run-id' "$ROOT/drills/README.md"
 
-rm -rf "$RECWORK"
-rm -f "$LEDGERFN" "$VERDFN" "$SUMFN" "$RECFN"
+# Every extracted block and every scratch directory, including the two blocks
+# and the fake-`sg` tree added in round 2 — a stray directory on /tmp holding an
+# executable called `sg` is a worse leftover than a stray file.
+rm -rf "$RECWORK" "$REXWORK"
+rm -f "$LEDGERFN" "$VERDFN" "$SUMFN" "$RECFN" "$REEXECFN" "$SETFN"
 
 # The docs keep the new promises.
 check "help setup-host names BOX_SUBNET" 0 "BOX_SUBNET" "$BOX" help setup-host
