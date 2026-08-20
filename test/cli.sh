@@ -2369,6 +2369,286 @@ check "import: ...but NO invented mint time (#131)" 1 "" \
 check "import: ...and no invented mint version either (#131)" 1 "" \
   import_set "$LLOG" 'user\.box\.version='
 
+# --- the restricted tier's import wall (#160, reported as #156) -------------
+# The measured failure: a box exported on the admin tier, imported by a
+# restricted user, unpacks to 100% — 1.38GB — and is THEN rejected on
+# "volatile.uuid.generation ... in project user-1000 is forbidden". The key is
+# incus's own, stamped on every instance it mints; the project is restricted
+# because that is what the tier IS. So the whole transfer is spent to learn a
+# fact box could read out of the artifact's index.yaml before starting.
+#
+# This is the round-trip the acceptance shape asks for, taken mocked: the
+# export half is already proven above and on the admin tier, and what has
+# never been exercised is the way back IN under a restricted identity. The
+# fake incus logs every call it receives, so "before the transfer" is asserted
+# as the ABSENCE of an 'incus import' line — the strongest form available
+# here, and the one that fails if the wall is ever moved below the transfer.
+RESTRICTED="$(mktemp -d)"
+cat > "$RESTRICTED/id" <<'SHIM'
+#!/usr/bin/env bash
+# A non-root user in 'incus' and NOT in 'incus-admin' — box_tier()'s restricted
+# arm, decided from live credentials exactly as it is on a real host.
+case "${1:-}" in
+  -u)  echo 1000 ;;
+  -nG) echo "boxuser incus" ;;
+  -un) echo boxuser ;;
+  *)   echo "uid=1000(boxuser) gid=1000(boxuser) groups=1000(boxuser),988(incus)" ;;
+esac
+SHIM
+chmod +x "$RESTRICTED/id"
+
+# An artifact whose index.yaml embeds the instance config, which is where the
+# forbidden keys ride. The bare ARTIFACT above carries a name and nothing else
+# — deliberately kept, because it is also the no-evidence fixture below.
+VM_IDX="$IWORK/vm-index.yaml"
+cat > "$VM_IDX" <<'IDX'
+name: work
+backend: dir
+pool: default
+type: virtual-machine
+config:
+  instance:
+    architecture: x86_64
+    config:
+      image.os: Debian
+      limits.cpu: "4"
+      volatile.base_image: 5b1f9d0c4a
+      volatile.cloud-init.instance-id: 3d0b7e11
+      volatile.eth0.hwaddr: 00:16:3e:2f:11:aa
+      volatile.last_state.power: RUNNING
+      volatile.uuid: 8f4a1c22-0000-4000-8000-000000000000
+      volatile.uuid.generation: 8f4a1c22-0000-4000-8000-000000000000
+    devices:
+      root:
+        path: /
+        pool: default
+        type: disk
+IDX
+VM_ART="$IWORK/vm-work.tar.gz"
+mkdir -p "$IWORK/vmart/backup" && cp "$VM_IDX" "$IWORK/vmart/backup/index.yaml"
+tar -czf "$VM_ART" -C "$IWORK/vmart" backup/index.yaml
+
+importfile() {  # importfile <logfile> <artifact> [flags...] — the real box, shimmed
+  local log="$1" art="$2"; shift 2
+  : > "$log"
+  env FAKE_INCUS_LOG="$log" FAKE_CFG="" \
+    PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$ISHIM:$PATH" \
+    "$BOX" import "$art" "$@" </dev/null >"$log.out" 2>&1
+  local rc=$?
+  cat "$log.out"
+  return "$rc"
+}
+# The transfer itself. Every incus call lands in the log, so its absence is
+# proof the multi-GB copy never began — not proof that a message was printed.
+import_transferred() { grep -qE '^incus import ' "$1"; }
+
+RESTLOG="$IWORK/restricted-import.log"
+export SHIM_PREFIX="$RESTRICTED"
+check "import: the restricted tier is refused, not left to incus (#160)" 1 \
+  "REFUSED BEFORE THE TRANSFER" importfile "$RESTLOG" "$VM_ART"
+# The six things D2 requires the refusal to name: the tier, the project, the
+# offending key, that nothing was transferred, who can land it, and --force
+# with its price. One check each, so a regression names which clause went.
+check "import: ...the refusal names the TIER (#160 D2)" 1 "your tier is 'restricted'" \
+  importfile "$RESTLOG" "$VM_ART"
+check "import: ...and the project the tier puts you in (#160 D2)" 1 "user-1000" \
+  importfile "$RESTLOG" "$VM_ART"
+check "import: ...the refusal names the KEY incus would have died on (#160 D2)" 1 \
+  "volatile.uuid.generation" importfile "$RESTLOG" "$VM_ART"
+# The sentence that distinguishes this failure from the reported one: there,
+# the whole 1.38GB had landed before incus spoke.
+check "import: ...that NOTHING was transferred (#160 D2)" 1 "nothing was transferred" \
+  importfile "$RESTLOG" "$VM_ART"
+check "import: ...and the WAY OUT — who can land it instead (#160 D2)" 1 "incus-admin" \
+  importfile "$RESTLOG" "$VM_ART"
+check "import: ...and --force, the override (#160 D2, D3)" 1 "--force" \
+  importfile "$RESTLOG" "$VM_ART"
+# Priced, not merely offered: --force costs the full transfer and then incus's
+# error if the project really does refuse. A message naming the escape hatch
+# without its price would sell the very transfer this wall exists to save.
+check "import: ...priced honestly rather than merely offered (#160 D2, D3)" 1 \
+  "full transfer" importfile "$RESTLOG" "$VM_ART"
+# Naming the way out is not the same as inventing one. The admin-side route
+# into a restricted project is unmeasured (#160 direction 4), so the message
+# says so and hands over no command nobody has run.
+check "import: ...and says that route is unmeasured rather than promising it (#160 D2)" 1 \
+  "unmeasured" importfile "$RESTLOG" "$VM_ART"
+# The absence assertion, ANCHORED. D2 forbids printing an 'incus'/'box'
+# command line asserting a route nobody has run, and the readable form of that
+# is: no line of the message may begin with a command. Anchoring is what lets
+# the message still say 'incus config set' mid-sentence — that names the
+# MECHANISM incus applies, and explaining a mechanism is not offering a route.
+# An unanchored grep would have to choose between the two, and it would choose
+# by banning the explanation, which is the honest half.
+check "import: ...offering no command line to run (#160 D2)" 1 "" \
+  grep -qE '^box: +(sudo )?(incus|box) ' "$RESTLOG.out"
+# And belt-and-braces on the specific incantations an admin-assist route would
+# have to be written with, wherever in a line they appear.
+check "import: ...naming no admin-assist incantation at all (#160 D2)" 1 "" \
+  grep -qE 'incus (import|move|copy|admin) |box (grant|import) |--project' "$RESTLOG.out"
+# The whole point of the issue, and the assertion that fails if the wall ever
+# drifts below the transfer: incus was never asked to import anything.
+check "import: ...BEFORE the transfer — incus import is never reached (#160)" 1 "" \
+  import_transferred "$RESTLOG"
+# And box never announced a transfer it was about to refuse.
+check "import: ...so it never announces an import it will not perform (#160)" 1 "" \
+  grep -qF 'box: importing' "$RESTLOG.out"
+# EVERY key, not a sample. The keys sort alphabetically and the one incus
+# actually died on sorts last of the six this artifact carries, so a head -N
+# drops precisely the key the message exists to name. Assert both ends.
+check "import: ...listing every key it carries, not a sample (#160)" 1 "volatile.base_image" \
+  importfile "$RESTLOG" "$VM_ART"
+check "import: ...and counting them (#160)" 1 "carries 6 such keys" \
+  importfile "$RESTLOG" "$VM_ART"
+# One key is not a special case of six, under 'set -euo pipefail': the
+# singular arm is where an '&& noun=key' would end the run on the plural
+# branch, silently and mid-message. Drive it, rather than reasoning about it.
+ONE_ART="$IWORK/one-key.tar.gz"
+mkdir -p "$IWORK/oneart/backup"
+printf 'name: work\nconfig:\n  instance:\n    config:\n      volatile.uuid: 8f4a\n' \
+  > "$IWORK/oneart/backup/index.yaml"
+tar -czf "$ONE_ART" -C "$IWORK/oneart" backup/index.yaml
+ONELOG="$IWORK/one-key.log"
+check "import: an artifact carrying ONE such key still refuses cleanly (#160)" 1 \
+  "carries 1 such key" importfile "$ONELOG" "$ONE_ART"
+check "import: ...reaching the end of the message, not dying inside it (#160)" 1 \
+  "THE WAY OUT" importfile "$ONELOG" "$ONE_ART"
+# No evidence is not evidence of trouble. An artifact whose index.yaml embeds
+# no config tells box nothing about what it carries, and refusing there would
+# refuse artifacts nothing is known about — so it takes the old path.
+BAREREST="$IWORK/bare-restricted.log"
+check "import: an artifact with no readable config is NOT refused (#160)" 0 \
+  "imported work" importfile "$BAREREST" "$ARTIFACT"
+check "import: ...it degrades to the old path rather than guessing (#160)" 0 "" \
+  import_transferred "$BAREREST"
+
+# Config that is READ and cleared, which is the stronger half of the same
+# point: the fixture above has no config at all, so it proves only that box
+# refuses to guess. This one embeds a config section box parses in full and
+# finds nothing low-level in — an artifact a restricted project has no reason
+# to reject — and it goes through. Without it, a reader that swept up every
+# key it saw would still pass every test above.
+CLEAN_IDX="$IWORK/clean/backup/index.yaml"
+mkdir -p "$IWORK/clean/backup"
+cat > "$CLEAN_IDX" <<'IDX'
+name: work
+backend: dir
+pool: default
+type: container
+config:
+  instance:
+    architecture: x86_64
+    config:
+      image.os: Debian
+      limits.cpu: "4"
+      limits.memory: 4GiB
+      user.box: "1"
+    devices:
+      root:
+        path: /
+        pool: default
+        type: disk
+IDX
+CLEAN_ART="$IWORK/clean-work.tar.gz"
+tar -czf "$CLEAN_ART" -C "$IWORK/clean" backup/index.yaml
+CLEANLOG="$IWORK/clean-import.log"
+check "import: restricted tier + an artifact with no low-level keys imports (#160)" 0 \
+  "imported work" importfile "$CLEANLOG" "$CLEAN_ART"
+check "import: ...reaching the transfer like any other (#160)" 0 "" \
+  import_transferred "$CLEANLOG"
+check "import: ...so the wall is the KEYS and not the tier alone (#160 D1)" 1 "" \
+  grep -qF 'REFUSED BEFORE THE TRANSFER' "$CLEANLOG.out"
+
+# --force is the door (#160 D3). It exists because the refusal is an
+# INFERENCE — read off the artifact's keys, with only the VM case measured —
+# and an inference must never be the last word on a supported tier's own
+# file. Same artifact, same tier, same keys as the refusal above: the only
+# difference is the flag, so what these assert is the flag and nothing else.
+FORCELOG="$IWORK/force-import.log"
+check "import: --force skips the pre-flight on the restricted tier (#160 D3)" 0 \
+  "imported work" importfile "$FORCELOG" "$VM_ART" --force
+check "import: ...and really does reach 'incus import' (#160 D3)" 0 "" \
+  import_transferred "$FORCELOG"
+check "import: ...printing no refusal it just overrode (#160 D3)" 1 "" \
+  grep -qF 'REFUSED BEFORE THE TRANSFER' "$FORCELOG.out"
+# -f is the same flag, and the OPTIONS block promises both spellings.
+check "import: ...under its short spelling too (#160 D3)" 0 "imported work" \
+  importfile "$IWORK/force-short.log" "$VM_ART" -f
+# The door swings one way. --force does not disable the wall for the next
+# import, and it is not a mode: re-run without it and the refusal is back.
+check "import: ...leaving the wall standing for the next import (#160 D3)" 1 \
+  "REFUSED BEFORE THE TRANSFER" importfile "$RESTLOG" "$VM_ART"
+unset SHIM_PREFIX
+
+# The wall is tier-scoped, and this is what stops it becoming an import ban:
+# the SAME artifact, same keys, on the admin tier, goes through.
+ADMINLOG="$IWORK/admin-import.log"
+check "import: the admin tier imports that same artifact (#160)" 0 "imported work" \
+  importfile "$ADMINLOG" "$VM_ART"
+check "import: ...and its transfer really does start (#160)" 0 "" \
+  import_transferred "$ADMINLOG"
+check "import: ...with no restricted-tier refusal anywhere in sight (#160)" 1 "" \
+  grep -qF 'REFUSED BEFORE THE TRANSFER' "$ADMINLOG.out"
+
+# Ordering, asserted against the source too: a runtime absence proves the wall
+# fired on THIS fixture, and this proves it cannot be reordered under one that
+# does not. Same shape as the collision guard's assertion above.
+# shellcheck disable=SC2016  # the $-strings are literals inside bash -c
+check "import: the wall precedes 'incus import' in cmd_import (#160)" 0 "" bash -c '
+  fn="$(awk "/^cmd_import\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
+  wall="$(printf "%s\n" "$fn" | grep -n "artifact_lowlevel_keys" | head -1 | cut -d: -f1)"
+  run="$(printf "%s\n" "$fn" | grep -n "incus import" | head -1 | cut -d: -f1)"
+  [ -n "$wall" ] && [ -n "$run" ] && [ "$wall" -lt "$run" ]'
+
+# The key reader on its own. It decides what the wall refuses, so it is worth
+# proving it reads the artifact's keys and not merely something shaped like a
+# key: a restricted project blocks the low-level namespaces and nothing else,
+# and a reader that swept up ordinary config would refuse every artifact for
+# the wrong reason.
+LLKEYS="$(mktemp)"
+awk '/^artifact_lowlevel_keys\(\) \{/,/^\}/' "$BOX" > "$LLKEYS"
+check "import: the key reader was extracted (guards the awk)" 0 "volatile" cat "$LLKEYS"
+check "import: the extracted key reader is valid bash" 0 "" bash -n "$LLKEYS"
+lowlevel_keys() { bash -c '. "$0"; artifact_lowlevel_keys' "$LLKEYS" < "$1"; }
+lowlevel_has() { lowlevel_keys "$1" | grep -qE "$2"; }
+check "import: the key reader finds the key incus refused (#160)" 0 "" \
+  lowlevel_has "$VM_IDX" '^volatile\.uuid\.generation$'
+check "import: ...and the rest of the volatile set with it (#160)" 0 "" \
+  lowlevel_has "$VM_IDX" '^volatile\.eth0\.hwaddr$'
+check "import: ...but not config a restricted project allows (#160)" 1 "" \
+  lowlevel_has "$VM_IDX" '^image\.os$'
+check "import: ...nor the limits an operator legitimately sets (#160)" 1 "" \
+  lowlevel_has "$VM_IDX" '^limits\.'
+# 'raw.*' is the other low-level namespace a restricted project blocks. No box
+# artifact carries it today; a hand-rolled export can, and the wall should not
+# have to be rediscovered when one does.
+RAW_IDX="$IWORK/raw-index.yaml"
+printf 'name: work\nconfig:\n  instance:\n    config:\n      raw.qemu: -smbios foo\n' > "$RAW_IDX"
+check "import: the key reader also catches the raw.* namespace (#160)" 0 "" \
+  lowlevel_has "$RAW_IDX" '^raw\.qemu$'
+# An index with no config section yields nothing at all — the silent degrade
+# above, at the level of the reader rather than the command.
+check "import: an index with no config yields no keys (#160)" 1 "" \
+  lowlevel_has "$IWORK/backup/index.yaml" '.'
+rm -f "$LLKEYS"
+
+# The help says so before you spend the transfer to find out.
+check "help import warns the restricted tier off (#160)" 0 "ON THE RESTRICTED TIER" \
+  "$BOX" help import
+check "help import names the key class, not just the tier (#160)" 0 "volatile" \
+  "$BOX" help import
+check "help import keeps export one-way rather than implying parity (#160)" 0 "Export still works" \
+  "$BOX" help import
+# The override is documented where it is used and where it is listed, and in
+# both places with its price. A flag a user only ever meets in an error
+# message is a flag they meet at the worst possible moment.
+check "help import documents --force (#160 D3)" 0 "--force overrides that refusal" \
+  "$BOX" help import
+check "help import prices it there too, not just in the refusal (#160 D3)" 0 \
+  "pay the whole transfer" "$BOX" help import
+check "the OPTIONS block lists --force for import (#160 D3)" 0 \
+  "pre-flight refusal (import)" "$BOX" help
+
 # --- the read half: 'box info' must not let the mint be misread -------------
 # The whole hazard: MINTED carries a time that is deliberately NOT this host's,
 # and a reader who meets it alone will take it for one. The IMPORTED line sits

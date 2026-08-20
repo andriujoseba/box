@@ -207,7 +207,8 @@ OPTIONS
   --json                Emit Incus JSON instead of a table     (list, info)
   --instance-only       Export the live state only, no snapshots   (export)
   --force, -f           Destroy without asking (rm, restore); overwrite the
-                          file (export)
+                          file (export); skip the restricted tier's
+                          pre-flight refusal (import)
   --remote <r>          Act on Incus remote <r>                       (any)
   --help, -h            Help; after a command, help for that command
   --version, -V         Print the box version
@@ -603,8 +604,27 @@ Auth state rides along by design — the artifact carries the box's whole disk,
 logins included. That is the point (log in once, keep the file), and the same
 trust boundary as cloning an authed snapshot.
 
+ON THE RESTRICTED TIER, import is refused — before the transfer (#160). Your
+project is a restricted incus project, which is what the tier is made of, and
+a restricted project rejects the low-level 'volatile.*' config every artifact
+carries. Incus stamps those keys itself; nobody sets them, and there is no
+way to export without them. It applies an artifact's config through the same
+validation path as 'incus config set', so it rejects the restore as if you
+had typed them — and only after unpacking the whole disk. box reads the keys
+out of the artifact first and refuses up front, so the copy is never spent.
+Export still works: the artifact is good, it just takes the admin tier to
+land it. 'box export' is one-way from here until #160 says otherwise.
+
+--force overrides that refusal and hands the artifact to incus anyway. It is
+here because the refusal is read off the ARTIFACT and not off your project:
+only the VM case has been measured, so a container artifact may well land
+where box declined to try. Priced honestly — if the project does refuse, you
+pay the whole transfer and then incus's error, which is the cost the refusal
+exists to save. Nothing else about the import changes.
+
   box import work-20260718T120000Z.tar.gz
   box import work-20260718T120000Z.tar.gz --name work2
+  box import work-20260718T120000Z.tar.gz --force   # restricted tier: try anyway
 EOF
 ;;
     rename) cat <<'EOF'
@@ -2349,6 +2369,54 @@ cmd_export() {
   } >&2
 }
 
+# The low-level config keys an artifact carries, read out of its own
+# backup/index.yaml — the same bytes cmd_import already holds for the instance
+# name, so this costs no second pass over a multi-GB tarball. Prints one key
+# per line, sorted, nothing when there are none.
+#
+# Why these keys matter is the restricted tier (#160, reported as #156). A
+# restricted incus project refuses low-level instance config — 'volatile.*'
+# and 'raw.*' — and the restricted tier IS a restricted project: incus-user
+# creates 'user-<uid>' with restricted=true, which is the mechanism the whole
+# tier rides on (host/grant-user.sh:4-9). Nobody sets these keys; incus stamps
+# them on every instance it mints. But incus applies an ARTIFACT's config
+# through the same validation path as a typed 'incus config set', so it
+# rejects the restore as if the operator had set them by hand.
+#
+# PROVENANCE — what is measured here and what is inferred, so that whoever
+# overturns this knows exactly what they are overturning (#160 D4).
+#   MEASURED: one virtual-machine artifact, incus 6.0.4, refused on
+#     'volatile.uuid.generation' in project 'user-1000' (#156).
+#   INFERRED: that a CONTAINER artifact is refused the same way — it carries
+#     'volatile.*' keys too, but no container import has been run; and the key
+#     list itself, 'volatile.*' plus 'raw.*', which is incus's low-level
+#     namespace pair rather than a list anyone has watched a project reject
+#     key by key.
+# Written against the KEYS the artifact carries and not against its instance
+# type, because the refusal incus raises names a key and the project's block is
+# per-key. The costs are asymmetric and that is the whole argument: a wrong
+# refusal costs an import that might have worked, names who to ask, and is
+# undone by one flag (--force, #160 D3); a wrong permit costs the entire
+# transfer and then incus's error, which is the failure this path exists to
+# move earlier.
+#
+# DELIBERATELY NOT DONE: asking the daemon what this project actually
+# restricts ('restricted.instances.lowlevel' and its neighbours). That is a
+# live read the restricted tier may not be permitted to make, and branching on
+# its failure would put unmeasured daemon behaviour back on the very path this
+# wall exists to make honest (#160 D1). The artifact's own bytes are the only
+# input.
+#
+# SILENT on an artifact whose index.yaml embeds no config at all — a
+# hand-rolled export, or a format that kept the config elsewhere. No keys read
+# is no evidence, and refusing on no evidence would refuse artifacts nothing is
+# known about; such an import takes the old path and fails the old way, which
+# is no worse than before this existed.
+artifact_lowlevel_keys() {
+  awk '{ k = $1 }
+       sub(/:$/, "", k) && k ~ /^(volatile|raw)\./ { print k }' | sort -u
+}
+
 # The way back in. Everything 'incus import' restores is the ARTIFACT's truth
 # (disk, config, devices, snapshots); everything box then re-stamps is THIS
 # host's truth (the boundary tag, the placement contract, a fresh machine
@@ -2381,6 +2449,73 @@ cmd_import() {
   # The stack this lands on must exist first (a fresh host runs setup-host
   # before it re-imports) — same pre-flight as a mint, same tier-aware fix.
   require_stack
+  # The restricted tier's import wall (#160). It stands HERE — after every
+  # other pre-flight and immediately before the transfer — because the cost it
+  # exists to refuse is the transfer itself: incus rejects this restore AFTER
+  # the unpack reaches 100%, measured at 1.38GB on a real box (#156), and the
+  # key it names was never the operator's to set. Everything above still
+  # diagnoses itself: a name collision and a missing stack are their own
+  # errors, not this one.
+  #
+  # --force is the door through it (#160 D3), and it is tested FIRST so the
+  # flag skips the whole pre-flight rather than merely its die: an override
+  # that still read the artifact would still be an inference standing between
+  # a user of a supported tier and their own file. The flag's meaning across
+  # rm, restore and export is already "I know, do it anyway", and here it also
+  # happens to be how the container case gets measured on a real host without
+  # box having asserted anything about it first.
+  local blocked=""
+  if [ "$force" -ne 1 ] && [ "$(box_tier)" = restricted ]; then
+    blocked="$(artifact_lowlevel_keys <<<"$index")"
+  fi
+  if [ -n "$blocked" ]; then
+    local nkeys noun; nkeys="$(printf '%s\n' "$blocked" | wc -l)"
+    # '-ne 1 || noun=key' and never '-eq 1 && noun=key': under 'set -e' the
+    # && form exits the whole run on the common branch, where the test is the
+    # statement's last command and it failed. Same trap as #43's silent end.
+    noun=keys; [ "$nkeys" -ne 1 ] || noun=key
+    {
+      echo "box: ==================== REFUSED BEFORE THE TRANSFER ===================="
+      echo "box: your tier is 'restricted': your boxes live in the incus project"
+      echo "box: 'user-$(id -u)', and that project is RESTRICTED. It is what the tier is"
+      echo "box: made of, not a setting reachable from inside it, and a restricted"
+      echo "box: project refuses low-level instance config."
+      echo "box:"
+      echo "box: this artifact carries $nkeys such $noun — incus stamped them on the box"
+      echo "box: it was exported from, and nobody chose them:"
+      # ALL of them, never a head -N. The keys sort alphabetically and the one
+      # incus actually died on is 'volatile.uuid.generation' (#156), which is
+      # last in that order on a real VM artifact — so any truncation drops
+      # exactly the key this message exists to name. An instance carries a
+      # handful of these; the list is short and it is the evidence.
+      printf '%s\n' "$blocked" | sed 's/^/box:     /'
+      echo "box:"
+      # No line of this message may BEGIN with 'incus ' or 'box ' — a line
+      # that does reads as a command to run, and test/cli.sh asserts the
+      # absence anchored that way (#160 D2). Naming 'incus config set'
+      # mid-sentence is the mechanism being explained, not a route offered,
+      # and that distinction is exactly what the anchor draws.
+      echo "box: an artifact's config goes through the same validation path as a typed"
+      echo "box: 'incus config set', so incus refuses the restore as if you had set"
+      echo "box: those keys yourself — and refuses only after unpacking the entire"
+      echo "box: disk. That is the cost this message is here to save you (#156)."
+      echo "box:"
+      echo "box: THE WAY OUT: nothing was transferred and the artifact is untouched, so"
+      echo "box: it is still good anywhere. Landing it on THIS host takes the admin tier"
+      echo "box: (uid 0, or the 'incus-admin' group): ask whoever granted you your tier."
+      echo "box: No incantation is printed here on purpose — the admin-side route into"
+      echo "box: your project is itself unmeasured (#160)."
+      echo "box:"
+      echo "box: OR OVERRIDE ME: --force skips this check and hands the artifact"
+      echo "box: straight to incus anyway. This refusal is read off the ARTIFACT and"
+      echo "box: not off your project, and only the VM case has been measured — so it"
+      echo "box: may well go through. Priced honestly: if the project does refuse,"
+      echo "box: --force costs you the full transfer and then incus's error, which is"
+      echo "box: the cost this message just saved you."
+      echo "box: ===================================================================="
+    } >&2
+    die "the restricted tier cannot import this artifact — refused before the transfer, not after it (#160)"
+  fi
   echo "box: importing $file as $target..."
   if [ -n "$name" ]; then incus import "$file" "$name"; else incus import "$file"; fi
   # Re-stamp the boundary tag. user.* keys ride inside the artifact, so a box
