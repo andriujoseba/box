@@ -4791,6 +4791,9 @@ cat > "$FSHIM/incus" <<'SHIM'
 #   FAKE_FAIL    space-separated names whose lifecycle call fails, as incus
 #                fails: non-zero, with a reason on stderr
 #   FAKE_STATES  space-separated name=STATE pairs; anything unlisted is RUNNING
+#   FAKE_DEAD    non-empty: 'incus list' fails the way a daemon that is not
+#                answering fails — non-zero, a reason on stderr, nothing on
+#                stdout. Not the same thing as reporting no boxes.
 printf 'incus %s\n' "$*" >> "$FAKE_INCUS_LOG"
 state_of() {   # $1 = box name
   for kv in ${FAKE_STATES:-}; do
@@ -4800,6 +4803,10 @@ state_of() {   # $1 = box name
 }
 case "${1:-}" in
   list)
+    if [ -n "${FAKE_DEAD:-}" ]; then
+      echo "Error: The incus daemon doesn't appear to be started" >&2
+      exit 1
+    fi
     # boxes_csv() asks twice — user.box=1 then the legacy user.claudebox=1 —
     # and dedupes. Only the modern tag answers here, so a fleet that acted
     # twice per box would show up as duplicate lifecycle calls in the log.
@@ -4850,6 +4857,18 @@ fleetbox() {   # fleetbox <boxes> <failing> <box args...> — the real box, shim
   env FAKE_INCUS_LOG="$FLOG" FAKE_BOXES="$boxes" FAKE_FAIL="$failing" \
     FAKE_STATES="$FLEET_STATES" PATH="$FSHIM:$PATH" "$BOX" "$@" </dev/null 2>&1
 }
+# The same box, against a daemon that does not answer at all. Deliberately a
+# separate helper rather than a FAKE_BOXES value: "the daemon said no boxes"
+# and "the daemon said nothing" are the two states this round is about telling
+# apart, and they should not share a spelling in the drive either.
+deadbox() {   # deadbox <box args...>
+  : > "$FLOG"
+  env FAKE_INCUS_LOG="$FLOG" FAKE_BOXES="one two" FAKE_FAIL="" FAKE_DEAD=1 \
+    PATH="$FSHIM:$PATH" "$BOX" "$@" </dev/null 2>&1
+}
+# An absence assertion, as a non-zero exit: 'check' matches a substring's
+# presence, so "it does NOT say the D6 line" needs the grep to be the command.
+dead_says_empty() { deadbox "$@" | grep -q 'nothing to'; }
 # The same, with a mixed-state daemon: <name=STATE ...> first, anything
 # unlisted is RUNNING. Set-then-clear rather than a `VAR=x fn` prefix, whose
 # persistence past the call is a bash-version question I would rather not ask.
@@ -5041,6 +5060,38 @@ check "all: no boxes at all exits 0" 0 "nothing to restart" \
 check "all: no boxes — and it called no lifecycle verb" 1 "" \
   grep -qE '^incus restart ' "$FLOG"
 check "all: 'down all' on an empty host says so too" 0 "nothing to down" \
+  fleetbox "" "" down all
+
+# --- ...and a daemon that never answered is NOT an empty host ---------------
+# The other side of D6, and the one that has to be told apart from it: an empty
+# 'rows' means "no boxes" only if the question was asked and answered. A daemon
+# that refused leaves it empty too, and reporting THAT as D6 makes 'box start
+# all || alert' pass a run in which nothing happened at all — #179's own
+# motivating scenario, a fleet start fired before incusd is up. run_fleet reads
+# boxes_csv's status explicitly, because the '|| exit $?' call site suppresses
+# errexit through the whole function body.
+check "dead daemon: 'down all' does not claim the host is empty, and exits non-zero" 1 "not answering" \
+  deadbox down all
+check "dead daemon: ...having called no lifecycle verb" 1 "" \
+  grep -qE '^incus (stop|start|restart) ' "$FLOG"
+check "dead daemon: ...never reporting it as D6's empty fleet" 1 "" \
+  dead_says_empty down all
+check "dead daemon: 'start all' says the same thing" 1 "not answering" \
+  deadbox start all
+check "dead daemon: 'restart all' too" 1 "not answering" \
+  deadbox restart all
+# The message is require_stack()'s, so the two doors say one thing about a
+# daemon that is not there — and it names the diagnosis rather than the fault.
+check "dead daemon: it points at the same diagnosis require_stack does" 1 "box doctor" \
+  deadbox down all
+# require_stack() no-ops under --remote, so it could not have caught this one
+# even if the fleet path reached it. The status read is what does.
+check "dead daemon: an unreachable --remote is caught as well" 1 "not answering" \
+  deadbox down all --remote lab
+# The contrast, on the same shim: with the daemon answering, the empty fleet is
+# still D6's success. Without this the fix could be "always die", which would
+# red D6 rather than distinguish it.
+check "dead daemon: an ANSWERING daemon with no boxes is still D6" 0 "nothing to down" \
   fleetbox "" "" down all
 
 # --- D2: 'all' is reserved, refused at both doors that mint a name ----------

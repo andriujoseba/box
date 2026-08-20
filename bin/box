@@ -1095,7 +1095,25 @@ run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
   # Captured first, then read — never 'boxes_csv | awk'. A multi-line writer
   # piped into a line reader is the racing read #134 swept out of this file,
   # and the sweep names boxes_csv as a writer for exactly this reason.
-  rows="$(boxes_csv)"
+  # And READ its status. A daemon that never answered leaves 'rows' empty,
+  # which is indistinguishable from a host with no boxes — so without this,
+  # "I could not ask" lands in the D6 branch below and comes out as "there is
+  # nothing to do", exit 0. That is the one case where D4's aggregate status
+  # says all-fine about a run in which nothing happened at all, and it is
+  # #179's own motivating scenario: a 'box start all' fired before incusd is
+  # up would answer "nothing to start" and give the operator no reason to look
+  # again.
+  #
+  # An explicit check and not errexit, because there is none to lean on here:
+  # run_fleet is called as 'run_fleet ... || exit $?', and a function on the
+  # left of || runs with set -e suppressed through its whole body. Nothing in
+  # this function is protected by it.
+  #
+  # require_stack() is not the answer either — it no-ops when --remote is set,
+  # so an unreachable remote would still come back as an empty fleet. Its
+  # WORDING is, though: the two doors should say one thing about a daemon that
+  # is not there.
+  rows="$(boxes_csv)" || die "the incus daemon is not answering — diagnose it: box doctor"
   # Name AND state. Neither can contain a comma or a newline — boxes_csv says
   # so and says why — so a plain -F, split is safe here as it is there.
   fleet="$(awk -F, 'NF && $1 != "" { print $1 "," $2 }' <<<"$rows")"
