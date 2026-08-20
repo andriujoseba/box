@@ -420,6 +420,19 @@ record_check_path() {   # <path> — empty path means no record was asked for
   return 0
 }
 
+# One key off a box's mint stamp (#103), or 'unresolved' — the same word
+# record_sha uses for a fact it could not establish, and the same reason: a
+# confident wrong value in a record is worse than an admitted gap. 'incus
+# config get' on an unset key prints EMPTY and exits 0 (audit B4), so a box
+# minted before the stamp existed and a box that is gone arrive identically,
+# and both are 'unresolved' rather than an empty cell.
+drill_stamp() {   # <box> <key-suffix> → the stamped value, or 'unresolved'
+  local v=''
+  command -v incus >/dev/null 2>&1 &&
+    v="$(timeout -k 5 20 incus config get "$1" "user.box.$2" 2>/dev/null </dev/null)"
+  printf '%s' "${v:-unresolved}"
+}
+
 # Fill the REC_* set from the world. Every field is ${...:-} against itself, so
 # a caller (the test, or an operator scripting around this) can pin any one of
 # them and have the rest collected around it.
@@ -432,22 +445,29 @@ record_collect() {   # <box-repo> <box-ref> <keep-boxes:0|1>
   REC_BOX_REPO="${REC_BOX_REPO:-$1}"
   REC_BOX_REF="${REC_BOX_REF:-$2}"
   REC_BOX_SHA="${REC_BOX_SHA:-$(record_sha "$REC_BOX_REPO" "$REC_BOX_REF")}"
-  # The rig pin the MINT actually used, read the way bin/box reads it
-  # (rig_repo/rig_ref, default heavy-duty/rig@main). Where that default is what
-  # was in force, the record says `main` — the released-box gap #81 opened and
-  # #150 closes is a fact about the run, and a record that hid it would be
-  # asserting a combination nobody drilled.
+  # The rig pin the MINT actually used. It used to be re-derived here from the
+  # environment, carrying bin/box's default as a second spelling — and #150
+  # made that spelling a lie: RIG_REF unset now resolves rig's LATEST RELEASE
+  # at mint, so an unpinned run would have recorded `main` while the guest was
+  # handed `0.3.1`, asserting a combination nobody drilled. The value is read
+  # off the mint's own stamp instead, at the mint site above, where the box is
+  # certain to exist. Reaching the fallbacks here means no box was minted: the
+  # repo default is knowable without one, the ref is not.
   REC_RIG_REPO="${REC_RIG_REPO:-${RIG_REPO:-heavy-duty/rig}}"
-  REC_RIG_REF="${REC_RIG_REF:-${RIG_REF:-main}}"
+  REC_RIG_REF="${REC_RIG_REF:-${RIG_REF:-unresolved}}"
   REC_RIG_SHA="${REC_RIG_SHA:-$(record_sha "$REC_RIG_REPO" "$REC_RIG_REF")}"
   REC_ELAPSED="${REC_ELAPSED:-}"
   if [ -z "$REC_ELAPSED" ] && [ -n "${DRILL_T0:-}" ]; then
     REC_ELAPSED="$(( $(date +%s) - DRILL_T0 ))"
   fi
   # The command that reproduces this run, env pins included — the flags alone
-  # would name a different drill than the one that ran.
-  [ -n "${RIG_REPO:-}" ]     && prefix="${prefix}RIG_REPO=$RIG_REPO "
-  [ -n "${RIG_REF:-}" ]      && prefix="${prefix}RIG_REF=$RIG_REF "
+  # would name a different drill than the one that ran. The pin is taken from
+  # the REC_* set rather than from the environment, which is what keeps that
+  # true after #150: an unpinned run resolved a rig RELEASE at mint, and a
+  # reproduction left equally unpinned would resolve whatever is latest THEN.
+  # 'unresolved' is not a ref and never goes in a command line.
+  [ "$REC_RIG_REPO" != heavy-duty/rig ] && prefix="${prefix}RIG_REPO=$REC_RIG_REPO "
+  [ "$REC_RIG_REF"  != unresolved ]     && prefix="${prefix}RIG_REF=$REC_RIG_REF "
   [ -n "${DRILL_EXPECT:-}" ] && prefix="${prefix}DRILL_EXPECT=$DRILL_EXPECT "
   inv="${prefix}bash drill/drill.sh --repo $1 --ref $2"
   [ "$3" = 1 ] && inv="$inv --keep-boxes"
@@ -1056,6 +1076,15 @@ printf '\n  minting a claude-box box (cold, ~10 min)…\n'
 t0=$SECONDS
 if mint_box /tmp/mint-drill.log --name drill --template claude-box; then
   ok "box new --name drill --template claude-box  ($((SECONDS - t0))s)"
+  # The rig pin the record will name, read off the mint's own stamp (#103) and
+  # read HERE, because the box does not have to survive to the record (#150).
+  # RIG_REF unset no longer means `main` — it means whatever release bin/box
+  # resolved during this mint — so the environment can no longer answer the
+  # question and only the stamp can. An operator pin still wins: record_collect
+  # fills these from RIG_REPO/RIG_REF first, and both are ${...:-} against
+  # themselves, so nothing here overrides a value already set.
+  REC_RIG_REPO="${REC_RIG_REPO:-${RIG_REPO:-$(drill_stamp drill rig.repo)}}"
+  REC_RIG_REF="${REC_RIG_REF:-${RIG_REF:-$(drill_stamp drill rig.ref)}}"
 else
   no "box new FAILED — tail: $(tail -3 /tmp/mint-drill.log | tr '\n' ' ')"
   timeout -k 5 60 incus delete -f drill >/dev/null 2>&1
