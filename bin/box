@@ -1043,30 +1043,89 @@ refuse_fleet_word() {   # $1 = the name being minted
   fi
 }
 
+# A fleet is MIXED-STATE in the ordinary case — that is most of why you reach
+# for 'all' — and Incus errors when an instance is already in the state you
+# asked for ("The instance is already stopped", "The container is already
+# running"). Handing every box to the verb unconditionally therefore reds a
+# 'down all' whenever one box was already down, which breaks two things at
+# once: the run does not do what #179's test plan asks ("two boxes up, one
+# down: 'box restart all' ... leaves all three running"), and D4's aggregate
+# exit status stops separating a fleet that half-acted from one that fully did.
+# An operator who sees 'down all' exit 1 for a box that needed nothing learns
+# to ignore the status.
+#
+# So the state is read rather than thrown away — boxes_csv() already selects
+# it, this just stops discarding column 2. Three exact pairs, no more:
+#
+#   stop    + STOPPED  -> nothing to do, reported as the success it is
+#   start   + RUNNING  -> ditto
+#   restart + STOPPED  -> ONE 'incus start'
+#
+# The last is not the composite D1 forbids. D1 rules out "call down, then call
+# start", which owns a half-failed state between the two calls; starting a
+# stopped box is a single Incus operation with no intermediate state at all, so
+# this satisfies D1 and the test plan together instead of trading one for the
+# other. It is reported as a start, not as a restart: a box that was never
+# running was not restarted, and that one line is all the operator reads.
+#
+# Every other state — FROZEN, ERROR, whatever a later Incus adds — goes down
+# the ordinary path and Incus decides. This is not a state machine; it is a
+# refusal to make the two calls that are guaranteed to error.
+#
+# The snapshot is a TOCTOU by nature. If a box moves between the list and the
+# call, Incus errors and the failure path below reports it correctly, which is
+# the right answer — engineering around the race would buy nothing.
+fleet_op() {   # $1 = incus subcommand, $2 = the box's state. Echoes the sub to
+               # run, or "" when the box is already where it was asked to be.
+  case "$1:$2" in
+    stop:STOPPED|start:RUNNING) echo "" ;;
+    restart:STOPPED)            echo "start" ;;
+    *)                          echo "$1" ;;
+  esac
+}
+
 run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
-  local sub="$1" tmpl="$2" rows names n err rc=0 ran=0 failed=0
+  local sub="$1" tmpl="$2" rows fleet n st op err rc=0 ran=0 failed=0
   # Captured first, then read — never 'boxes_csv | awk'. A multi-line writer
   # piped into a line reader is the racing read #134 swept out of this file,
   # and the sweep names boxes_csv as a writer for exactly this reason.
   rows="$(boxes_csv)"
-  names="$(awk -F, 'NF && $1 != "" { print $1 }' <<<"$rows")"
+  # Name AND state. Neither can contain a comma or a newline — boxes_csv says
+  # so and says why — so a plain -F, split is safe here as it is there.
+  fleet="$(awk -F, 'NF && $1 != "" { print $1 "," $2 }' <<<"$rows")"
   # A fresh host restarting nothing has done what it was asked, so this is a
   # success with a message and not an error (#179 D6). It goes to stdout: it
   # is the answer, not a complaint.
-  if [ -z "$names" ]; then
+  if [ -z "$fleet" ]; then
     echo "box: no boxes — nothing to $cmd."
     return 0
   fi
   err="$(mktemp)"
-  while IFS= read -r n; do
+  while IFS=, read -r n st; do
     [ -n "$n" ] || continue
     ran=$((ran + 1))
+    op="$(fleet_op "$sub" "$st")"
+    # Already where it was asked to be: a success that calls nothing, counted
+    # as one in the aggregate, and said on stdout because it is an outcome and
+    # not a complaint.
+    if [ -z "$op" ]; then
+      case "$sub" in
+        stop)  echo "box: $n is already stopped." ;;
+        start) echo "box: $n is already running." ;;
+      esac
+      continue
+    fi
     # </dev/null per box: without it the first incus call drains the 'while'
     # loop's stdin and the fleet silently stops after one box.
     # word-split intentionally, as in the single-box path below.
     # shellcheck disable=SC2086
-    if incus $sub "$(iname_of "$n")" </dev/null >/dev/null 2>"$err"; then
-      [ -z "$tmpl" ] || echo "box: $(fill "$tmpl" "$n")"
+    if incus $op "$(iname_of "$n")" </dev/null >/dev/null 2>"$err"; then
+      if [ "$op" != "$sub" ]; then
+        # 'restart' on a stopped box. Say what happened, not what was typed.
+        echo "box: started $n — it was stopped."
+      else
+        [ -z "$tmpl" ] || echo "box: $(fill "$tmpl" "$n")"
+      fi
     else
       failed=$((failed + 1)); rc=1
       # One box failing must not abort the rest (#179 D4) — a fleet left half
@@ -1076,7 +1135,7 @@ run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
       echo "box: $n FAILED to $cmd:" >&2
       sed 's/^/  /' "$err" >&2
     fi
-  done <<<"$names"
+  done <<<"$fleet"
   rm -f "$err"
   if [ "$failed" -gt 0 ]; then
     echo "box: $((ran - failed)) of $ran succeeded, $failed failed." >&2
@@ -2791,6 +2850,14 @@ case ",$pre," in *,box,*)
   case ",$pre," in
     *,fleet,*) if [ "${args[0]}" = "$FLEET_WORD" ]; then fleet=1; fi ;;
   esac
+  # The single-box path forwards everything after the name to incus; the fleet
+  # path cannot, because "this flag, once" and "this flag, to each of six
+  # boxes" are different acts and no lifecycle row asks for the second. Refuse
+  # rather than drop: a trailing word that silently vanishes is the one outcome
+  # with no way for the operator to notice.
+  if [ "$fleet" -eq 1 ] && [ "${#args[@]}" -gt 1 ]; then
+    usage_error "'$cmd $FLEET_WORD' takes nothing else — got '${args[1]}'. usage: $(synopsis_of "$cmd")"
+  fi
   [ "$fleet" -eq 1 ] || inst="$(resolve_box "${args[0]}")"
   ;;
 esac

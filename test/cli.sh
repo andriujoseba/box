@@ -4787,10 +4787,17 @@ FSHIM="$(mktemp -d)"; FWORK="$(mktemp -d)"
 cat > "$FSHIM/incus" <<'SHIM'
 #!/usr/bin/env bash
 # Fake incus for the fleet drive (#179).
-#   FAKE_BOXES  space-separated names 'incus list' reports as box-tagged
-#   FAKE_FAIL   space-separated names whose lifecycle call fails, as incus
-#               fails: non-zero, with a reason on stderr
+#   FAKE_BOXES   space-separated names 'incus list' reports as box-tagged
+#   FAKE_FAIL    space-separated names whose lifecycle call fails, as incus
+#                fails: non-zero, with a reason on stderr
+#   FAKE_STATES  space-separated name=STATE pairs; anything unlisted is RUNNING
 printf 'incus %s\n' "$*" >> "$FAKE_INCUS_LOG"
+state_of() {   # $1 = box name
+  for kv in ${FAKE_STATES:-}; do
+    if [ "${kv%%=*}" = "$1" ]; then printf '%s' "${kv#*=}"; return; fi
+  done
+  printf 'RUNNING'
+}
 case "${1:-}" in
   list)
     # boxes_csv() asks twice — user.box=1 then the legacy user.claudebox=1 —
@@ -4798,7 +4805,9 @@ case "${1:-}" in
     # twice per box would show up as duplicate lifecycle calls in the log.
     case "$*" in
       *user.box=1*)
-        for b in ${FAKE_BOXES:-}; do printf '%s,RUNNING,CONTAINER,0\n' "$b"; done ;;
+        for b in ${FAKE_BOXES:-}; do
+          printf '%s,%s,CONTAINER,0\n' "$b" "$(state_of "$b")"
+        done ;;
     esac
     exit 0 ;;
   config)
@@ -4816,6 +4825,17 @@ case "${1:-}" in
         exit 1
       fi
     done
+    # Incus's own already-in-state refusals, reproduced verbatim, because a
+    # shim that cheerfully succeeds on them would let the mixed-state
+    # assertions below pass for a build that never looked at the state. These
+    # are what lxc/incus returns: restartCommon() and the !IsRunning() /
+    # isRunningStatusCode() guards in the lxc driver. Note the third: 'restart'
+    # on a stopped instance does NOT start it, it errors.
+    case "$1:$(state_of "${2:-}")" in
+      stop:STOPPED)    echo "Error: The instance is already stopped" >&2; exit 1 ;;
+      start:RUNNING)   echo "Error: The container is already running" >&2; exit 1 ;;
+      restart:STOPPED) echo "Error: The instance is already stopped" >&2; exit 1 ;;
+    esac
     exit 0 ;;
 esac
 exit 0
@@ -4823,11 +4843,19 @@ SHIM
 chmod +x "$FSHIM/incus"
 
 FLOG="$FWORK/fleet.log"
+FLEET_STATES=""
 fleetbox() {   # fleetbox <boxes> <failing> <box args...> — the real box, shimmed
   local boxes="$1" failing="$2"; shift 2
   : > "$FLOG"
   env FAKE_INCUS_LOG="$FLOG" FAKE_BOXES="$boxes" FAKE_FAIL="$failing" \
-    PATH="$FSHIM:$PATH" "$BOX" "$@" </dev/null 2>&1
+    FAKE_STATES="$FLEET_STATES" PATH="$FSHIM:$PATH" "$BOX" "$@" </dev/null 2>&1
+}
+# The same, with a mixed-state daemon: <name=STATE ...> first, anything
+# unlisted is RUNNING. Set-then-clear rather than a `VAR=x fn` prefix, whose
+# persistence past the call is a bash-version question I would rather not ask.
+mixedbox() {   # mixedbox <states> <boxes> <failing> <box args...>
+  local states="$1" rc; shift
+  FLEET_STATES="$states"; fleetbox "$@"; rc=$?; FLEET_STATES=""; return "$rc"
 }
 # What box actually asked the daemon to do, one line per lifecycle call.
 acted_on() { grep -cE "^incus (restart|stop|start) $1( |\$)" "$FLOG"; }
@@ -4893,22 +4921,77 @@ check "all (admin): touches nothing in a restricted project" 1 "" \
   grep -qE '^incus stop dev1-' "$FLOG"
 
 # --- D4: one failure does not abort the rest, and the status aggregates -----
+# All three are STOPPED here, so 'start' genuinely has work to do on each and
+# the only non-zero in the block is the injected failure — not a box that was
+# already where it was asked to be.
 check "all: a failing box does not stop the others (exit is aggregate)" 1 "started one" \
-  fleetbox "one two three" "two" start all
+  mixedbox "one=STOPPED two=STOPPED three=STOPPED" "one two three" "two" start all
 # Exit 1 throughout this block: the aggregate status is the point, so every
 # case here asserts the failing status AND the work that happened anyway.
 check "all: ...the box after the failure still acted" 1 "started three" \
-  fleetbox "one two three" "two" start all
+  mixedbox "one=STOPPED two=STOPPED three=STOPPED" "one two three" "two" start all
 check "all: ...the failure is named" 1 "two FAILED" \
-  fleetbox "one two three" "two" start all
+  mixedbox "one=STOPPED two=STOPPED three=STOPPED" "one two three" "two" start all
 check "all: ...with incus's own reason, never swallowed" 1 "is busy" \
-  fleetbox "one two three" "two" start all
+  mixedbox "one=STOPPED two=STOPPED three=STOPPED" "one two three" "two" start all
 check "all: ...and the run says how many of each" 1 "2 of 3 succeeded, 1 failed" \
-  fleetbox "one two three" "two" start all
+  mixedbox "one=STOPPED two=STOPPED three=STOPPED" "one two three" "two" start all
 check "all: every box was attempted despite the failure" 0 "3" \
   fleet_calls start
 check "all: all three succeeding exits 0" 0 "started three" \
-  fleetbox "one two three" "" start all
+  mixedbox "one=STOPPED two=STOPPED three=STOPPED" "one two three" "" start all
+
+# --- the mixed-state fleet: already-there is not a failure ------------------
+# A fleet is mixed-state in the ordinary case, and Incus errors when an
+# instance is already in the state you asked for. Without this, 'down all' reds
+# whenever one box was already down — which unmeasures D4's exit status and
+# leaves the issue's first test-plan line unmet. The shim above answers exactly
+# as Incus does, so every assertion here reds if run_fleet() stops reading the
+# state column.
+check "mixed: 'down all' stops the running box" 0 "stopped one" \
+  mixedbox "two=STOPPED" "one two" "" down all
+check "mixed: ...names the already-stopped one as the success it is" 0 "two is already stopped" \
+  mixedbox "two=STOPPED" "one two" "" down all
+check "mixed: ...and calls incus for the one box that needed it" 0 "1" \
+  fleet_calls stop
+check "mixed: ...never for the box that was already there" 1 "" \
+  grep -qE '^incus stop two( |$)' "$FLOG"
+check "mixed: 'start all' names the already-running box" 0 "one is already running" \
+  mixedbox "two=STOPPED" "one two" "" start all
+check "mixed: ...and starts only the stopped one" 0 "started two" \
+  mixedbox "two=STOPPED" "one two" "" start all
+check "mixed: ...one call, not two" 0 "1" fleet_calls start
+
+# The issue's test plan, line one: two boxes up, one down — 'restart all'
+# reports three outcomes and leaves all three running.
+check "mixed: 'restart all' restarts the running boxes" 0 "restarted one" \
+  mixedbox "three=STOPPED" "one two three" "" restart all
+check "mixed: ...and the second of them" 0 "restarted two" \
+  mixedbox "three=STOPPED" "one two three" "" restart all
+check "mixed: ...and STARTS the stopped one rather than erroring on it" 0 "started three — it was stopped" \
+  mixedbox "three=STOPPED" "one two three" "" restart all
+check "mixed: ...through a single 'incus start', which is not down-then-start (D1)" 0 "1" \
+  fleet_calls start
+check "mixed: ...with no 'stop' anywhere in the run" 1 "" \
+  grep -qE '^incus stop ' "$FLOG"
+check "mixed: ...two restarts and one start, three boxes, three outcomes" 0 "2" \
+  fleet_calls restart
+
+# The aggregate status still means what D4 says it means: a real failure beside
+# a no-op box is still non-zero, and the no-op is still reported.
+check "mixed: a real failure beside an already-stopped box still exits non-zero" 1 "two FAILED" \
+  mixedbox "three=STOPPED" "one two three" "two" down all
+check "mixed: ...and the already-stopped box is still reported" 1 "three is already stopped" \
+  mixedbox "three=STOPPED" "one two three" "two" down all
+check "mixed: ...counted as one of the successes, not skipped from the tally" 1 "2 of 3 succeeded, 1 failed" \
+  mixedbox "three=STOPPED" "one two three" "two" down all
+
+# Only the three pairs that are guaranteed to error are handled. Anything else
+# goes to Incus and Incus decides — this is a refusal to make two doomed calls,
+# not a state machine that has to know every state Incus will ever have.
+check "mixed: an unmodelled state passes straight through to incus" 0 "stopped one" \
+  mixedbox "one=FROZEN" "one" "" down all
+check "mixed: ...as a real call, not a skip" 0 "1" fleet_calls stop
 
 # --- D5: no prompt on the fleet forms, and 'rm' has no 'all' ----------------
 # No TTY here, so a confirm() would exit 2 with "refusing to ... without
@@ -4923,6 +5006,26 @@ check "rm has no fleet form: it deleted nothing" 1 "" \
   grep -qE '^incus delete' "$FLOG"
 check "rm's row carries no 'fleet' token" 1 "" \
   grep -qE '^  "rm\^[^^]*\^[^^]*fleet' "$ROOT/bin/box"
+
+# --- the fleet form takes nothing after the word ----------------------------
+# The single-box path forwards everything after the name to incus. The fleet
+# path cannot — "this flag once" and "this flag to each of six boxes" are
+# different acts — so it refuses instead of dropping the word in silence, which
+# is the one outcome the operator has no way to notice.
+check "all: a trailing word is a usage error, not a silent drop" 2 "takes nothing else" \
+  fleetbox "one two" "" down all extra
+check "all: ...and it names the word it refused" 2 "'extra'" \
+  fleetbox "one two" "" down all extra
+check "all: ...having touched no box" 1 "" grep -qE '^incus stop ' "$FLOG"
+# The reachable spelling of a flag: box rejects an unknown --flag at parse
+# time, so anything flag-shaped arrives after '--'. It is refused on the fleet
+# form too, rather than being forwarded to every box or dropped.
+check "all: a flag passed through '--' is refused as well" 2 "takes nothing else" \
+  fleetbox "one two" "" down all -- --force
+check "all: the single-box path still forwards its extras" 0 "stopped one" \
+  fleetbox "one" "" down one extra
+check "all: ...to incus, exactly as before" 0 "" \
+  grep -qE '^incus stop one extra$' "$FLOG"
 
 # --- D6: 'all' over zero boxes is success with a message --------------------
 check "all: no boxes at all exits 0" 0 "nothing to restart" \
