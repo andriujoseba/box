@@ -176,8 +176,8 @@ aud()  { audit+=("$*"); }                       # an answer for the #15 audit
 # tally against whichever phase is open, and the summary asserts the numbers as
 # a FLOOR — a floor and not an equality, so adding a probe does not turn the
 # commit that adds it red. Bumping the number below is part of adding one,
-# which is also what finally gives CONTRIBUTING's "85-probe contract" and
-# drills/README.md's "84/85" something that checks them.
+# which is also what finally gives CONTRIBUTING's "87-probe contract" and
+# drills/README.md's "86/87" something that checks them.
 #
 # Phase keys are the letters the phase headers already use; '-' is a phase that
 # emits no verdicts at all (install, host setup, the summary itself). A verdict
@@ -187,8 +187,8 @@ PHASE_ORDER=(I A B C E D M T)
 declare -A PHASE_EXPECT=(
   [I]=1     # install.sh left a complete host stack (#64)
   [A]=8     # A1–A6, A8, A9 — Incus semantics (A7 prints, it does not judge)
-  [B]=49    # the box surface: 6 templates/version + blank 10 + codex/grok 3×2
-            # + the drill box, its clone and the CLI contract 27
+  [B]=51    # the box surface: 6 templates/version + blank 10 + the #171 clone 3
+            # + codex/grok 3×2 + the drill box, its clone and the CLI contract 27
   [C]=9     # C1–C7, plus archive-is-up and the peer clone
   [E]=7     # box expose: add, list, info, the door, per-port, remove, shut
   [D]=0     # D states the settled contract; it judges only a failed baseline
@@ -995,13 +995,20 @@ box new --name tpl --template cbdrill-bad 2>&1 | grep -q "unknown key 'BOX_NETWO
   || no "a box.env key outside the allowlist was ACCEPTED — a template could weaken isolation"
 rm -rf "$badt"
 
-# Inline resource flags (#57): refused on a clone, honored on a mint. The
-# mint proof rides the blank box below — and because this drill exports
+# Inline resource flags: honored on a mint, and — since #171 — on a clone too.
+# The mint proof rides the blank box below, and because this drill exports
 # BOX_CPU/BOX_MEMORY on small hosts, it is also the precedence proof
-# (flag > env > template > default).
-box new --name tpl --from nowhere --cpu 2 2>&1 | grep -q 'carries its source' \
-  && ok "resource flags refused on --from — a clone carries its source's resources" \
-  || no "--from accepted a resource flag (should refuse: clone resources come from the source)"
+# (flag > env > template > default). The CLONE proof rides that same box a few
+# lines later, once there is a real source to copy: it needs one, which is why
+# it is not here.
+#
+# What used to be here was #57's proof of the opposite — that --from REFUSED
+# --cpu, on the premise that a clone carries its source's resources. #171's
+# retitle overturned that premise (the override rides 'incus copy', applied
+# before the volume is created), so the refusal is gone and the probe went with
+# it. It could stand here at all only because the refusal fired before box
+# touched incus, which made '--from nowhere' a usable source; nothing about
+# that trick survives the ruling, so this is a re-point and not a string swap.
 
 printf '\n  minting a blank box (the DEFAULT template — no tooling, fast)…\n'
 t0=$SECONDS
@@ -1029,6 +1036,50 @@ if mint_box /tmp/mint-tpl.log --name tpl --cpu 1 --memory 1GiB; then
   in_box tpl getent hosts deb.debian.org >/dev/null 2>&1 \
     && ok "blank box resolves public names (pinned resolver serves every template)" \
     || no "blank box cannot resolve — DNS parity broken"
+  # --- the clone half of #171 D1, on a real daemon -------------------------
+  # tpl was minted at --cpu 1 --memory 1GiB above, so it is a source whose
+  # sizing is KNOWN, and a clone of it with --cpu 2 measures the one thing no
+  # shim can: that the override reaches the volume incus actually creates. This
+  # is also D6's read-back proved live — every figure below is read off the
+  # daemon, not echoed from what box was asked for.
+  #
+  # Stopped first: box's clone path copies the instance itself (it stops
+  # nothing on your behalf), and the drill's other clones dodge this by copying
+  # a SNAPSHOT. This one wants the live instance's config, so it stops it.
+  # tpl is finished with by here — the removal is the next line but one.
+  incus stop -f tpl >/dev/null 2>&1
+  # Deliberately NOT wrapped in 'if mint_box; then …probes… else no; fi', which
+  # is the shape above: that arm runs a different NUMBER of probes depending on
+  # the outcome, and PHASE_EXPECT is a count. Read the config unconditionally
+  # instead — a clone that never came up answers '<unset>' and reds both probes
+  # for the right reason, and the ledger still balances.
+  mint_box /tmp/mint-cbcopy.log --name cbcopy --from tpl --cpu 2 \
+    || inf "clone tail: $(tail -3 /tmp/mint-cbcopy.log | tr '\n' ' ')"
+  cc="$(incus config get cbcopy limits.cpu 2>/dev/null)"
+  [ "$cc" = 2 ] && ok "--cpu rides a CLONE: the copy came up at 2, not the source's 1 (#171 D1)" \
+                || no "--cpu did not ride the copy — the clone's limits.cpu is '${cc:-<unset>}', expected 2"
+  # The other half of D1, and the state D6 was ruled for: a flag NOT passed
+  # contributes no override, so memory is still whatever the source had. A
+  # clone that is PARTLY overridden is the case no intent-side value knows and
+  # the read-back line exists to say out loud.
+  cm="$(incus config get cbcopy limits.memory 2>/dev/null)"
+  [ "$cm" = 1GiB ] && ok "...and a flag not passed keeps the source's value (memory = $cm) — a partly overridden clone (#171 D1/D6)" \
+                   || no "the clone's memory is '${cm:-<unset>}', expected the source's 1GiB"
+  box rm cbcopy --force >/dev/null 2>&1 || incus delete -f cbcopy >/dev/null 2>&1
+  # D2/D3 fail-closed, on the arm that needs no VM. box refuses --disk when it
+  # cannot read what root device the source has, BEFORE the copy, and creates
+  # nothing. The other entrance to D3 — a VM source whose root comes from a
+  # profile — cannot be reached from box's own surface at all: every VM mint
+  # attaches '--device root,size=' (bin/box), so no box box mints lacks a root
+  # device of its own. Making one would mean an 'incus init --empty --vm' on a
+  # host this drill does not require to have KVM, so the probe takes the
+  # entrance that is always there.
+  cbout="$(box new --name cbcopy --from nowhere --disk 20GiB </dev/null 2>&1 || true)"
+  if printf '%s\n' "$cbout" | grep -q 'could not be read' && ! incus info cbcopy >/dev/null 2>&1; then
+    ok "--disk refuses a source box cannot read, before the copy, creating nothing (#171 D2/D3)"
+  else
+    no "--disk on an unreadable source did not fail closed (or left an instance behind) — said: $(printf '%s' "$cbout" | head -2 | tr '\n' ' ')"
+  fi
   box rm tpl --force >/dev/null 2>&1 && ok "blank box removed" || no "could not remove the blank box"
 else
   no "blank mint FAILED — tail: $(tail -3 /tmp/mint-tpl.log | tr '\n' ' ')"

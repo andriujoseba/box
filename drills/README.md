@@ -65,8 +65,8 @@ bash drill/drill.sh --ref release/0.10.0 --emit-record drills/0.10.0.md
   is the field that had no mechanism at all before: it was invented at write-up
   time, three times, and the odds the three matched were whatever memory was
   worth.
-- **The numbers are the probe floor's**, not what happened to run: `76/85`, not
-  `76/76`. A phase that did not run is recorded as a shortfall, and a phase
+- **The numbers are the probe floor's**, not what happened to run: `78/87`, not
+  `78/78`. A phase that did not run is recorded as a shortfall, and a phase
   *declared* skipped is recorded as a `SKIP` line that lowers the floor by
   exactly its probes (#153). Passing and skipped never look alike.
 - **`NO_COLOR=1`, or piping anywhere, drops the ANSI** from the drill, the
@@ -106,12 +106,12 @@ residue. Then `drill/multiuser.sh` for the two-user grant matrix.
 
 ## Result
 
-**84/85 passed, 1 failed.** 41 minutes wall clock.
+**86/87 passed, 1 failed.** 41 minutes wall clock.
 
 - Failed: `multiuser.sh` criterion (m) — the raw instance kept a stale route
   after teardown. Filed as #999. Judged not release-blocking: it affects
   teardown residue on a host that is about to be wiped, not the trust
   boundary itself.
-- The VM boundary probes (the 85-probe isolation contract) passed clean,
+- The VM boundary probes (the 87-probe isolation contract) passed clean,
   which is the assertion this repo's drill exists to make.
 ```
