@@ -315,8 +315,21 @@ holds a key stays operator-run, never auto-run.
 Resources resolve most-specific-first: these flags, then BOX_CPU /
 BOX_MEMORY / BOX_DISK environment variables (the scripting form), then the
 template's box.env, then defaults. Flags shape a fresh mint only — a --from
-clone carries its source's resources. Resources are all a flag can touch:
-there is no flag for a network or a security key, on purpose.
+clone carries its source's resources, and says which they are when it comes
+up. To change a clone's afterwards, the escape hatch is the path and box
+prints these for you if you pass the flags anyway (#171):
+
+  box incus <box> -- config set {} limits.cpu 4
+  box incus <box> -- config set {} limits.memory 8GiB
+  box incus <box> -- config device set {} root size=60GiB
+
+The {} is where the box name goes ('box help incus'). The disk line is VM-only
+— a container's root rides the pool — and it is the one of the three box has
+not watched work: growing a root may want the box stopped and the guest
+filesystem grown inside it, and a 'dir' pool may not enforce a size at all.
+
+Resources are all a flag can touch: there is no flag for a network or a
+security key, on purpose.
 
 BOX_LAUNCH_TIMEOUT=<seconds> (default 600) bounds the 'incus launch' call —
 a launch that overruns it fails loudly instead of hanging forever (#93).
@@ -1667,6 +1680,89 @@ snapshot_bootstrapped() {
     "the tenant role converged, and nothing has touched the box since."
 }
 
+# The sizing hints a refused '--from --cpu/--memory/--disk' prints (#171): one
+# runnable line per flag the caller ACTUALLY passed, and nothing for a flag
+# they did not. Reads the flag globals; takes the source instance because the
+# disk line depends on what that source is.
+#
+# '{}' is load-bearing and not decoration. 'box incus <box> -- <args>' appends
+# the instance at the END when no {} appears (cmd_incus), so a line reading
+# 'config set limits.cpu 2' would run 'incus config set limits.cpu 2 <inst>' —
+# the instance sitting where the value goes. #171's own proposed message had
+# exactly that bug, which is why test/cli.sh DRIVES these lines back through
+# cmd_incus instead of matching their text: the day that substitution changes,
+# this reds rather than shipping an incantation nobody can run.
+clone_resize_hints() {   # clone_resize_hints <source-instance>
+  local srcinst="$1" rows type=""
+  echo "box: --cpu/--memory/--disk shape a fresh mint; a clone carries its SOURCE's"
+  echo "box: resources (#57). But you named the sizes you wanted, and box is holding"
+  echo "box: them — so here they are as commands to run once '$name' exists:"
+  [ -z "$cpu" ]    || echo "box:   box incus $name -- config set {} limits.cpu $cpu"
+  [ -z "$memory" ] || echo "box:   box incus $name -- config set {} limits.memory $memory"
+  [ -n "$disk" ] || return 0
+  # Capture first, THEN read (#124's class): a multi-line writer piped straight
+  # into an early-exit reader can hand pipefail a 141, and here that would read
+  # as "type unknown" and print the wrong branch of this message.
+  rows="$(incus list "$srcinst" --format csv --columns t 2>/dev/null </dev/null || true)"
+  type="$(printf '%s\n' "$rows" | head -n1 | tr -d '"' | tr '[:upper:]' '[:lower:]')"
+  # Fail-OPEN on an unreadable type, and the asymmetry is the reason: the
+  # caveat below already names the container case, so a caveated line shown to
+  # a container operator over-explains, while a suppressed line shown to a VM
+  # operator withholds the very handle this issue exists to hand over.
+  if [ "$type" = container ]; then
+    echo "box:   ...and no --disk line: '$srcinst' is a container, whose root rides the"
+    echo "box:   storage pool. There is no per-instance size to set — the same fact the"
+    echo "box:   mint path states when --disk meets container mode."
+    return 0
+  fi
+  echo "box:   box incus $name -- config device set {} root size=$disk"
+  echo "box:"
+  echo "box: That last line is NOT the same kind of command as the two above it, and"
+  echo "box: box has not watched it work (#171). limits.cpu and limits.memory are live"
+  echo "box: config sets. A root device is not symmetric with them: growing a VM's root"
+  echo "box: may need the box stopped and the guest filesystem grown inside it"
+  echo "box: afterwards, shrinking may be refused by the storage driver outright, and"
+  echo "box: on a 'dir' pool (#29) the size may not be enforced at all. The command is"
+  echo "box: the documented one and box sets that same device key at mint — what is"
+  echo "box: unmeasured is its preconditions, not its existence."
+}
+
+# What an instance ACTUALLY carries, read back off the daemon (#171). A clone
+# skips load_template entirely, so box's own T_CPU/T_MEMORY/T_DISK resolution
+# never ran on this path and printing those would state the defaults of a mint
+# that did not happen. Every figure here is read; none is inferred, and one
+# that does not read prints nothing rather than a guess.
+#
+# --expanded because the question is what the instance will RUN with: box
+# stamps limits.* per instance at mint, but a profile added by hand is just as
+# real, and a bare 'config get' reports only the instance-level override.
+#
+# The root size has no expanded form and box sets it as a device override at
+# mint (VM mode only) — so its ABSENCE is the container answer, and printing
+# no disk figure there is the same fact the mint path states out loud when
+# --disk meets container mode.
+narrate_resources() {   # narrate_resources <instance>
+  local inst="$1" c m d parts=()
+  c="$(incus config get --expanded "$inst" limits.cpu 2>/dev/null </dev/null || true)"
+  m="$(incus config get --expanded "$inst" limits.memory 2>/dev/null </dev/null || true)"
+  d="$(incus config device get "$inst" root size 2>/dev/null </dev/null || true)"
+  [ -z "$c" ] || parts+=("cpu=$c")
+  [ -z "$m" ] || parts+=("mem=$m")
+  [ -z "$d" ] || parts+=("disk=$d")
+  # The whole point of the line is that a clone's sizing stops being invisible
+  # (#171). A read that comes back with nothing must say so — silence here is
+  # indistinguishable from the bug, and the operator's next move ('box info')
+  # is the same one either way.
+  if [ "${#parts[@]}" -eq 0 ]; then
+    echo "box: incus reported no resource figures for this clone — 'box info $name' has"
+    echo "box: whatever the instance carries."
+    return 0
+  fi
+  echo "box: it carries the source's resources: ${parts[*]}"
+  echo "box: (to change them: box incus $name -- config set {} limits.cpu <n>, and see"
+  echo "box: 'box help incus' — the {} is where the box name goes.)"
+}
+
 cmd_new() {
   [ -n "$name" ] || usage_error "usage: $(synopsis_of new)"
   refuse_fleet_word "$name"
@@ -1674,10 +1770,21 @@ cmd_new() {
   local instance; instance="$(iname_of "$name")"
   if [ -n "$from" ]; then
     [ -z "$template" ] || usage_error "--from clones an existing box; its template rides along (drop --template)"
-    [ -z "$cpu$memory$disk" ] || usage_error "--cpu/--memory/--disk shape a fresh mint; a clone carries its source's resources ('box incus' can change them afterwards)"
     local src="${from%%/*}" snap="" srcref
     case "$from" in */*) snap="${from#*/}" ;; esac
     srcref="$(iname_of "$src")"; [ -n "$snap" ] && srcref="$srcref/$snap"
+    # The refusal stands (#57 settled that flags shape a fresh mint and a clone
+    # carries its source's resources) — what changes is that it now names the
+    # HANDLE and not just the door (#171). It used to say "'box incus' can
+    # change them afterwards" and stop, which sent the operator to Incus's docs
+    # to discover 'limits.cpu' and 'config device set root size=' — at the one
+    # moment box is holding all three values they asked for. Printing them
+    # wraps no verb: cmd_incus resolves the name and checks the user.box tag,
+    # so the safety rail survives being pointed at.
+    if [ -n "$cpu$memory$disk" ]; then
+      { clone_resize_hints "$(iname_of "$src")"; } >&2
+      usage_error "--cpu/--memory/--disk shape a fresh mint; a clone carries its source's resources"
+    fi
     incus copy "$srcref" "$instance"
     # 'incus copy' carries every user.* key forward (audit B2) — which is what
     # makes a clone know its template and user for free, and is also why the
@@ -1741,6 +1848,18 @@ cmd_new() {
     wait_agent "$instance"
     reset_identity "$instance"
     echo "box: cloned $srcref — isolation and auth state carry over from the source."
+    # The silent case #171 calls worse than the refused one. The refusal above
+    # only fires if the caller PASSED the flags; drop them — which is what a
+    # caller does once it knows better — and the clone came up with whatever
+    # the source had, with nothing anywhere saying what that was. It was
+    # discoverable only by running 'box info' and reading limits.* out of a
+    # config dump, and the way a fleet found out was under load: a builder
+    # cloned from a reviewer-sized gold is 2 CPU where its role declares 4
+    # (heavy-duty/crew#55, which warns at its own call site because it knows
+    # the profile it WANTED and not what the source carries — only box, here,
+    # knows that). So this line sits in the same block as the rest of what a
+    # clone inherited: the stamp, the id, the pristine question.
+    narrate_resources "$instance"
     # A clone gets NO 'pristine' of its own (#104). It skips cloud-init and
     # the rig hook entirely, so the pristine MOMENT never happens here —
     # anything box marked at clone time would be "whatever the source was",
