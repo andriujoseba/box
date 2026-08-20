@@ -269,9 +269,10 @@ A tenant template (claude-box, codex-box, grok-box, kimi-box, staging-box) is a 
 tmux, rig (#81) — and after cloud-init box auto-runs the creds-free tenant
 role inside it ('rig bootstrap <role>', rig#31): that role installs the
 agent CLI / server posture and the agent-context file. rig is preinstalled
-from RIG_REPO/RIG_REF in the mint environment (default heavy-duty/rig@main,
-unpinned — an honest edge until rig has releases). Anything that joins a
-tailnet or holds a key stays operator-run, never auto-run.
+from RIG_REPO/RIG_REF in the mint environment — default heavy-duty/rig at
+its LATEST RELEASE, resolved at mint (#150); RIG_REF=<tag> pins another and
+RIG_REF=main tracks the development tip. Anything that joins a tailnet or
+holds a key stays operator-run, never auto-run.
 
   --name <box>           Required. The box's name.
   --template <t>         Template to mint from; 'box templates' lists them.
@@ -344,7 +345,8 @@ List the templates this install can mint, with their descriptions. A template
 is a directory under templates/: a box.env (image, user, resources, boot
 demands, tenant role — parsed against an allowlist, never sourced) and a
 user-data.yaml (cloud-init, passed to Incus verbatim except the rig pin
-tokens @RIG_REPO@/@RIG_REF@, resolved at mint from the environment).
+tokens @RIG_REPO@/@RIG_REF@, resolved at mint from the environment — the
+ref defaulting to rig's latest release, #150).
 Templates cannot touch the network or security flags — the shared box-net
 profile is the placement contract, so every template gets the same isolation.
 
@@ -1105,29 +1107,85 @@ load_template() {
 # install edge (rig#28: rig installs box on hosts; now box guests install rig),
 # and that edge needs a pin point (#81): the seed carries @RIG_REPO@ /
 # @RIG_REF@ tokens, resolved here from the mint environment — RIG_REPO
-# (default heavy-duty/rig) and RIG_REF (default main). Both directions track
-# main unpinned today, said honestly (the same treatment rig#29 gave box's own
-# unpinned install) until a release flow exists (rig#32 / #83). The values are
-# allowlist-validated BEFORE touching the YAML: they land inside a runcmd
-# shell line, so a quote, a space or a newline smuggled through the
-# environment must die on the host, never execute in the guest. bash's =~
-# anchors to the whole string — a multi-line value cannot sneak one clean
-# line past it the way a line-oriented grep would.
+# (default heavy-duty/rig) and RIG_REF (default: rig's LATEST RELEASE, #150).
+# The values are allowlist-validated BEFORE touching the YAML: they land
+# inside a runcmd shell line, so a quote, a space or a newline smuggled
+# through the environment must die on the host, never execute in the guest.
+# bash's =~ anchors to the whole string — a multi-line value cannot sneak one
+# clean line past it the way a line-oriented grep would.
 # The rig pin, resolved from the mint environment, in ONE place: render_userdata
 # substitutes it into the seed, and the mint stamp (#103) records it onto the
 # instance. Two spellings of the same default would eventually disagree, and a
 # stamp that disagrees with the seed is worse than no stamp at all.
 rig_repo() { printf '%s\n' "${RIG_REPO:-heavy-duty/rig}"; }
-rig_ref()  { printf '%s\n' "${RIG_REF:-main}"; }
+
+# rig's latest release, resolved the no-API way — byte-for-byte the probe
+# install.sh uses for box's own default channel (#83): GitHub answers
+# https://github.com/<repo>/releases/latest with a redirect to
+# .../releases/tag/<tag>, so one HEAD request reads the tag off the Location
+# header. No API, no token, no rate-limit pain. Prints the bare tag; fails
+# where the redirect does not answer or does not name a tag (a repo with no
+# releases redirects to /releases), so the caller can refuse LOUDLY instead of
+# silently minting against main.
+rig_latest_release() {   # <repo> → the tag, or non-zero
+  local repo="$1" loc
+  command -v curl >/dev/null 2>&1 || return 1
+  loc="$(curl -fsSI -m 20 -o /dev/null -w '%{redirect_url}' \
+           "https://github.com/$repo/releases/latest")" || return 1
+  case "$loc" in
+    */releases/tag/?*) printf '%s\n' "${loc##*/releases/tag/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# RIG_REF unset means THE LATEST RELEASED RIG, not main (#150). A released box
+# whose seeds converge against rig's development tip ships a combination
+# nobody drilled: the drill proves box@X against rig@Y on real hardware, and
+# an unpinned default hands the user box@X against whatever rig's main became
+# in the week since. That is a hole no amount of drilling closes.
+#
+# Resolved rather than written down, which is the choice #150 left to the
+# build. A literal pin in the tree — a constant here, a token in the seeds —
+# has to be rewritten every ceremony, and the release that forgets rots it
+# silently into a lie; this default cannot go stale, and it is the same shape
+# install.sh already gives box's own channels (unset = latest release,
+# <tag> = pinned, main = the development tip), so the two edges of the box↔rig
+# recursion now read the same way.
+#
+# Resolved ONCE per mint, and in the PARENT shell (see cmd_new), for two
+# reasons that are both scars. Two readers ask for the pin — the seed render
+# and the mint stamp (#103) — and a probe per reader could straddle a rig
+# release and stamp a ref the seed did not install. And both readers run
+# inside command substitutions, where a die() exits the subshell and the
+# parent carries on with an empty string: a failure to resolve must end the
+# mint, not silently seed one.
+rig_pin_resolve() {
+  [ -n "${RIG_REF:-}" ] && return 0
+  local repo; repo="$(rig_repo)"
+  RIG_REF="$(rig_latest_release "$repo")" || die "could not resolve rig's latest release (no release tag behind https://github.com/$repo/releases/latest). Check the network, and that $repo has releases — or pick the ref yourself: RIG_REF=<tag> pins a release, RIG_REF=main converges against the development tip."
+  return 0
+}
+rig_ref() { rig_pin_resolve; printf '%s\n' "$RIG_REF"; }
 
 render_userdata() {
   local f="$1" repo data ref
-  repo="$(rig_repo)"; ref="$(rig_ref)"
+  data="$(cat "$f")"
+  repo="$(rig_repo)"
   [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
     || die "RIG_REPO must look like owner/repo: $repo"
+  # A seed carrying no pin token wants no pin — and must want no NETWORK
+  # either (#150). 'blank' installs no rig, so resolving the released-rig
+  # default for it would fail a mint that needs nothing from github.com over
+  # a fact that mint never uses.
+  case "$data" in
+    *@RIG_REPO@*|*@RIG_REF@*) ;;
+    *) printf '%s\n' "$data"; return 0 ;;
+  esac
+  # The resolved tag is untrusted input too — it arrives off an HTTP redirect
+  # header — so it passes the same allowlist an operator's RIG_REF does.
+  ref="$(rig_ref)"
   [[ "$ref" =~ ^[A-Za-z0-9._/-]+$ ]] \
     || die "RIG_REF must be a plain ref name (letters, digits, . _ / -): $ref"
-  data="$(cat "$f")"
   data="${data//@RIG_REPO@/$repo}"
   data="${data//@RIG_REF@/$ref}"
   printf '%s\n' "$data"
@@ -1443,6 +1501,15 @@ cmd_new() {
     )
     [ -z "$T_BOOTSTRAP_ROLE" ] || stamp+=(--config user.box.role="$T_BOOTSTRAP_ROLE")
     if grep -q '@RIG_REPO@' "$root/templates/$t/user-data.yaml" 2>/dev/null; then
+      # Resolve the pin HERE, in the parent shell, before either reader asks
+      # for it (#150). Both readers below sit in command substitutions: a
+      # resolve inside one is discarded with its subshell — so the next reader
+      # probes again, and two probes straddling a rig release stamp a ref the
+      # seed did not install — and a die() inside one is a subshell exit the
+      # launch line would carry on past with an empty seed. With RIG_REF set
+      # or already resolved this is a no-op, so the cost is one HEAD request
+      # per mint, and only for a seed that actually installs rig.
+      rig_pin_resolve
       stamp+=(--config user.box.rig.repo="$(rig_repo)" --config user.box.rig.ref="$(rig_ref)")
     fi
     #
