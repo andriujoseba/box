@@ -1044,8 +1044,12 @@ refuse_fleet_word() {   # $1 = the name being minted
 }
 
 run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
-  local sub="$1" tmpl="$2" names n err rc=0 ran=0 failed=0
-  names="$(boxes_csv | awk -F, 'NF && $1 != "" { print $1 }')"
+  local sub="$1" tmpl="$2" rows names n err rc=0 ran=0 failed=0
+  # Captured first, then read — never 'boxes_csv | awk'. A multi-line writer
+  # piped into a line reader is the racing read #134 swept out of this file,
+  # and the sweep names boxes_csv as a writer for exactly this reason.
+  rows="$(boxes_csv)"
+  names="$(awk -F, 'NF && $1 != "" { print $1 }' <<<"$rows")"
   # A fresh host restarting nothing has done what it was asked, so this is a
   # success with a message and not an error (#179 D6). It goes to stdout: it
   # is the answer, not a complaint.

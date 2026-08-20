@@ -4777,6 +4777,208 @@ check "revoke-user: the cert leftover check matches the capture, not a pipe" 0 "
 check "drill: reads the installed tree through current/" 0 "" \
   grep -qF '.local/share/box/current/VERSION' "$ROOT/drill/drill.sh"
 
+# ---------------------------------------------------------------------------
+# 'restart', and 'all' — the fleet word on the lifecycle verbs (#179)
+# ---------------------------------------------------------------------------
+# Driven end to end under a shim incus, because the whole of this feature is
+# what box CALLS: which boxes it enumerates, in what order it keeps going, and
+# what status it leaves behind. A grep would pin none of that.
+FSHIM="$(mktemp -d)"; FWORK="$(mktemp -d)"
+cat > "$FSHIM/incus" <<'SHIM'
+#!/usr/bin/env bash
+# Fake incus for the fleet drive (#179).
+#   FAKE_BOXES  space-separated names 'incus list' reports as box-tagged
+#   FAKE_FAIL   space-separated names whose lifecycle call fails, as incus
+#               fails: non-zero, with a reason on stderr
+printf 'incus %s\n' "$*" >> "$FAKE_INCUS_LOG"
+case "${1:-}" in
+  list)
+    # boxes_csv() asks twice — user.box=1 then the legacy user.claudebox=1 —
+    # and dedupes. Only the modern tag answers here, so a fleet that acted
+    # twice per box would show up as duplicate lifecycle calls in the log.
+    case "$*" in
+      *user.box=1*)
+        for b in ${FAKE_BOXES:-}; do printf '%s,RUNNING,CONTAINER,0\n' "$b"; done ;;
+    esac
+    exit 0 ;;
+  config)
+    # resolve_box()'s boundary read, for the single-box path.
+    if [ "${2:-}" = get ]; then
+      for b in ${FAKE_BOXES:-}; do
+        if [ "$b" = "${3:-}" ] && [ "${4:-}" = user.box ]; then echo 1; exit 0; fi
+      done
+    fi
+    exit 0 ;;
+  restart|stop|start)
+    for f in ${FAKE_FAIL:-}; do
+      if [ "$f" = "${2:-}" ]; then
+        echo "Error: The instance \"${2:-}\" is busy" >&2
+        exit 1
+      fi
+    done
+    exit 0 ;;
+esac
+exit 0
+SHIM
+chmod +x "$FSHIM/incus"
+
+FLOG="$FWORK/fleet.log"
+fleetbox() {   # fleetbox <boxes> <failing> <box args...> — the real box, shimmed
+  local boxes="$1" failing="$2"; shift 2
+  : > "$FLOG"
+  env FAKE_INCUS_LOG="$FLOG" FAKE_BOXES="$boxes" FAKE_FAIL="$failing" \
+    PATH="$FSHIM:$PATH" "$BOX" "$@" </dev/null 2>&1
+}
+# What box actually asked the daemon to do, one line per lifecycle call.
+acted_on() { grep -cE "^incus (restart|stop|start) $1( |\$)" "$FLOG"; }
+fleet_calls() { grep -cE "^incus $1 " "$FLOG"; }
+# Helpers rather than 'sh -c': the quoting a sh -c needs to carry $ILOG into a
+# subshell is exactly the SC2016 the sweep reds, and a function reads better.
+run_fleet_src() { sed -n '/^run_fleet()/,/^}/p' "$ROOT/bin/box"; }
+run_fleet_has() { run_fleet_src | grep -qF "$1"; }
+run_fleet_matches() { run_fleet_src | grep -qE "$1"; }
+# Absence assertions, as a non-zero exit: 'check' matches a substring's
+# presence, so "is NOT refused" needs the grep to be the command under test.
+new_says_reserved() { "$BOX" new --name "$1" 2>&1 | grep -q reserved; }
+# The first of the two calls inside cmd_new must be the reserved-word guard.
+guard_precedes_stack() {
+  sed -n '/^cmd_new()/,/^}/p' "$ROOT/bin/box" \
+    | grep -o 'refuse_fleet_word\|require_stack' \
+    | head -1 | grep -q refuse_fleet_word
+}
+
+# --- D1: restart is one incus call, not down-then-start ---------------------
+check "restart: one box restarts" 0 "restarted work" \
+  fleetbox "work" "" restart work
+check "restart: it is a single 'incus restart'" 0 "1" \
+  acted_on work
+check "restart: no 'stop' rides along — this is not down-then-start" 1 "" \
+  grep -qE '^incus stop ' "$FLOG"
+check "restart: the verb is in the table, so help renders it" 0 "usage: box restart" \
+  "$BOX" help restart
+
+# --- D3: 'all' is exactly what 'box list' prints for this caller ------------
+# The tier boundary itself is Incus's — a restricted user's client is scoped to
+# user-<uid> and an admin's to default, and no shim can model that refusal.
+# What IS box's to get right, and what this drives, is that 'all' enumerates
+# through boxes_csv() and builds no second path around the boundary: box acts
+# on exactly the set the daemon showed it, no more.
+check "all: acts on every box the daemon reports" 0 "restarted one" \
+  fleetbox "one two three" "" restart all
+check "all: ...and that is all three of them" 0 "3" \
+  fleet_calls restart
+check "all: the third box is named too" 0 "restarted three" \
+  fleetbox "one two three" "" restart all
+check "all: a box the daemon did NOT report is never touched" 1 "" \
+  grep -qE '^incus restart other' "$FLOG"
+# Structural, and load-bearing: the fleet set MUST come from boxes_csv(), the
+# same reader 'box list' prints from. A second enumeration would be a second
+# implementation of the tier boundary, which is how one of them gets a hole.
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "all: the fleet is read through the 'box list' source, not a second list" 0 "" \
+  run_fleet_has 'rows="$(boxes_csv)"'
+check "all: run_fleet enumerates nothing else" 1 "" \
+  run_fleet_matches 'incus list|--columns'
+
+# The restricted-tier read and the admin read, each seeing only its own side —
+# the assertion the test plan calls the one that must fail before the guard is
+# right. Same box, same verb; the only difference is what the daemon answers.
+check "all (restricted): acts on the caller's own box" 0 "stopped dev1-work" \
+  fleetbox "dev1-work" "" down all
+check "all (restricted): touches no admin box" 1 "" \
+  grep -qE '^incus stop admin-' "$FLOG"
+check "all (admin): acts on the admin's box" 0 "stopped admin-ci" \
+  fleetbox "admin-ci" "" down all
+check "all (admin): touches nothing in a restricted project" 1 "" \
+  grep -qE '^incus stop dev1-' "$FLOG"
+
+# --- D4: one failure does not abort the rest, and the status aggregates -----
+check "all: a failing box does not stop the others (exit is aggregate)" 1 "started one" \
+  fleetbox "one two three" "two" start all
+# Exit 1 throughout this block: the aggregate status is the point, so every
+# case here asserts the failing status AND the work that happened anyway.
+check "all: ...the box after the failure still acted" 1 "started three" \
+  fleetbox "one two three" "two" start all
+check "all: ...the failure is named" 1 "two FAILED" \
+  fleetbox "one two three" "two" start all
+check "all: ...with incus's own reason, never swallowed" 1 "is busy" \
+  fleetbox "one two three" "two" start all
+check "all: ...and the run says how many of each" 1 "2 of 3 succeeded, 1 failed" \
+  fleetbox "one two three" "two" start all
+check "all: every box was attempted despite the failure" 0 "3" \
+  fleet_calls start
+check "all: all three succeeding exits 0" 0 "started three" \
+  fleetbox "one two three" "" start all
+
+# --- D5: no prompt on the fleet forms, and 'rm' has no 'all' ----------------
+# No TTY here, so a confirm() would exit 2 with "refusing to ... without
+# --force" — which is exactly how this asserts the absence of a prompt.
+check "all: 'down all' does not prompt" 0 "stopped one" \
+  fleetbox "one two" "" down all
+check "all: 'restart all' does not prompt" 0 "restarted one" \
+  fleetbox "one two" "" restart all
+check "rm has no fleet form: 'all' is resolved as an ordinary name" 1 "no such box: all" \
+  fleetbox "one two" "" rm all --force
+check "rm has no fleet form: it deleted nothing" 1 "" \
+  grep -qE '^incus delete' "$FLOG"
+check "rm's row carries no 'fleet' token" 1 "" \
+  grep -qE '^  "rm\^[^^]*\^[^^]*fleet' "$ROOT/bin/box"
+
+# --- D6: 'all' over zero boxes is success with a message --------------------
+check "all: no boxes at all exits 0" 0 "nothing to restart" \
+  fleetbox "" "" restart all
+check "all: no boxes — and it called no lifecycle verb" 1 "" \
+  grep -qE '^incus restart ' "$FLOG"
+check "all: 'down all' on an empty host says so too" 0 "nothing to down" \
+  fleetbox "" "" down all
+
+# --- D2: 'all' is reserved, refused at both doors that mint a name ----------
+# No shim needed: the refusal lands before any daemon call, which is itself
+# the point — a name box will never mint cannot depend on a reachable daemon.
+check "new --name all is refused" 1 "reserved" \
+  "$BOX" new --name all
+check "new --name all names the fleet word" 1 "fleet word" \
+  "$BOX" new --name all
+# This whole suite runs with no incus on PATH, so the refusal above already
+# happened without a daemon. Pinned structurally as well, because the ORDER is
+# the contract: a name box will never mint must not depend on a reachable host.
+check "new: the reserved word is refused before require_stack" 0 "" \
+  guard_precedes_stack
+# The other direction: the guard catches its one word and nothing else, so it
+# cannot be satisfied by refusing every mint.
+check "the reserved word itself is caught" 0 "" new_says_reserved all
+check "an ordinary name is not refused by the reserved-word guard" 1 "" \
+  new_says_reserved allocated
+check "a name merely CONTAINING the word is not refused" 1 "" \
+  new_says_reserved install-all
+# A real tarball, because cmd_import reads the embedded instance name with tar
+# before any of this is reached — and the refusal must land after that read,
+# since the artifact's OWN name is a door too when no --name overrides it.
+FART="$FWORK/work-20260820T120000Z.tar.gz"
+mkdir -p "$FWORK/backup" && printf 'name: work\n' > "$FWORK/backup/index.yaml"
+tar -czf "$FART" -C "$FWORK" backup/index.yaml
+import_says_reserved() {   # extra args, e.g. --name all
+  env FAKE_INCUS_LOG="$FLOG" FAKE_BOXES="" FAKE_FAIL="" PATH="$FSHIM:$PATH" \
+    "$BOX" import "$FART" "$@" </dev/null 2>&1 | grep -q reserved
+}
+check "import --name all is refused too — import mints a name as well" 1 "reserved" \
+  fleetbox "" "" import "$FART" --name all
+check "import --name all refuses before the daemon is asked to import" 1 "" \
+  grep -qE '^incus import' "$FLOG"
+# The other direction, so the guard cannot be satisfied by refusing every
+# import: the same artifact under its own embedded name gets past the word.
+check "import --name all: the guard is what refused it" 0 "" \
+  import_says_reserved --name all
+check "import under an ordinary name is not caught by the guard" 1 "" \
+  import_says_reserved
+rm -rf "$FSHIM" "$FWORK"
+
+# --- the three help texts mention the fleet form ----------------------------
+for v in start down restart; do
+  check "box help $v mentions the 'all' form" 0 "all" "$BOX" help "$v"
+  check "box help $v shows it in the synopsis" 0 "<box>|all" "$BOX" help "$v"
+done
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 rm -rf "$SHIMDIR" "$WORK"
