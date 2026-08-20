@@ -873,7 +873,11 @@ resolve_box() {
   echo "$i"
 }
 
-box_state() { incus list "$1" --format csv --columns s 2>/dev/null | head -n1; }
+box_state() {
+  local states
+  states="$(incus list "$1" --format csv --columns s 2>/dev/null)" || return
+  head -n1 <<<"$states"
+}
 
 # $3, when given, replaces the default "why" — the table's 'stopped' rows are
 # stopped because INCUS insists (rename), but export is stopped by OUR
@@ -1158,7 +1162,7 @@ mint_time() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # is the one a restricted user's incus-user proxy is likelier to answer.
 # Prints the driver, or nothing when neither probe answers.
 storage_driver() {
-  local pool driver
+  local pool driver pools
   pool="$(incus profile device get box-net root pool 2>/dev/null || true)"
   [ -n "$pool" ] || pool=default
   # '|| true' on all three probes, not just the first. A refusal here is an
@@ -1170,9 +1174,12 @@ storage_driver() {
   # robustness tweak #107 describes sailing through review — and that accident
   # reverses into a fatal abort mid-mint, inside the function whose contract
   # is NEVER fatal. Make the three probes read alike and depend on nothing.
-  driver="$(incus storage show "$pool" 2>/dev/null | awk '/^driver:/ {print $2; exit}' || true)"
-  [ -n "$driver" ] || driver="$(incus storage list --format csv 2>/dev/null \
-    | awk -F, -v p="$pool" '$1 == p {print $2; exit}' || true)"
+  pools="$(incus storage show "$pool" 2>/dev/null || true)"
+  driver="$(awk '/^driver:/ {print $2; exit}' <<<"$pools")"
+  if [ -z "$driver" ]; then
+    pools="$(incus storage list --format csv 2>/dev/null || true)"
+    driver="$(awk -F, -v p="$pool" '$1 == p {print $2; exit}' <<<"$pools")"
+  fi
   printf '%s' "$driver"
 }
 
@@ -1527,12 +1534,16 @@ cmd_new() {
     if ! incus exec "$instance" -- env PYTHONUNBUFFERED=1 cloud-init status --wait </dev/null; then
       echo >&2
       echo "box: cloud-init FAILED in $name. What it says:" >&2
-      incus exec "$instance" -- cloud-init status --long </dev/null 2>&1 | sed 's/^/  /' >&2
+      local cloud_status
+      cloud_status="$(incus exec "$instance" -- cloud-init status --long </dev/null 2>&1 || true)"
+      printf '  %s\n' "${cloud_status//$'\n'/$'\n  '}" >&2
       echo >&2
       echo "box: the errors, from the box's log:" >&2
-      incus exec "$instance" -- sh -c \
+      local cloud_errors
+      cloud_errors="$(incus exec "$instance" -- sh -c \
         "grep -iE '^(E:|Err:)|Temporary failure|Could not resolve|Unable to fetch' /var/log/cloud-init-output.log | tail -8" \
-        </dev/null 2>/dev/null | sed 's/^/  /' >&2
+        </dev/null 2>/dev/null || true)"
+      printf '  %s\n' "${cloud_errors//$'\n'/$'\n  '}" >&2
       echo >&2
       echo "box: '$name' is still up — inspect it, then delete it:" >&2
       echo "  box incus $name -- exec {} -- tail -50 /var/log/cloud-init-output.log" >&2
@@ -1641,7 +1652,8 @@ boxes_csv() {
 }
 
 box_ipv4() {   # first address only; strips Incus's " (iface)" suffix. "-" if none.
-  incus list "$1" --format csv --columns 4 2>/dev/null \
+  local addresses; addresses="$(incus list "$1" --format csv --columns 4 2>/dev/null || true)"
+  printf '%s\n' "$addresses" \
     | tr -d '"' | sed 's/ (.*//' | grep -v '^[[:space:]]*$' | head -n1 \
     | grep . || echo "-"
 }
@@ -1654,10 +1666,11 @@ box_ipv4() {   # first address only; strips Incus's " (iface)" suffix. "-" if no
 # IPv4 addresses`. The drill has known this trap since run 4; the CLI had not.
 # Derive the prefix from the network rather than hardcoding it.
 box_net_ip() {
-  local pfx
+  local pfx addresses
   pfx="$(incus network get boxnet ipv4.address 2>/dev/null | cut -d/ -f1 | cut -d. -f1-3)"
   [ -n "$pfx" ] || return 1
-  incus list "$1" --format csv --columns 4 2>/dev/null \
+  addresses="$(incus list "$1" --format csv --columns 4 2>/dev/null || true)"
+  printf '%s\n' "$addresses" \
     | tr -d '"' | tr ' ,' '\n' | grep -E "^${pfx//./\\.}\.[0-9]+$" | head -n1 | grep .
 }
 
@@ -1782,10 +1795,11 @@ box_provenance() {
 }
 
 cmd_info() {
-  local box="${args[0]}" row
+  local box="${args[0]}" row rows
   if [ "$json" -eq 1 ]; then incus list "$inst" --format json; return; fi
 
-  row="$(boxes_csv | awk -F, -v b="$box" '$1 == b { print; exit }')"
+  rows="$(boxes_csv)"
+  row="$(awk -F, -v b="$box" '$1 == b { print; exit }' <<<"$rows")"
   [ -n "$row" ] || die "no such box: $box (see 'box list')"
 
   local state type snaps
@@ -1938,8 +1952,9 @@ cmd_import() {
   # incus acts. GNU tar auto-detects the compression on read. '|| true'
   # because pipefail would otherwise kill the script on a non-tarball with
   # tar's status instead of reaching the die below that names the problem.
-  local embedded
-  embedded="$(tar -xOf "$file" backup/index.yaml 2>/dev/null | awk '$1 == "name:" { print $2; exit }' || true)"
+  local embedded index
+  index="$(tar -xOf "$file" backup/index.yaml 2>/dev/null || true)"
+  embedded="$(awk '$1 == "name:" { print $2; exit }' <<<"$index")"
   [ -n "$embedded" ] || die "$file is not an incus/box export (no backup/index.yaml inside)"
   local target="${name:-$embedded}"
   # The boundary resolve_box enforces, seen from the other side: box will not
@@ -2048,10 +2063,11 @@ cmd_import() {
   # 'incus copy' regenerates the MAC on clone; import does not — so unset
   # every volatile hwaddr and let incus mint fresh ones at start. Host-side
   # identity, the same reasoning as the in-guest machine-id reset below.
-  local k
-  for k in $(incus config show "$target" 2>/dev/null | awk -F: '/^ *volatile\..*\.hwaddr:/ { gsub(/ /, "", $1); print $1 }'); do
+  local k config
+  config="$(incus config show "$target" 2>/dev/null || true)"
+  while IFS= read -r k; do
     incus config unset "$target" "$k"
-  done
+  done < <(awk -F: '/^ *volatile\..*\.hwaddr:/ { gsub(/ /, "", $1); print $1 }' <<<"$config")
   incus start "$target"
   wait_agent "$target"
   # The same trust boundary as a clone: the artifact's machine-id rides in
@@ -2443,7 +2459,13 @@ cmd_expose() {
       action=allow "destination=$ip/32" "destination_port=$port" protocol=tcp >/dev/null 2>&1
     # If that was the last door, unpin the static address it required. Only
     # then — other exposures still lean on the pin. Best-effort, like the ACL.
-    if ! incus config device list "$inst" 2>/dev/null | grep -q '^expose-'; then
+    # Capture first, then decide. `incus config device list` can write more
+    # than grep needs; a direct `| grep -q` lets grep close the pipe on the
+    # first exposure, turning incus's SIGPIPE into a false "no doors left"
+    # under pipefail and unpinning the address another exposure still uses
+    # (#134).
+    local devices; devices="$(incus config device list "$inst" 2>/dev/null || true)"
+    if ! grep -q '^expose-' <<<"$devices"; then
       incus config device unset "$inst" eth0 ipv4.address >/dev/null 2>&1
     fi
     return 0
