@@ -163,6 +163,48 @@ refused, never silently overridden. `box doctor` recognizes the poisoned
 state (a gateway held as a local address, duplicate uplink routes) on the
 machine it runs on and inside every box it probes.
 
+**Where the boxes live.** The storage pool carries every box's root device,
+and with no `source:` Incus builds it as a loop-backed image inside its own
+state directory — on the root filesystem. A fleet of 60GiB boxes is then
+charged against `/`, competing with the operating system for one partition
+([#180](https://github.com/heavy-duty/box/issues/180)).
+`BOX_STORAGE_SOURCE=/dev/sdb box setup-host` places the pool on a disk of its
+own (Incus formats and owns it outright — the recommended form), and
+`BOX_STORAGE_SOURCE=/data/bulk/incus` places it on an already-mounted
+filesystem. Unset is exactly today's pool, so upgrading changes nothing. The
+value must be an absolute path and reaches Incus exactly as typed, so a
+directory whose name contains a space or a `#` is placed — and reported —
+as the path you named rather than as the part before it. The one shape it
+refuses is a path containing a newline or a tab: the preseed carries the
+source as a YAML scalar and YAML folds a line break inside one to a space, so
+that value cannot be transmitted faithfully and is declined rather than
+quietly changed.
+
+This is a **fresh-host** setting: a pool is created once, and setting the
+variable never moves one that exists. On a host that already has a pool
+setup-host refuses when the variable disagrees with the live source — naming
+both — and re-runs clean when it agrees; moving a pool that already carries
+boxes means moving every box's root device, which is a migration rather than
+a re-run. Agreement is judged against the source Incus was *handed*, not the
+one it reports: on a block device it formats the disk and then records the new
+filesystem's UUID as the pool's source, so `BOX_STORAGE_SOURCE=/dev/sdb`
+re-runs clean rather than refusing at its own pool.
+
+That recorded path is a string kept at creation, though, and a device *name*
+is assigned in enumeration order — it can move to another disk across a
+reboot, an added controller or a hot-plug, while the filesystem UUID cannot.
+So a re-run naming a block device is checked against what that path holds
+**now**: same disk, it re-runs clean; another disk, or a device this run
+cannot read at all, it refuses and names the live UUID, the path the pool was
+made from, and what that path holds instead. `lsblk -o NAME,UUID` finds the
+disk that does hold it; unsetting `BOX_STORAGE_SOURCE` re-runs the script
+against the host as it stands. Mounted-path sources are unaffected — Incus
+keeps those verbatim, so the path itself is the current fact.
+
+`box doctor` prints the pool's driver and its source — and, where those
+differ, the path it was built from, with the same caveat about device names —
+which is what answers "what is filling my root disk" without an Incus lesson.
+
 A host still carrying the pre-0.4.0 stack: `box migrate-host --all-boxes`
 re-homes each legacy box onto `boxnet` (authed state preserved), and
 `box migrate-host --retire-legacy` removes the old bridge and profile once no

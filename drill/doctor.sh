@@ -103,6 +103,89 @@ ufw_dns_findings() {
   return 0
 }
 
+# --- Where the boxes' root disks actually live (#180) -----------------------
+# "My boxes filled the root disk" is a placement question, and answering it
+# needed an Incus lesson: the pool declares a driver and, unless setup-host was
+# given BOX_STORAGE_SOURCE, no source — so Incus builds it as a loop-backed
+# image under its own state directory, on '/'. Pure text in, report lines out
+# (the gw_squat_signature seam, so test/cli.sh drives it against canned pool
+# config): 'incus storage show <pool>' output in, one line per finding.
+#
+
+# The value is read through yaml_scalar and not awk's $2, and that is not
+# tidiness: '$2' of "  source: /data/bulk/box pool" is "/data/bulk/box", so
+# this section answered "where do my boxes live" with a directory they are not
+# in — a wrong answer that looks exactly like a right one (#180, panel round
+# 2). Everything after the first ':' is the value, and Incus quotes any value
+# plain YAML would mangle, so the quotes come off here: single-quoted is
+# literal with '' for a quote, double-quoted needs \" and \\ undone.
+yaml_scalar() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    "'"*"'") v="${v#\'}"; v="${v%\'}"; v="${v//\'\'/\'}" ;;
+    '"'*'"') v="${v#\"}"; v="${v%\"}"; v="${v//\\\"/\"}"; v="${v//\\\\/\\}" ;;
+  esac
+  printf '%s' "$v"
+}
+
+# The scalar for one key of the pool's config. $1 is the key test, so a key
+# indented under 'config:' costs nothing; the value is everything past the
+# first colon. A bare pair of quotes is YAML's recorded-but-empty, i.e. the key
+# is absent — normalised once, in yaml_scalar, for every key rather than for
+# the one that happened to need it. (setup-host.sh carries the same pair: these
+# two scripts ship and run independently, as bin/box's storage_driver does.)
+yaml_value() {
+  local key="$1" show="$2" line
+  line="$(printf '%s\n' "$show" | awk -v k="$key:" '$1 == k { sub(/^[[:space:]]*[^:]*:/, ""); print; exit }')"
+  yaml_scalar "$line"
+}
+
+# The report. It JUDGES NOTHING — every line here is informational and none of
+# them touch the verdict. Where a pool lives is a choice, not a fault, and a
+# doctor that called the shipped loop-backed default DIRTY would red every
+# stock host on the day it shipped.
+pool_findings() {
+  local show="$1" drv src ini
+  drv="$(yaml_value driver "$show")"
+  src="$(yaml_value source "$show")"
+  # The pool made from a block device does NOT report that device: btrfs
+  # formats it and overwrites 'source' with the new filesystem's UUID, keeping
+  # what it was handed in 'volatile.initial_source'. Reporting the UUID alone
+  # answers "where do my boxes live" with a string naming no disk on the host.
+  ini="$(yaml_value volatile.initial_source "$show")"
+  printf 'driver = %s\n' "${drv:-<unreadable>}"
+  # The driver decides whether a clone is near-free; it is the same fact
+  # bin/box reads before deciding whether to take a mark (#104, #130).
+  [ "$drv" = dir ] && printf "'dir' has no copy-on-write — every snapshot and clone is a FULL copy of a box's root\n"
+  if [ -z "$src" ]; then
+    printf 'source = <none reported> — the pool is placed under Incus own state directory, on the ROOT filesystem\n'
+  else
+    printf 'source = %s\n' "$src"
+    # The recorded-but-empty initial source every loop-backed pool carries is
+    # already absence by here: yaml_scalar reads YAML's bare pair of quotes as
+    # the empty string, for this key and for 'source' alike.
+    # Past tense, and deliberately: this is the path Incus was HANDED at
+    # creation, not a claim about what that name points at today. A device name
+    # is assigned in enumeration order and can move across a reboot, while the
+    # UUID above cannot — setup-host refuses a re-run it cannot bind back to
+    # this filesystem for exactly that reason (#180, panel round 3). This
+    # function judges nothing and probes nothing, so it says which fact it has.
+    if [ -n "$ini" ] && [ "$ini" != "$src" ]; then
+      printf 'made from = %s — the path Incus was given when this pool was created; the source above is the filesystem UUID it wrote onto that device\n' "$ini"
+      printf 'a device NAME can move between reboots and that UUID cannot, so check with "lsblk -o NAME,UUID" before trusting the name\n'
+    fi
+    case "$src" in
+      /var/lib/incus/*|/var/lib/lxd/*)
+        printf 'that is Incus own state directory: every box root device is charged against "/" — "df -h /" is the number that matters\n'
+        printf 'a FRESH host places it elsewhere:  BOX_STORAGE_SOURCE=/dev/sdb box setup-host\n'
+        printf 'moving a pool that already carries boxes is a migration, not a re-run (issue #180)\n' ;;
+    esac
+  fi
+  return 0
+}
+
 # The signature, probed INSIDE a box: its routes, read where they live. A
 # poisoned guest looks healthy from every host-side config check — the nested
 # bridge and the captured gateway exist only in the guest's kernel.
@@ -337,6 +420,34 @@ if [ -n "$PROFILES" ]; then
   inf "resources are per-box since 0.4.0 (stamped from the template at mint; BOX_CPU/BOX_MEMORY override)"
 else
   inf "box-net does not exist (a fresh host — setup-host.sh will create it)"
+fi
+
+# The pool is read off the profile that PLACES every box (profiles/box-net.yaml
+# hardcodes root's pool), not guessed from the name setup-host creates — the
+# same read bin/box's storage_driver makes before taking a mark.
+head_ "Storage pool — the disk every box's root device rides on"
+POOL="$(incus profile device get box-net root pool 2>/dev/null)"
+[ -n "$POOL" ] || POOL=default
+POOL_SHOW="$(incus storage show "$POOL" 2>/dev/null)"
+if [ -n "$POOL_SHOW" ]; then
+  inf "pool '$POOL'"
+  while IFS= read -r line; do inf "$line"; done <<<"$(pool_findings "$POOL_SHOW")"
+  # The config is a claim; the filesystem is the fact — and "how full is it"
+  # is half of what anyone asking this question wants. Only for a directory
+  # source: 'df' on a raw block device Incus owns outright answers nothing.
+  #
+  # Through yaml_value for the same reason the report is: read with awk's $2, a
+  # pool on '/data/bulk/box pool' asks '[ -d /data/bulk/box ]' — and either
+  # says nothing at all, or measures a DIFFERENT filesystem and labels it this
+  # pool's.
+  src="$(yaml_value source "$POOL_SHOW")"
+  if [ -n "$src" ] && [ -d "$src" ]; then
+    inf "$(df -h "$src" 2>/dev/null | awk 'NR == 2 { print "df " $6 ": " $2 " total, " $3 " used, " $4 " free (" $5 ") on " $1 }')"
+  fi
+elif [ "$FRESH" = 1 ]; then
+  inf "no pool yet (a fresh host — setup-host.sh creates it; BOX_STORAGE_SOURCE decides where)"
+else
+  inf "cannot read the storage pool '$POOL' from here"
 fi
 
 head_ "ACL — box-isolate"

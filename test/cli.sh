@@ -2446,6 +2446,15 @@ case "$*" in
 esac
 case "$*" in
   "storage show default")         [ -n "${FAKE_HAVE_STORAGE:-}" ] || exit 1 ;;
+  # The live pool's placement (#180): FAKE_POOL_SOURCE unset answers the way a
+  # pool whose source was never recorded does — an empty line, not a refusal.
+  "storage get default source")   printf '%s\n' "${FAKE_POOL_SOURCE:-}" ;;
+  # ...and the source Incus was HANDED, which for a block device is not the one
+  # above: btrfs formats the device and overwrites 'source' with the new
+  # filesystem's UUID. Unset answers as a 'dir' pool does — this key absent.
+  "storage get default volatile.initial_source")
+                                  printf '%s\n' "${FAKE_POOL_INITIAL_SOURCE:-}" ;;
+  *"admin init --preseed"*)       [ -z "${FAKE_PRESEED_FAIL:-}" ] || exit 1 ;;
   "network show boxnet")          [ -n "${FAKE_HAVE_BOXNET:-}" ]  || exit 1 ;;
   "network acl show box-isolate") [ -n "${FAKE_HAVE_ACL:-}" ]     || exit 1 ;;
   "profile show box-net")         [ -n "${FAKE_HAVE_PROFILE:-}" ] || exit 1 ;;
@@ -2459,7 +2468,21 @@ cat > "$SETUPSHIM/sudo" <<'SHIM'
 [ -n "${FAKE_SUDO_LOG:-}" ] && printf 'sudo %s\n' "$*" >> "$FAKE_SUDO_LOG"
 exit 0
 SHIM
-chmod +x "$SETUPSHIM/incus" "$SETUPSHIM/sudo"
+cat > "$SETUPSHIM/lsblk" <<'SHIM'
+#!/usr/bin/env bash
+# Fake lsblk: what filesystem UUID does the requested path hold RIGHT NOW
+# (#180, panel round 3)? FAKE_DEV_UUID answers for the device named in
+# FAKE_DEV_UUID_FOR (default /dev/sdb); every other path, and an unset
+# FAKE_DEV_UUID, exit non-zero with no output — the way lsblk answers for a
+# path that is not a block device. Without this shim the matcher could not be
+# contradicted, which is how the class it guards survived two rounds.
+[ -n "${FAKE_INCUS_LOG:-}" ] && printf 'lsblk %s\n' "$*" >> "$FAKE_INCUS_LOG"
+dev="${*: -1}"
+[ -n "${FAKE_DEV_UUID:-}" ] || exit 32
+[ "$dev" = "${FAKE_DEV_UUID_FOR:-/dev/sdb}" ] || exit 32
+printf '%s\n' "$FAKE_DEV_UUID"
+SHIM
+chmod +x "$SETUPSHIM/incus" "$SETUPSHIM/sudo" "$SETUPSHIM/lsblk"
 
 runsetup() { # runsetup [VAR=val ...] — the real setup-host, under shims
   env FAKE_UID=1000 FAKE_GROUPS="users incus-admin" \
@@ -2520,6 +2543,481 @@ check "setup-host: ...the bridge follows the pick" 0 "" \
   grep -qF 'network create boxnet ipv4.address=10.89.0.1/24' "$W80/g3.log"
 check "setup-host: ...the ACL carve-out follows the pick" 0 "" \
   grep -qF 'destination: 10.89.0.1/32' "$W80/g3.log"
+
+# --- Where the pool LIVES (#180) -------------------------------------------
+# pool_block is pure — driver and source in, the preseed's storage block out —
+# so it is extracted and driven, the valid_subnet seam. The unset case is
+# compared BYTE-FOR-BYTE against the block that shipped before the knob
+# existed: "the pool is byte-for-byte the pool created today" is the issue's
+# own named regression, and a substring match would not prove it.
+W180="$(mktemp -d)"
+POOLFN="$(mktemp)"
+awk '/^pool_block\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$POOLFN"
+check "pool_block: extracted from setup-host.sh (guards the awk)" 0 "storage_pools" cat "$POOLFN"
+check "pool_block: the extracted function is valid bash" 0 "" bash -n "$POOLFN"
+pblock() { bash -c ". '$POOLFN'; pool_block \"\$1\" \"\$2\"" _ "$1" "${2:-}"; }
+printf 'storage_pools:\n- name: default\n  driver: btrfs\n' > "$W180/pre180.yaml"
+pblock btrfs "" > "$W180/unset.yaml"
+check "pool_block: with no source, byte-for-byte the pre-#180 block" 0 "" \
+  cmp -s "$W180/pre180.yaml" "$W180/unset.yaml"
+check "pool_block: a source is emitted verbatim" 0 "  source: '/dev/sdb'" pblock btrfs /dev/sdb
+check "pool_block: ...and the driver line is untouched beside it" 0 "  driver: btrfs" pblock btrfs /dev/sdb
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
+check "pool_block: ...as a key OF the pool, i.e. under the driver" 0 "" bash -c '
+  . "'"$POOLFN"'"; [ "$(pool_block btrfs /dev/sdb | tail -1)" = "  source: '"'"'/dev/sdb'"'"'" ]'
+# AC6: the dir fallback is a DRIVER decision and placement is not — a host that
+# cannot do btrfs still places its pool where it was told to.
+check "pool_block: the dir fallback carries the source too" 0 "  source: '/data/bulk/incus'" \
+  pblock dir /data/bulk/incus
+check "pool_block: ...and is still the dir driver" 0 "  driver: dir" pblock dir /data/bulk/incus
+
+# "Verbatim" is a claim about the value INCUS PARSES, not about the bytes on
+# the line, and a substring check cannot tell the two apart. A plain YAML
+# scalar ends at ' #' — so '/data/bulk/a #archive', a legal directory name and
+# a legal Incus source, used to reach the daemon as '/data/bulk/a' and the pool
+# was built somewhere nobody named, silently: the very defect #180 exists to
+# close, arriving through the front door (panel round 2).
+#
+# Held from both sides. First WITHOUT a parser, so a runner missing pyyaml
+# still fails on the regression rather than skipping it: the emitted source
+# must be a QUOTED scalar, which is exactly what makes the value survive.
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
+check "pool_block: the source is emitted as a QUOTED yaml scalar" 0 "" bash -c '
+  . "'"$POOLFN"'"; [ "$(pool_block btrfs "/data/bulk/a #archive" | tail -1)" \
+     = "  source: '"'"'/data/bulk/a #archive'"'"'" ]'
+check "pool_block: ...so the comment marker is inside the quotes, not opening one" 0 "" bash -c '
+  . "'"$POOLFN"'"; pool_block btrfs "/data/bulk/a #archive" | tail -1 | grep -qE "^  source: .*archive.$"'
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
+check "pool_block: a quote in the source is doubled, as yaml escapes it" 0 "" bash -c '
+  . "'"$POOLFN"'"; [ "$(pool_block btrfs "/data/o'"'"'brien" | tail -1)" \
+     = "  source: '"'"'/data/o'"'"''"'"'brien'"'"'" ]'
+# ...then WITH one, which is the assertion that actually means it: parse the
+# block Incus is handed and compare the source it would read against the value
+# the operator set. Every shape a plain scalar mangles, round-tripped.
+if [ "$HAVE_YAML" = 1 ]; then
+  roundtrip() { # roundtrip <value> — emitted, parsed, compared
+    bash -c '. "'"$POOLFN"'"; pool_block btrfs "$1" > "$2"' _ "$1" "$W180/rt.yaml" \
+      && python3 -c '
+import sys, yaml
+want = sys.argv[1]
+got = yaml.safe_load(open(sys.argv[2]))["storage_pools"][0]["source"]
+if got != want:
+    print("parsed %r, wanted %r" % (got, want)); sys.exit(1)
+' "$1" "$W180/rt.yaml"
+  }
+  check "pool_block: a source containing ' #' round-trips through a yaml parser" 0 "" \
+    roundtrip '/data/bulk/a #archive'
+  check "pool_block: ...and one containing a space" 0 "" roundtrip '/data/bulk/box pool'
+  check "pool_block: ...and one containing a quote" 0 "" roundtrip "/data/o'brien/pool"
+  check "pool_block: ...and one containing ': ', which used to break the preseed" 0 "" \
+    roundtrip '/data/bulk/a: b'
+  check "pool_block: ...and the documented block device, unchanged by any of it" 0 "" \
+    roundtrip /dev/sdb
+  # The preseed as a WHOLE still parses with the source quoted — the block is
+  # spliced into a larger document, and a broken scalar there fails the run.
+  check "pool_block: the block is well-formed yaml on its own" 0 "" bash -c '
+    . "'"$POOLFN"'"; pool_block btrfs "/data/bulk/a #archive" > "'"$W180"'/whole.yaml"
+    python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "'"$W180"'/whole.yaml"'
+else
+  echo "skip: pool_block yaml round-trip (no python3+pyyaml here; CI has both)"
+fi
+
+# The other half of verbatim: reading one back. yaml_scalar is pure — a 'key:'
+# line's value in, the value YAML means out — so it is extracted and driven
+# like every other seam here. awk's $2 answered "/data/bulk/box" for a pool on
+# "/data/bulk/box pool", which is a wrong answer that looks like a right one.
+YSFN="$(mktemp)"
+awk '/^yaml_scalar\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$YSFN"
+awk '/^yaml_value\(\) \{/,/^\}/'  "$ROOT/host/setup-host.sh" >> "$YSFN"
+check "yaml_scalar: extracted from setup-host.sh (guards the awk)" 0 "printf" cat "$YSFN"
+check "yaml_scalar: the extracted functions are valid bash" 0 "" bash -n "$YSFN"
+ys() { bash -c ". '$YSFN'; yaml_scalar \"\$1\"; echo" _ "$1"; }
+yv() { bash -c ". '$YSFN'; yaml_value \"\$1\" \"\$2\"; echo" _ "$1" "$2"; }
+check "yaml_scalar: a plain scalar is itself" 0 "/dev/sdb" ys " /dev/sdb"
+check "yaml_scalar: a plain scalar keeps its spaces" 0 "/data/bulk/box pool" ys " /data/bulk/box pool"
+check "yaml_scalar: a single-quoted scalar loses only its quotes" 0 "/data/bulk/a #archive" \
+  ys " '/data/bulk/a #archive'"
+check "yaml_scalar: a doubled quote inside one is a single quote" 0 "/data/o'brien" \
+  ys " '/data/o''brien'"
+check "yaml_scalar: a double-quoted scalar is unescaped too" 0 '/data/a"b' ys ' "/data/a\"b"'
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
+check "yaml_scalar: trailing whitespace is yaml's, not the value's" 0 "" bash -c '
+  . "'"$YSFN"'"; [ "$(yaml_scalar "  /dev/sdb   ")" = "/dev/sdb" ]'
+# The recorded-but-empty value every loop-backed pool carries, in both
+# spellings: absence, not a source named '""'. One normalisation, every key.
+# shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
+check "yaml_scalar: a bare pair of quotes is absence" 0 "" bash -c '
+  . "'"$YSFN"'"; [ -z "$(yaml_scalar "\"\"")" ] && [ -z "$(yaml_scalar "'"''"'")" ]'
+check "yaml_scalar: a lone quote is not a quoted scalar" 0 "'" ys "'"
+check "yaml_value: reads the value past the first colon, whole" 0 "/data/bulk/a #archive" \
+  yv source "config:
+  source: '/data/bulk/a #archive'"
+check "yaml_value: ...and a value containing a colon survives it" 0 "/data/a: b" \
+  yv source "config:
+  source: '/data/a: b'"
+check "yaml_value: a key it cannot find reads as absent" 0 "" \
+  yv volatile.initial_source "config:
+  source: /dev/sdb"
+check "yaml_value: the driver comes off the same read" 0 "btrfs" \
+  yv driver "name: default
+driver: btrfs"
+rm -f "$YSFN"
+
+# The re-run's match test, pure (requested, live, initial → exit status), and
+# driven directly rather than only through the shim — because the shim is
+# exactly what hid this. Handed a BLOCK DEVICE, Incus's btrfs driver records
+# what it was given in volatile.initial_source, formats the device, and then
+# overwrites 'source' with the new filesystem's UUID (lxc/incus@90429bf,
+# driver_btrfs.go). So the live source of the DOCUMENTED form is a bare UUID
+# forever after, and a match test reading only 'source' refuses every re-run of
+# a pool it had just placed correctly.
+# The identity probe itself, pure-ish: two tools, either of which answers, and
+# NOTHING is not an answer. lsblk first because it needs no privilege — a
+# non-root run must not be silently identity-blind — and blkid behind it
+# because that is the read Incus itself does to fill 'source'. The fallback is
+# driven here rather than only through the end-to-end shim, which uses the
+# primary: an untested fallback is a fallback that works until it is needed.
+UUIDFN="$(mktemp)"
+awk '/^dev_fs_uuid\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$UUIDFN"
+check "dev_fs_uuid: extracted from setup-host.sh (guards the awk)" 0 "lsblk" cat "$UUIDFN"
+check "dev_fs_uuid: the extracted function is valid bash" 0 "" bash -n "$UUIDFN"
+UUIDSHIM="$(mktemp -d)"
+mkdir -p "$UUIDSHIM/both" "$UUIDSHIM/none"
+cat > "$UUIDSHIM/both/lsblk" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_LSBLK_UUID:-}"
+SHIM
+cat > "$UUIDSHIM/both/blkid" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_BLKID_UUID:-}"
+SHIM
+cat > "$UUIDSHIM/driver" <<'SHIM'
+#!/usr/bin/env bash
+# dev_fs_uuid, run with no privilege escalation and a PATH holding only what
+# the caller put there. Prints the answer and nothing else. PATH is set HERE
+# rather than through env, so 'no tools at all' does not also mean 'no bash'.
+PATH="$1"
+. "$2"
+SUDO=""
+dev_fs_uuid /dev/sdb
+echo
+SHIM
+chmod +x "$UUIDSHIM/both/lsblk" "$UUIDSHIM/both/blkid" "$UUIDSHIM/driver"
+devuuid() { # devuuid <PATH> [VAR=val ...] — dev_fs_uuid under a chosen PATH
+  local p="$1"; shift
+  env "$@" bash "$UUIDSHIM/driver" "$p" "$UUIDFN"
+}
+# The shim dir comes FIRST, so the shims win wherever a real lsblk or blkid
+# also exists; the rest of PATH is there only so their '#!/usr/bin/env bash'
+# can find a bash.
+check "dev_fs_uuid: lsblk answers when it can, without any privilege" 0 "u-from-lsblk" \
+  devuuid "$UUIDSHIM/both:/usr/bin:/bin" FAKE_LSBLK_UUID=u-from-lsblk FAKE_BLKID_UUID=u-from-blkid
+check "dev_fs_uuid: ...and blkid answers when lsblk says nothing" 0 "u-from-blkid" \
+  devuuid "$UUIDSHIM/both:/usr/bin:/bin" FAKE_LSBLK_UUID= FAKE_BLKID_UUID=u-from-blkid
+check "dev_fs_uuid: with neither tool present the answer is NOTHING, not a guess" 0 "" \
+  devuuid "$UUIDSHIM/none"
+rm -rf "$UUIDSHIM"; rm -f "$UUIDFN"
+
+PLACEDFN="$(mktemp)"
+awk '/^pool_placed_at\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$PLACEDFN"
+check "pool_placed_at: extracted from setup-host.sh (guards the awk)" 0 "initial" cat "$PLACEDFN"
+check "pool_placed_at: the extracted function is valid bash" 0 "" bash -n "$PLACEDFN"
+placed() { bash -c ". '$PLACEDFN'; pool_placed_at \"\$1\" \"\$2\" \"\$3\" \"\$4\"" _ "$1" "${2:-}" "${3:-}" "${4:-}"; }
+UUID=4ff9b8f1-6e6a-4d0f-9a3c-0d1f2e3a4b5c
+UUID_B=0e1d2c3b-4a59-4687-b1a2-c3d4e5f60718
+# The regression round 1 found: same device, same request, second run — the
+# fourth argument being what /dev/sdb resolves to NOW, which on the honest
+# re-run is the filesystem Incus wrote onto it.
+check "pool_placed_at: a UUID live source MATCHES the device it was made from" \
+  0 "" placed /dev/sdb "$UUID" /dev/sdb "$UUID"
+check "pool_placed_at: ...and a DIFFERENT device still does not" \
+  1 "" placed /dev/sdc "$UUID" /dev/sdb "$UUID"
+# The regression round 3 found, and the reason the fourth argument exists: an
+# initial source is a STRING RECORDED AT CREATION, not a claim about what that
+# name points at today. Enumeration reuses /dev/sdb for another disk; the pool
+# is still on the first one; the documented identical invocation used to say
+# "already placed there" about a disk it is not on.
+check "pool_placed_at: the device NAME moved — same string, different disk — refuses" \
+  2 "" placed /dev/sdb "$UUID" /dev/sdb "$UUID_B"
+check "pool_placed_at: ...and the same name still on the same disk re-runs clean" \
+  0 "" placed /dev/sdb "$UUID" /dev/sdb "$UUID"
+# Fail CLOSED where identity cannot be established at all: the device is gone,
+# it is not a block device, or the host has neither lsblk nor blkid. Silence
+# there would be the same silence one layer down.
+check "pool_placed_at: a request whose identity cannot be read refuses" \
+  2 "" placed /dev/sdb "$UUID" /dev/sdb ""
+# ...and it is a distinct refusal from "placed somewhere else entirely",
+# because they are distinct facts and the way out of each one differs.
+check "pool_placed_at: that refusal is NOT the placed-elsewhere one" \
+  1 "" placed /dev/sdb /var/lib/incus/disks/default.img "" ""
+# Where Incus mangled nothing, identity is not consulted and nothing changes:
+# live 'source' is the path itself, so the string IS the current fact. Every
+# 'dir' pool and every mounted-path source lands here.
+check "pool_placed_at: a path-shaped live source never needs a device identity" \
+  0 "" placed /data/bulk/incus /var/lib/incus/x /data/bulk/incus ""
+# The 'dir' driver sets no initial source and mangles nothing: the fall back to
+# live 'source' is the only correct read there, not a courtesy for old pools.
+check "pool_placed_at: with no initial source, live source decides" \
+  0 "" placed /data/bulk/incus /data/bulk/incus ""
+check "pool_placed_at: ...and decides against a pool placed elsewhere" \
+  1 "" placed /dev/sdb /var/lib/incus/disks/default.img ""
+check "pool_placed_at: the path shape, where Incus mangles nothing, matches on both" \
+  0 "" placed /data/bulk/incus /data/bulk/incus /data/bulk/incus
+# A trailing slash is not a mismatch — on either source.
+check "pool_placed_at: a trailing slash on the request is not a mismatch" \
+  0 "" placed /data/bulk/incus/ /data/bulk/incus ""
+check "pool_placed_at: ...nor one on the initial source" \
+  0 "" placed /data/bulk/incus /var/lib/incus/x /data/bulk/incus/
+# Fail closed: nothing requested, or nothing known, is never a match.
+check "pool_placed_at: an empty request never matches" 1 "" placed "" /dev/sdb /dev/sdb
+check "pool_placed_at: a pool that reports nothing at all never matches" \
+  1 "" placed /dev/sdb "" ""
+# An initial source must not match ACROSS pools: it is read, not assumed.
+check "pool_placed_at: a loop-backed pool does not match a requested device" \
+  1 "" placed /dev/sdb /var/lib/incus/disks/default.img ""
+
+# Driven, end to end under the shims. A fresh host that sets nothing must send
+# a preseed with no source: key at all — anything else changes an upgraded
+# host's pool.
+check "setup-host: a fresh host with no BOX_STORAGE_SOURCE completes" 0 "Host ready" \
+  runsetup BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" \
+           FAKE_INCUS_LOG="$W180/p1.log"
+check "setup-host: ...and its preseed carries NO source: key" 1 "" \
+  grep -qE '^  \|   source:' "$W180/p1.log"
+check "setup-host: ...while the storage block is the one that always shipped" 0 "" \
+  grep -qF '  | - name: default' "$W180/p1.log"
+check "setup-host: a fresh host places the pool where BOX_STORAGE_SOURCE says" 0 "Host ready" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p2.log"
+check "setup-host: ...the preseed carrying it verbatim" 0 "" \
+  grep -qF "  |   source: '/dev/sdb'" "$W180/p2.log"
+# ...and the shape a plain scalar silently truncated, driven all the way to the
+# preseed's stdin: the pool must be asked for at the path the operator typed,
+# not at the prefix before its comment marker.
+check "setup-host: a source containing ' #' reaches the preseed whole" 0 "Host ready" \
+  runsetup "BOX_STORAGE_SOURCE=/data/bulk/a #archive" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p10.log"
+check "setup-host: ...quoted, so yaml does not read the rest as a comment" 0 "" \
+  grep -qF "  |   source: '/data/bulk/a #archive'" "$W180/p10.log"
+if [ "$HAVE_YAML" = 1 ]; then
+  # The preseed as the daemon receives it: the shim logs every stdin verb's
+  # input under its own call line with a '  | ' prefix, so take the block that
+  # follows the preseed call, strip the prefix, and parse what Incus was handed.
+  # shellcheck disable=SC2016  # $1/$2 are the inner bash's positional args
+  check "setup-host: ...and the preseed Incus was handed parses to that source" 0 "" bash -c '
+    awk "/^incus admin init --preseed/ { f = 1; next }
+         f && /^  \\| / { sub(/^  \\| /, \"\"); print; next }
+         f { exit }" "$1" > "$2"
+    [ -s "$2" ] || { echo "no preseed block found in $1"; exit 1; }
+    python3 -c "
+import sys, yaml
+got = yaml.safe_load(open(sys.argv[1]))[\"storage_pools\"][0][\"source\"]
+want = \"/data/bulk/a #archive\"
+if got != want:
+    print(\"preseed carried %r, wanted %r\" % (got, want)); sys.exit(1)
+" "$2"' _ "$W180/p10.log" "$W180/p10.yaml"
+else
+  echo "skip: setup-host preseed yaml parse (no python3+pyyaml here; CI has both)"
+fi
+# D3, the defect: the pool is created once, so a re-run cannot move it. It used
+# to skip in silence; now it names both sources and dies.
+check "setup-host: an existing pool placed ELSEWHERE refuses" 1 "already exists somewhere else" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/var/lib/incus/storage-pools/default \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" \
+           FAKE_INCUS_LOG="$W180/p3.log"
+check "setup-host: ...naming the LIVE source" 1 "live:      /var/lib/incus/storage-pools/default" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/var/lib/incus/storage-pools/default \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...and the REQUESTED one" 1 "requested: /dev/sdb" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/var/lib/incus/storage-pools/default \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...pointing at the migration it is NOT (D4)" 1 "that is a migration, not a re-run" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/var/lib/incus/storage-pools/default \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...and the refusal never reached a preseed" 1 "" \
+  grep -q 'admin init' "$W180/p3.log"
+check "setup-host: ...nor the bridge it would have built after it" 1 "" \
+  grep -q 'network create' "$W180/p3.log"
+# The pool exists and IS where it was asked to be: an ordinary clean re-run.
+check "setup-host: an existing pool that MATCHES re-runs clean" 0 "Host ready" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 FAKE_POOL_SOURCE=/dev/sdb \
+           FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...saying the pool is already placed there" 0 "already placed there" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 FAKE_POOL_SOURCE=/dev/sdb \
+           FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: a trailing slash is not a mismatch" 0 "Host ready" \
+  runsetup BOX_STORAGE_SOURCE=/data/bulk/incus/ FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/data/bulk/incus FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 \
+           FAKE_HAVE_PROFILE=1 BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# The BLOCK-DEVICE re-run, end to end: the shape the docs recommend, on the
+# second run. Incus reports the filesystem UUID it wrote onto /dev/sdb as the
+# live source and keeps the device in volatile.initial_source, so this used to
+# refuse to re-run against the pool it had itself just placed.
+# FAKE_DEV_UUID is what /dev/sdb resolves to NOW: on the honest re-run that is
+# the filesystem Incus wrote onto it, which is what makes the recorded initial
+# source proof rather than a hopeful string (panel round 3). Overridable, so
+# the moved-name and unreadable shapes drive the same path.
+runblockdev() { # runblockdev <requested> [extra=val ...]
+  local want="$1"; shift
+  runsetup "BOX_STORAGE_SOURCE=$want" FAKE_HAVE_STORAGE=1 \
+           "FAKE_POOL_SOURCE=$UUID" FAKE_POOL_INITIAL_SOURCE=/dev/sdb \
+           "FAKE_DEV_UUID=$UUID" \
+           FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" \
+           FAKE_IP4_ADDRS="$A_GUEST" "$@"
+}
+check "setup-host: a block-device pool re-runs clean against the SAME device" \
+  0 "Host ready" runblockdev /dev/sdb FAKE_INCUS_LOG="$W180/p8.log"
+check "setup-host: ...saying the pool is already placed there" \
+  0 "already placed there" runblockdev /dev/sdb
+check "setup-host: ...naming the DEVICE the operator gave, not the UUID" \
+  0 "source = /dev/sdb" runblockdev /dev/sdb
+check "setup-host: ...with the UUID Incus records named beside it" \
+  0 "Incus records it as '$UUID'" runblockdev /dev/sdb
+check "setup-host: ...having actually asked for the initial source" 0 "" \
+  grep -qF 'storage get default volatile.initial_source' "$W180/p8.log"
+check "setup-host: ...and having actually PROBED the device's identity" 0 "" \
+  grep -qF 'lsblk --nodeps -rno UUID -- /dev/sdb' "$W180/p8.log"
+# The round-3 regression, end to end: the operator types the same command on
+# the same host, and /dev/sdb is a different disk than the one the pool is on.
+# 'already placed there' would be a lie with a success exit code.
+check "setup-host: a block-device pool refuses when the NAME moved to another disk" \
+  1 "does not name the disk the pool is on now" \
+  runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B" FAKE_INCUS_LOG="$W180/p11.log"
+check "setup-host: ...naming the filesystem the pool actually is on" \
+  1 "live:      $UUID" runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B"
+check "setup-host: ...and what that path holds instead" \
+  1 "now holds: $UUID_B" runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B"
+check "setup-host: ...saying why a device name is not an identity" \
+  1 "assigned in enumeration order" runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B"
+check "setup-host: ...and how to find the disk that does hold it" \
+  1 "lsblk -o NAME,UUID" runblockdev /dev/sdb "FAKE_DEV_UUID=$UUID_B"
+check "setup-host: ...that refusal reaching no preseed" 1 "" \
+  grep -q 'admin init' "$W180/p11.log"
+check "setup-host: ...nor the bridge it would have built after it" 1 "" \
+  grep -q 'network create' "$W180/p11.log"
+# Fail closed, not open: no device, not a block device, or no lsblk/blkid to
+# ask. The old code called that a match; it is the absence of an answer.
+check "setup-host: a device whose identity cannot be read refuses too" \
+  1 "does not name the disk the pool is on now" \
+  runblockdev /dev/sdb FAKE_DEV_UUID= FAKE_INCUS_LOG="$W180/p12.log"
+check "setup-host: ...saying that is what happened, not that it mismatched" \
+  1 "holds no filesystem this run could read" runblockdev /dev/sdb FAKE_DEV_UUID=
+check "setup-host: ...and offering the unset way out" \
+  1 "unset BOX_STORAGE_SOURCE" runblockdev /dev/sdb FAKE_DEV_UUID=
+check "setup-host: ...that refusal reaching no preseed either" 1 "" \
+  grep -q 'admin init' "$W180/p12.log"
+# The path shapes are untouched by any of it: where live 'source' is a path,
+# Incus mangled nothing, and no device identity is consulted or needed.
+check "setup-host: a path-source re-run never probes a device identity" 0 "Host ready" \
+  runsetup BOX_STORAGE_SOURCE=/data/bulk/incus FAKE_HAVE_STORAGE=1 \
+           FAKE_POOL_SOURCE=/data/bulk/incus FAKE_POOL_INITIAL_SOURCE=/data/bulk/incus \
+           FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# The FRESH run reports the same way, and this is the run where it matters
+# most: the operator has just typed /dev/sdb, and btrfs has just written a
+# filesystem UUID over 'source'. Answering with the UUID alone names no disk
+# on the host — it was the last line still doing so.
+check "setup-host: a fresh placed host reports the DEVICE, not the UUID it became" \
+  0 "source = /dev/sdb" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb BOX_SUBNET=10.89.0.0/24 \
+           "FAKE_POOL_SOURCE=$UUID" FAKE_POOL_INITIAL_SOURCE=/dev/sdb \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...with the UUID Incus wrote named beside it" \
+  0 "Incus records it as '$UUID'" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb BOX_SUBNET=10.89.0.0/24 \
+           "FAKE_POOL_SOURCE=$UUID" FAKE_POOL_INITIAL_SOURCE=/dev/sdb \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# ...and where Incus mangled nothing — every dir pool, every path source — it
+# is the one line it always was, with no parenthetical to explain.
+check "setup-host: a fresh path-source host reports that path plainly" \
+  0 "source = /data/bulk/incus" \
+  runsetup BOX_STORAGE_SOURCE=/data/bulk/incus BOX_SUBNET=10.89.0.0/24 \
+           FAKE_POOL_SOURCE=/data/bulk/incus FAKE_IP4_DEFAULT="$D_INBOX" \
+           FAKE_IP4_ADDRS="$A_GUEST"
+# shellcheck disable=SC2016  # $PATH and $@ belong to the inner bash
+check "setup-host: ...saying nothing about a UUID it does not have" 1 "" bash -c '
+  runsetup() { env FAKE_UID=1000 FAKE_GROUPS="users incus-admin" \
+      PATH="'"$SETUPSHIM:$SHIMDIR"':$PATH" "$@" bash "'"$ROOT"'/host/setup-host.sh"; }
+  runsetup BOX_STORAGE_SOURCE=/data/bulk/incus BOX_SUBNET=10.89.0.0/24 \
+           FAKE_POOL_SOURCE=/data/bulk/incus FAKE_IP4_DEFAULT="'"$D_INBOX"'" \
+           FAKE_IP4_ADDRS="'"$A_GUEST"'" 2>&1 | grep -q "Incus records it as"'
+check "setup-host: ...and it reached the rest of the run, not a refusal" 0 "" \
+  grep -q 'network show boxnet' "$W180/p8.log"
+# ...and it is a READ of that key, not an assumption: another device still
+# refuses, and the refusal names the disk rather than only the UUID.
+check "setup-host: a block-device pool still refuses a DIFFERENT device" \
+  1 "already exists somewhere else" runblockdev /dev/sdc FAKE_INCUS_LOG="$W180/p9.log"
+check "setup-host: ...naming the device it was made from" 1 "made from: /dev/sdb" \
+  runblockdev /dev/sdc
+check "setup-host: ...and saying why the live source is not a path" \
+  1 "records the new filesystem's UUID" runblockdev /dev/sdc
+check "setup-host: ...that refusal reaching no preseed either" 1 "" \
+  grep -q 'admin init' "$W180/p9.log"
+# Fail closed: a live pool whose source cannot be read cannot be proven to
+# match, and proceeding would be the silence this whole change removes.
+check "setup-host: an existing pool with no readable source refuses" 1 "reports NO source at all" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_HAVE_STORAGE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# An unset variable on an existing pool is today's behaviour exactly: no read,
+# no refusal, nothing said.
+check "setup-host: with the variable unset an existing pool is not judged at all" 0 "Host ready" \
+  runsetup FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           BOX_SUBNET=10.89.0.0/24 FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" \
+           FAKE_INCUS_LOG="$W180/p4.log"
+check "setup-host: ...not even reading the live source" 1 "" \
+  grep -q 'storage get' "$W180/p4.log"
+# The value dies at the gate, before anything is touched: a relative path would
+# be resolved by the DAEMON, somewhere nobody named.
+check "setup-host: a relative BOX_STORAGE_SOURCE is refused by name" 1 "must be an absolute path" \
+  runsetup BOX_STORAGE_SOURCE=bulk/incus BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p5.log"
+check "setup-host: ...having made no incus call at all" 1 "" test -e "$W180/p5.log"
+# The one shape quoting cannot carry: YAML FOLDS a line break inside a quoted
+# scalar to a space, so '/data/a<newline>b' would reach the daemon as
+# '/data/a b'. That is the #180 defect through a third door, and the gate
+# refuses it rather than mangling it (panel round 3). This is not the gate
+# second-guessing a placement Incus would accept — it is declining to transmit
+# a value it would transmit WRONG.
+check "setup-host: a newline in BOX_STORAGE_SOURCE is refused by name" 1 "control character" \
+  runsetup "BOX_STORAGE_SOURCE=$(printf '/data/a\nb')" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p13.log"
+check "setup-host: ...saying WHY, in terms of what yaml would do to it" \
+  1 "folds a line break inside one to a space" \
+  runsetup "BOX_STORAGE_SOURCE=$(printf '/data/a\nb')" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...and having made no incus call at all" 1 "" test -e "$W180/p13.log"
+check "setup-host: a tab is the same class and refused the same way" 1 "control character" \
+  runsetup "BOX_STORAGE_SOURCE=$(printf '/data/a\tb')" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# ...and every shape that IS carried verbatim still passes the gate: the
+# refusal is one class wide, not a general tightening of what a source may be.
+check "setup-host: a space, a quote and a ' #' still pass the gate untouched" 0 "Host ready" \
+  runsetup "BOX_STORAGE_SOURCE=/data/o'brien/a #archive b" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# The --minimal fallback creates the pool under /var/lib/incus and cannot carry
+# a source, so honouring one is impossible there: refuse rather than build a
+# host whose boxes live somewhere the operator did not name.
+check "setup-host: a failed preseed with a placement requested refuses" 1 "cannot be honored" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb FAKE_PRESEED_FAIL=1 BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p6.log"
+check "setup-host: ...never falling back to --minimal" 1 "" \
+  grep -q 'admin init --minimal' "$W180/p6.log"
+check "setup-host: a failed preseed with NO placement still falls back" 0 "falling back to --minimal" \
+  runsetup FAKE_PRESEED_FAIL=1 BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p7.log"
+check "setup-host: ...and reaches --minimal to do it" 0 "" \
+  grep -q 'admin init --minimal' "$W180/p7.log"
+rm -f "$POOLFN" "$PLACEDFN"
+rm -rf "$W180"
+
 rm -rf "$W80" "$SETUPSHIM"
 
 # The decision must be the FIRST effective act — before the incus install, the
@@ -2527,6 +3025,15 @@ rm -rf "$W80" "$SETUPSHIM"
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "setup-host: the subnet decision precedes the first mutation" 0 "" bash -c '
   guard="$(grep -n "^BOX_SUBNET=\"\$(choose_subnet " "'"$ROOT"'/host/setup-host.sh" | head -1 | cut -d: -f1)"
+  mut="$(grep -n "^if ! command -v incus" "'"$ROOT"'/host/setup-host.sh" | head -1 | cut -d: -f1)"
+  [ -n "$guard" ] && [ -n "$mut" ] && [ "$guard" -lt "$mut" ]'
+# The placement gate says "Nothing was changed" too, and that is only true
+# ABOVE the apt calls — the suite's shim pre-installs incus, so no driven check
+# can tell the difference on a FRESH host. Held by line order, like the one
+# above it.
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "setup-host: the placement gate precedes the first mutation too (#180)" 0 "" bash -c '
+  guard="$(grep -n "^case \"\$BOX_STORAGE_SOURCE\" in" "'"$ROOT"'/host/setup-host.sh" | head -1 | cut -d: -f1)"
   mut="$(grep -n "^if ! command -v incus" "'"$ROOT"'/host/setup-host.sh" | head -1 | cut -d: -f1)"
   [ -n "$guard" ] && [ -n "$mut" ] && [ "$guard" -lt "$mut" ]'
 # box-firewall follows the bridge, wherever BOX_SUBNET put it.
@@ -2595,6 +3102,207 @@ A_DUPONLY="$A_GUEST
 check "signature: duplicate routes alone still fire" \
   0 "duplicate connected routes" sig "$R_POISON" "$A_DUPONLY"
 rm -f "$SIGFN"
+
+# ---------------------------------------------------------------------------
+# The doctor's placement report (#180). pool_findings is the same seam: pure
+# 'incus storage show' text in, report lines out, driven against canned pool
+# config. The question it exists to answer without an Incus lesson is "my
+# boxes filled the root disk" — so the loop-backed default must be RECOGNISED
+# and named, and a placed pool must not carry that warning.
+# ---------------------------------------------------------------------------
+PFFN="$(mktemp)"
+# The two readers come with it: pool_findings reads its scalars through them,
+# and extracting the report without them would drive a function this file
+# assembled rather than the one doctor.sh ships.
+awk '/^yaml_scalar\(\) \{/,/^\}/'   "$ROOT/drill/doctor.sh" > "$PFFN"
+awk '/^yaml_value\(\) \{/,/^\}/'    "$ROOT/drill/doctor.sh" >> "$PFFN"
+awk '/^pool_findings\(\) \{/,/^\}/' "$ROOT/drill/doctor.sh" >> "$PFFN"
+check "pool_findings: extracted from doctor.sh (guards the awk)" 0 "driver = " cat "$PFFN"
+check "pool_findings: the extracted function is valid bash" 0 "" bash -n "$PFFN"
+pf() { bash -c ". '$PFFN'; pool_findings \"\$1\"" _ "$1"; }
+
+# What a stock host looks like today: btrfs, and a source Incus chose itself
+# inside its own state directory — i.e. on '/'.
+P_LOOP="name: default
+driver: btrfs
+status: Created
+config:
+  size: 30GiB
+  source: /var/lib/incus/storage-pools/default"
+# What #180 buys: the pool on a disk of its own.
+P_DEV="name: default
+driver: btrfs
+config:
+  source: /dev/sdb"
+# A pool that reports no source at all, on the driver with no CoW.
+P_BARE="name: default
+driver: dir
+config: {}"
+# What #180 buys AS INCUS ACTUALLY RECORDS IT: handed /dev/sdb, the btrfs
+# driver formats the disk and replaces 'source' with the new filesystem's UUID,
+# keeping the device in volatile.initial_source. A doctor that printed only the
+# UUID would answer "where do my boxes live" with a string naming no disk.
+P_UUID="name: default
+driver: btrfs
+config:
+  size: 60GiB
+  source: 4ff9b8f1-6e6a-4d0f-9a3c-0d1f2e3a4b5c
+  volatile.initial_source: /dev/sdb"
+check "pool_findings: the driver is reported" 0 "driver = btrfs" pf "$P_LOOP"
+check "pool_findings: ...and so is the source" \
+  0 "source = /var/lib/incus/storage-pools/default" pf "$P_LOOP"
+check "pool_findings: the loop-backed default is named as the ROOT filesystem" \
+  0 "charged against" pf "$P_LOOP"
+check "pool_findings: ...and the way out is a FRESH host, not a re-run" \
+  0 "BOX_STORAGE_SOURCE=/dev/sdb box setup-host" pf "$P_LOOP"
+check "pool_findings: ...saying so, because a re-run cannot move a pool" \
+  0 "migration, not a re-run" pf "$P_LOOP"
+check "pool_findings: a placed pool reports its device" 0 "source = /dev/sdb" pf "$P_DEV"
+check "pool_findings: ...and carries no root-disk warning" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "'"$P_DEV"'" | grep -q "charged against"'
+check "pool_findings: a pool with no source at all is still reported" \
+  0 "source = <none reported>" pf "$P_BARE"
+check "pool_findings: ...and named as the root filesystem too" 0 "ROOT filesystem" pf "$P_BARE"
+check "pool_findings: dir is named as the driver with no copy-on-write" \
+  0 "no copy-on-write" pf "$P_BARE"
+check "pool_findings: btrfs is not" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "'"$P_LOOP"'" | grep -q "copy-on-write"'
+check "pool_findings: an unreadable pool says so rather than inventing a driver" \
+  0 "driver = <unreadable>" pf ""
+# The block-device pool as Incus really reports it: the UUID is what 'source'
+# says, and the device it was built on is named beside it.
+check "pool_findings: a UUID source is reported as the source Incus holds" \
+  0 "source = 4ff9b8f1-6e6a-4d0f-9a3c-0d1f2e3a4b5c" pf "$P_UUID"
+check "pool_findings: ...with the DEVICE it was made from named too" \
+  0 "made from = /dev/sdb" pf "$P_UUID"
+check "pool_findings: ...saying which of the two is the filesystem UUID" \
+  0 "the source above is the filesystem UUID" pf "$P_UUID"
+# ...in the PAST tense, and that is the point rather than the grammar: this
+# function probes nothing, so 'made from' is the path Incus was HANDED at
+# creation and not a claim about what that name points at today. setup-host
+# refuses a re-run it cannot bind back to this filesystem for exactly that
+# reason; the report says which fact it has instead of borrowing the other
+# one (#180, panel round 3).
+check "pool_findings: ...as the path Incus was GIVEN, not a claim about today" \
+  0 "the path Incus was given when this pool was created" pf "$P_UUID"
+check "pool_findings: ...warning that a device name can move and a UUID cannot" \
+  0 "can move between reboots" pf "$P_UUID"
+check "pool_findings: ...and naming the command that settles it" \
+  0 "lsblk -o NAME,UUID" pf "$P_UUID"
+# The caveat belongs to the two-fact case only: a pool whose source Incus kept
+# has no second name to be confused about.
+check "pool_findings: a pool Incus did not mangle gets no device-name caveat" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "'"$P_DEV"'" | grep -q "can move between reboots"'
+check "pool_findings: ...and carrying no root-disk warning" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "'"$P_UUID"'" | grep -q "charged against"'
+# It is a report of a DIFFERENCE, not an echo: where Incus kept the path it was
+# given (every dir pool, every path source, and a block device whose by-uuid
+# symlink never appeared), there is no second line to read.
+check "pool_findings: a source Incus did not mangle gets no 'made from' line" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "name: default
+driver: btrfs
+config:
+  source: /data/bulk/incus
+  volatile.initial_source: /data/bulk/incus" | grep -q "made from"'
+check "pool_findings: ...and neither does a pool with no initial source at all" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "'"$P_DEV"'" | grep -q "made from"'
+# A loop-backed pool carries the key RECORDED AND EMPTY, which YAML renders as
+# a bare pair of quotes. That is absence, not a device named '"'"'""'"'"'.
+check "pool_findings: an empty initial source is absence, not a device" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "name: default
+driver: btrfs
+config:
+  source: /var/lib/incus/disks/default.img
+  volatile.initial_source: \"\"" | grep -q "made from"'
+check "pool_findings: ...and the root-disk warning still fires under it" 0 "charged against" \
+  pf "name: default
+driver: btrfs
+config:
+  source: /var/lib/incus/disks/default.img
+  volatile.initial_source: \"\""
+# AC5 on a source with a space in it. This section exists to answer "my boxes
+# filled the root disk" with a path the operator can act on, and reading the
+# line with awk's $2 answered it with a DIFFERENT path — '/data/bulk/box' for a
+# pool on '/data/bulk/box pool' — which is worse than not answering, because
+# nothing about it looks wrong. Both shapes Incus emits: plain for a space,
+# quoted once the value contains ' #'.
+P_SPACE="name: default
+driver: btrfs
+config:
+  source: /data/bulk/box pool"
+P_HASH="name: default
+driver: btrfs
+config:
+  source: '/data/bulk/a #archive'"
+check "pool_findings: a source containing a space is reported WHOLE" \
+  0 "source = /data/bulk/box pool" pf "$P_SPACE"
+check "pool_findings: a quoted source is reported without its quotes" \
+  0 "source = /data/bulk/a #archive" pf "$P_HASH"
+check "pool_findings: ...and neither is mistaken for the root filesystem" 1 "" bash -c '
+  . "'"$PFFN"'"; { pool_findings "'"$P_SPACE"'"; pool_findings "'"$P_HASH"'"; } | grep -q "charged against"'
+# The device a quoted-and-mangled pool was made from is read the same way: this
+# is the line that names the disk, so truncating it names the wrong disk.
+check "pool_findings: a quoted initial source names the whole device" \
+  0 "made from = /dev/disk/by-id/scsi-0QEMU disk2" pf "name: default
+driver: btrfs
+config:
+  source: 4ff9b8f1-6e6a-4d0f-9a3c-0d1f2e3a4b5c
+  volatile.initial_source: '/dev/disk/by-id/scsi-0QEMU disk2'"
+rm -f "$PFFN"
+
+# The wiring, and the judgement inside it: the pool is read off the profile
+# that PLACES every box, and the whole section is informational. Placement is
+# a choice, not a fault — a DIRTY line here would red every stock host on the
+# day it shipped, and the verdict is what the drill reads.
+check "doctor: the pool is read off the box-net profile, not guessed" 0 "" \
+  grep -qF 'incus profile device get box-net root pool' "$ROOT/drill/doctor.sh"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "doctor: the placement section reports through pool_findings" 0 "" \
+  grep -qF 'pool_findings "$POOL_SHOW"' "$ROOT/drill/doctor.sh"
+check "doctor: the placement section judges nothing (no DIRTY line in it)" 1 "" bash -c '
+  awk "/^head_ \"Storage pool/,/^head_ \"ACL/" "'"$ROOT"'/drill/doctor.sh" | grep -qE "^ *no \""'
+# The 'df' line measures the pool's own filesystem, so it reads the source the
+# same way the report does: '$2' of "  source: /data/bulk/box pool" is
+# "/data/bulk/box", and '[ -d ]' on that either says nothing or measures a
+# DIFFERENT filesystem and labels it this pool's.
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "doctor: the df line reads the source through yaml_value too" 0 "" \
+  grep -qF 'src="$(yaml_value source "$POOL_SHOW")"' "$ROOT/drill/doctor.sh"
+# A drift guard on all five reads: nothing in either script may go back to
+# taking a source line's second FIELD, which is what threw half of a path away.
+#
+# Widened from a pattern that required the KEY and 'print $2' to be ADJACENT.
+# That one was narrower than its own name: it missed 'awk "/^  source:/ {print
+# $2}"' and 'grep "^  source:" | awk "{print $2}"' (@claude-bot-andresmgsl,
+# panel round 3). The offered widening was a BARE 'print $2' over both files,
+# on the grounds that neither has another one — but doctor.sh has two, the ACL
+# destination read and the resolv.conf nameserver read, and a guard that reds
+# on unrelated correct code gets deleted rather than obeyed. So: the key and
+# 'print $2' on one LINE, in any order and any distance apart, which catches
+# every spelling named and neither innocent one. A read split across two lines
+# is out of a grep's reach and is not claimed here.
+# shellcheck disable=SC2016  # the $2 is the pattern being searched FOR
+check "the source is never read as awk's second field again (#180)" 1 "" \
+  grep -nE 'source.*print[[:space:]]*\$2' "$ROOT/drill/doctor.sh" "$ROOT/host/setup-host.sh"
+# ...and a guard is only worth its name if it can see those spellings, so hold
+# it against them rather than trusting the regex by eye. The first two are the
+# ones the narrow pattern let through; the third is the one it caught.
+DRIFTF="$(mktemp)"
+cat > "$DRIFTF" <<'DRIFT'
+awk '/^  source:/ {print $2}' "$show"
+grep '^  source:' <<<"$show" | awk '{print $2}'
+awk -v k=source: '$1 == k { print $2 }' <<<"$show"
+DRIFT
+# shellcheck disable=SC2016  # the $2 is the pattern being searched FOR
+driftcount() { grep -cE 'source.*print[[:space:]]*\$2' "$1"; }
+check "...and that guard catches all three spellings, not just the adjacent one" \
+  0 "3" driftcount "$DRIFTF"
+# ...while leaving doctor.sh's two unrelated second-field reads alone, which is
+# why the pattern is not the bare one.
+# shellcheck disable=SC2016  # the $2 is the pattern being searched FOR
+check "...and does not red on the reads that are nothing to do with a source" \
+  0 "" grep -qE 'nameserver.*print[[:space:]]*\$2' "$ROOT/drill/doctor.sh"
+rm -f "$DRIFTF"
 
 # The wiring: the signature is judged on THIS machine before any daemon call
 # (the daemon answering could be the nested impostor), probed INSIDE boxes on
