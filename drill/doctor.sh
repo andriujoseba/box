@@ -132,7 +132,9 @@ pool_findings() {
     printf 'source = <none reported> — the pool is placed under Incus own state directory, on the ROOT filesystem\n'
   else
     printf 'source = %s\n' "$src"
-    if [ -n "$ini" ] && [ "$ini" != "$src" ]; then
+    # '""' is how YAML renders the recorded-but-empty value a loop-backed pool
+    # carries: the key being absent, not a device named '""'.
+    if [ -n "$ini" ] && [ "$ini" != '""' ] && [ "$ini" != "$src" ]; then
       printf 'made from = %s — the device this pool was built on; the source above is the filesystem UUID Incus wrote onto it\n' "$ini"
     fi
     case "$src" in

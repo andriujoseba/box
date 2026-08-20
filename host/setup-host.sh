@@ -330,6 +330,10 @@ pool_cfg() {
   if [ -z "$out" ]; then
     show="$(incus storage show default 2>/dev/null || true)"
     out="$(awk -v k="$key:" '$1 == k { print $2; exit }' <<<"$show")"
+    # YAML renders a recorded-but-empty value as a bare pair of quotes — which
+    # is 'volatile.initial_source' on every loop-backed pool. That is the key
+    # being absent, not a source named '""'.
+    case "$out" in '""') out="" ;; esac
   fi
   printf '%s' "$out"
 }

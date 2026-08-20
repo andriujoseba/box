@@ -2885,6 +2885,20 @@ config:
   volatile.initial_source: /data/bulk/incus" | grep -q "made from"'
 check "pool_findings: ...and neither does a pool with no initial source at all" 1 "" bash -c '
   . "'"$PFFN"'"; pool_findings "'"$P_DEV"'" | grep -q "made from"'
+# A loop-backed pool carries the key RECORDED AND EMPTY, which YAML renders as
+# a bare pair of quotes. That is absence, not a device named '"'"'""'"'"'.
+check "pool_findings: an empty initial source is absence, not a device" 1 "" bash -c '
+  . "'"$PFFN"'"; pool_findings "name: default
+driver: btrfs
+config:
+  source: /var/lib/incus/disks/default.img
+  volatile.initial_source: \"\"" | grep -q "made from"'
+check "pool_findings: ...and the root-disk warning still fires under it" 0 "charged against" \
+  pf "name: default
+driver: btrfs
+config:
+  source: /var/lib/incus/disks/default.img
+  volatile.initial_source: \"\""
 rm -f "$PFFN"
 
 # The wiring, and the judgement inside it: the pool is read off the profile
