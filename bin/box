@@ -1721,18 +1721,56 @@ inst_type_of() {   # inst_type_of <instance>
   # Capture first, THEN read (#124's class): a multi-line writer piped straight
   # into an early-exit reader can hand pipefail a 141, which here would read as
   # "not a container" and take the wrong branch of the decision above.
-  rows="$(incus list "$1" --format csv --columns t 2>/dev/null </dev/null || true)"
+  #
+  # ANCHORED, for the reason bin/box:2854 records at its own call: a bare name
+  # filter PREFIX-matches, so asking for 'work' also returns 'work2'. 'head -n1'
+  # happens to save this one — any name with 'work' as a proper prefix sorts
+  # after 'work' — but that is the sort order doing the work, not the query,
+  # and it costs nothing to ask the question box actually means.
+  rows="$(incus list "^$1\$" --format csv --columns t 2>/dev/null </dev/null || true)"
   printf '%s\n' "$rows" | head -n1 | tr -d '"' | tr '[:upper:]' '[:lower:]'
 }
 
-src_has_local_root() {   # src_has_local_root <source-ref>
+# THREE answers, not two, and the third is the one this helper exists for:
+#
+#   0  the source has a root device of its own      → -d rides the copy
+#   1  read fine, and it has none (profile-rooted)  → refuse
+#   2  the read FAILED, or said nothing at all      → refuse
+#
+# 1 and 2 both refuse, so the decision above is still a yes/no. They are kept
+# apart because the refusal names its cause, and naming a profile as the cause
+# when box never got an answer out of incus is a message asserting something it
+# does not know (#171 review round 1).
+#
+# The status is checked BEFORE the stdout is parsed, and that ordering is the
+# whole point: 'incus config show' can emit a valid-looking devices stanza and
+# still exit nonzero (a partial read, a daemon dropping the connection
+# mid-write), and an earlier cut of this helper discarded the status with
+# '|| true' and judged the bytes. That reads a failed read as "has a local
+# root" and attaches the very -d override D2 was built to withhold — the unsafe
+# false positive, arrived at by the one route fail-closed was supposed to
+# close. Empty stdout is 2 for the same reason: no devices stanza at all is an
+# absent answer, not a negative one.
+src_has_local_root() {   # src_has_local_root <source-ref> → 0 local | 1 none | 2 unreadable
   local yaml
-  yaml="$(incus config show "$1" 2>/dev/null </dev/null || true)"
+  yaml="$(incus config show "$1" 2>/dev/null </dev/null)" || return 2
+  [ -n "$yaml" ] || return 2
   printf '%s\n' "$yaml" | awk '
     /^devices:/       { in_dev = 1; next }
     /^[^[:space:]]/   { in_dev = 0 }
     in_dev && /^[[:space:]]+root:[[:space:]]*$/ { found = 1 }
     END { exit(found ? 0 : 1) }'
+}
+
+# The container answer to --disk, which both paths give and which is therefore
+# written once (#171 D4, review round 1). box has said this on the mint path
+# since #57; the clone path started saying it when --from grew the flag. D4
+# rules that the two paths share an ANSWER — sharing the words by having copied
+# them is the version of that which survives only until someone edits one of
+# them. The note goes to stderr because it annotates a mint that is proceeding:
+# it is not part of what the command produces.
+disk_is_vm_only_note() {
+  echo "box: note — --disk applies to VM mode only; this container's root rides the pool" >&2
 }
 
 # What box prints when --disk cannot be served at all (#171 D3): a VM source
@@ -1752,14 +1790,36 @@ src_has_local_root() {   # src_has_local_root <source-ref>
 #
 # The two routes it DOES offer are the two box has watched: drop the flag, or
 # mint fresh — which is the path that sets 'root,size=' at bin/box:1794.
-clone_disk_refusal() {   # clone_disk_refusal <source-ref>
-  local srcref="$1"
+#
+# The cause line is the ONE thing that varies, and it varies because
+# src_has_local_root answers three ways: box says 'a profile' only where it read
+# the source and saw one, and says so plainly where it read nothing at all. The
+# rest — nothing created, the two routes, the withheld third — is identical,
+# because the situation is identical: --disk cannot ride this copy.
+clone_disk_refusal() {   # clone_disk_refusal <source-ref> <1 = no local root | 2 = unreadable>
+  local srcref="$1" why="${2:-1}"
   echo "box: --disk cannot be applied to this copy, and box will not quietly drop it."
-  echo "box: '$srcref' has no root device of its own — its root comes from a profile."
-  echo "box: A copy-time size override does not merge onto a profile's device, it"
-  echo "box: REPLACES it: the clone would come up with a root of 'size' and nothing"
-  echo "box: else — no type, no path — which incus does not count as a root disk at"
-  echo "box: all. That is a broken instance, not a smaller one."
+  if [ "$why" = 2 ]; then
+    # No claim about profiles here: box did not get an answer, and the two
+    # ordinary causes are a source that is not there and a daemon that did not
+    # speak. Fail-closed means this reads as 'no' — it does not mean box knows
+    # why (#171 D2).
+    # Every line here is prose and none of it may READ as a command: the
+    # anchored rule (test/cli.sh) rejects a line beginning 'box ' or 'incus '
+    # whatever it goes on to say, so 'box could not read…' is a sentence this
+    # message cannot open with. The rule is worth more than the phrasing.
+    echo "box: what root device '$srcref' has could not be read: the source may not"
+    echo "box: exist, or incus did not answer. An unreadable source is treated as one"
+    echo "box: with no root device of its own — fail-closed — and the flag is refused"
+    echo "box: rather than guessed at: a size override that lands on the wrong shape"
+    echo "box: does not come up smaller, it comes up broken."
+  else
+    echo "box: '$srcref' has no root device of its own — its root comes from a profile."
+    echo "box: A copy-time size override does not merge onto a profile's device, it"
+    echo "box: REPLACES it: the clone would come up with a root of 'size' and nothing"
+    echo "box: else — no type, no path — which incus does not count as a root disk at"
+    echo "box: all. That is a broken instance, not a smaller one."
+  fi
   echo "box:"
   echo "box: NOTHING WAS CREATED. No copy ran, so --cpu and --memory were not applied"
   echo "box: either: there is no instance for them to have been applied to. A clone"
@@ -1803,8 +1863,15 @@ clone_disk_refusal() {   # clone_disk_refusal <source-ref>
 # mint (VM mode only) — so its ABSENCE is the container answer, and printing
 # no disk figure there is the same fact the mint path states out loud when
 # --disk meets container mode.
-narrate_resources() {   # narrate_resources <instance>
-  local inst="$1" c m d parts=()
+# TWO arguments, because the line does two different things with a box's name
+# and they are not the same string (#171 review round 1). The READS go to the
+# instance — 'iname_of' prefixes the remote, so '$remote$name' is what incus
+# answers about — while the HANDLES box prints are commands an operator runs,
+# and 'box info' / 'box incus' take the BOX name. An earlier cut took '$inst'
+# and then printed the global '$name', which is correct on every local mint and
+# quietly wrong the moment a signature says one thing and a body does another.
+narrate_resources() {   # narrate_resources <instance> <box-name>
+  local inst="$1" box="$2" c m d parts=()
   c="$(incus config get --expanded "$inst" limits.cpu 2>/dev/null </dev/null || true)"
   m="$(incus config get --expanded "$inst" limits.memory 2>/dev/null </dev/null || true)"
   d="$(incus config device get "$inst" root size 2>/dev/null </dev/null || true)"
@@ -1816,7 +1883,7 @@ narrate_resources() {   # narrate_resources <instance>
   # indistinguishable from the bug, and the operator's next move ('box info')
   # is the same one either way.
   if [ "${#parts[@]}" -eq 0 ]; then
-    echo "box: incus reported no resource figures for '$name' — 'box info $name' has"
+    echo "box: incus reported no resource figures for '$box' — 'box info $box' has"
     echo "box: whatever the instance carries."
     return 0
   fi
@@ -1829,7 +1896,7 @@ narrate_resources() {   # narrate_resources <instance>
   # attached — and test/cli.sh runs these lines verbatim, so a trailing clause
   # is not a style question here, it is arguments.
   echo "box: to change them ({} is where the box name goes, 'box help incus'):"
-  echo "box:   box incus $name -- config set {} limits.cpu <n>"
+  echo "box:   box incus $box -- config set {} limits.cpu <n>"
 }
 
 cmd_new() {
@@ -1884,12 +1951,19 @@ cmd_new() {
     [ -z "$memory" ] || copyargs+=(-c "limits.memory=$memory")
     if [ -n "$disk" ]; then
       if [ "$(inst_type_of "$(iname_of "$src")")" = container ]; then
-        echo "box: note — --disk applies to VM mode only; this container's root rides the pool" >&2
-      elif src_has_local_root "$srcref"; then
-        copyargs+=(-d "root,size=$disk")
+        disk_is_vm_only_note
       else
-        { clone_disk_refusal "$srcref"; } >&2
-        die "--disk cannot be applied to a copy from a source with no root device of its own (#171)"
+        # Captured, not read off $? in an else-branch: the status this refusal
+        # names has to be the helper's own, and a condition's status is not a
+        # thing to reach back for once another branch has run.
+        local root_rc=0
+        src_has_local_root "$srcref" || root_rc=$?
+        if [ "$root_rc" -eq 0 ]; then
+          copyargs+=(-d "root,size=$disk")
+        else
+          { clone_disk_refusal "$srcref" "$root_rc"; } >&2
+          die "--disk cannot be applied to a copy from a source with no root device of its own (#171)"
+        fi
       fi
     fi
     incus copy "$srcref" "$instance" ${copyargs[@]+"${copyargs[@]}"}
@@ -2013,7 +2087,7 @@ cmd_new() {
     [ "$T_AUTOSTART" != 1 ] || extra+=(--config boot.autostart=true)
     # Root size is a VM launch concern; a container's root rides the pool. Say
     # so instead of silently dropping an explicit --disk.
-    [ "$m" = vm ] || [ -z "$disk" ] || echo "box: note — --disk applies to VM mode only; this container's root rides the pool" >&2
+    [ "$m" = vm ] || [ -z "$disk" ] || disk_is_vm_only_note
     # The template's identity is stamped ONTO the instance: which template,
     # which user. 'incus copy' preserves user.* keys (audit B2), so a clone
     # knows what it is without ever consulting the template again.
@@ -2262,7 +2336,7 @@ cmd_new() {
   # declares 4 (heavy-duty/crew#55, which warns at its own call site because
   # it knows the profile it WANTED and not what the source carries — only box,
   # here, knows that).
-  narrate_resources "$instance"
+  narrate_resources "$instance" "$name"
   # The login hint belongs to the claude-box template — read the EFFECTIVE
   # template off the instance, so a clone of a claude-box box gets it too and
   # a blank box is not told to run a binary it doesn't have.

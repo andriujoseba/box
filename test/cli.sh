@@ -1640,6 +1640,10 @@ cat > "$MSHIM/incus" <<'SHIM'
 #                    #171 disk refusal branches on; empty = incus did not say
 #   FAKE_SHOW        what 'config show <ref>' returns — the source's devices,
 #                    which decide whether --disk can ride the copy (#171)
+#   FAKE_SHOW_RC     the STATUS 'config show' exits with, default 0. Separate
+#                    from FAKE_SHOW because the pair that matters is stdout
+#                    that looks fine and a status that does not: a read box
+#                    must not believe (#171 D2, review round 1)
 #   FAKE_ROOT_SIZE   what 'config device get <i> root size' returns; empty =
 #                    no per-instance root override (the container answer)
 # The launch carries a whole cloud-init seed, so the call is logged with its
@@ -1656,7 +1660,7 @@ case "$*" in
     key="$*"; key="${key##* }"
     awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_CFG" ;;
   "config device get "*) printf '%s\n' "${FAKE_ROOT_SIZE-}" ;;
-  "config show "*)       printf '%s\n' "${FAKE_SHOW-}" ;;
+  "config show "*)       printf '%s\n' "${FAKE_SHOW-}"; exit "${FAKE_SHOW_RC:-0}" ;;
   *"--columns nstS") printf '%s\n' "${FAKE_ROW-}" ;;
   *"--columns t")    printf '%s\n' "${FAKE_TYPE-}" ;;
   *"--columns 4")    echo '10.1.2.3 (enp5s0)' ;;
@@ -2150,8 +2154,45 @@ unset FAKE_TYPE
 SIZELOG6="$MWORK/size-blind.log"
 export FAKE_SHOW=""
 check "clone sizing: an unreadable source refuses rather than guessing (#171 D2)" \
-  1 "no root device of its own" \
+  1 "could not be read" \
   mintbox "$SIZELOG6" new --name w9 --from work --disk 20GiB
+check "clone sizing: ...and no copy ran on the blind read either (#171 D2)" 1 "" \
+  grep -q '^incus copy ' "$SIZELOG6"
+# The one the pre-flight is FOR, and the one an earlier cut of this branch got
+# wrong: stdout that parses as a local root device, and a STATUS that says the
+# read failed. 'config show || true' discards the status and then believes the
+# bytes — which attaches -d root,size= to a copy from a source box never
+# actually read, the exact false positive D2 exists to prevent. The stanza here
+# is the GOOD one, so nothing but the status can be what refuses it.
+SIZELOG8="$MWORK/size-readfail.log"
+FAKE_SHOW="$(cat "$LOCALROOT")"; export FAKE_SHOW
+export FAKE_SHOW_RC=1
+check "clone sizing: a FAILED read refuses, however good its stdout looked (#171 D2)" \
+  1 "could not be read" \
+  mintbox "$SIZELOG8" new --name w9 --from work --cpu 2 --disk 20GiB
+check "clone sizing: ...and NO copy ran at all (#171 D2)" 1 "" \
+  grep -q '^incus copy ' "$SIZELOG8"
+# Belt and braces on the thing that actually breaks: the argv, not the prose.
+# A helper that failed open would put this on the copy line.
+check "clone sizing: ...so no -d rode a copy box never read (#171 D2)" 1 "" \
+  grep -qF 'root,size=20GiB' "$SIZELOG8"
+unset FAKE_SHOW_RC
+# The cause line is the ONE thing that varies between the two refusals, and it
+# varies because box knows the difference. A profile is what box saw; it is not
+# what box says when it saw nothing.
+check "clone sizing: an unread source is not blamed on a profile (#171 D3)" 1 "" \
+  grep -qF 'comes from a profile' "$SIZELOG8.out"
+check "clone sizing: ...and the profile-rooted source still is (#171 D3)" 0 \
+  "comes from a profile" cat "$SIZELOG3.out"
+# Everything else D3 was ruled to carry is identical on both arms — the
+# situation is identical, only the cause differs.
+check "clone sizing: ...the unread arm still says nothing was created (#171 D3)" \
+  0 "NOTHING WAS CREATED" cat "$SIZELOG8.out"
+check "clone sizing: ...still offers the two measured routes (#171 D3)" \
+  0 "drop --disk" cat "$SIZELOG8.out"
+check "clone sizing: ...and still prints no runnable line, anchored (#171 D3)" 0 "" \
+  no_command_lines "$SIZELOG8.out"
+export FAKE_SHOW=""
 # ...while the flags with no precondition are untouched by any of it.
 SIZELOG7="$MWORK/size-nodisk.log"
 mintbox "$SIZELOG7" new --name w9 --from work --cpu 2 >/dev/null 2>&1 || true
