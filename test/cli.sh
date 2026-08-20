@@ -2438,6 +2438,14 @@ check "help import: names the import record it writes (#131)" 0 "import EVENT" \
   "$BOX" help import
 check "help import: says the mint stamp is NOT rewritten (#131)" 0 "does not overwrite" \
   "$BOX" help import
+# The help is where an operator meets the id, and 'rename' is where they need
+# it: the verb's own text is what says the name is an alias and the id is not.
+check "help rename: says the id follows the box (#181)" 0 "user.box.id" \
+  "$BOX" help rename
+check "help info: says the id outlives a rename (#181)" 0 "outlives a rename" \
+  "$BOX" help info
+check "help import: names the fresh id it draws (#181)" 0 "fresh box id" \
+  "$BOX" help import
 
 rm -rf "$ISHIM" "$IWORK"
 

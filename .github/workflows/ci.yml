@@ -205,12 +205,28 @@ jobs:
           sudo box new --name keeper --container
           sudo box exec keeper -- sh -c 'echo survives > /home/dev/proof'
           sudo box snapshot keeper pre-export
+          # The identity, on the real daemon (#181): the mocked drive proves
+          # box asks for the key, only a live daemon proves it ACCEPTS it.
+          id0="$(sudo incus config get keeper user.box.id)"
+          echo "$id0" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
           sudo box down keeper
+          # The name moves and the identity does not — the whole of #181, and
+          # the one claim no mocked incus can make: a real rename, both ways.
+          sudo box rename keeper keepr
+          test "$(sudo incus config get keepr user.box.id)" = "$id0"
+          sudo box rename keepr keeper
           sudo box export keeper /tmp/keeper.tar.gz
           sudo test -s /tmp/keeper.tar.gz
           sudo box rm keeper --force
           sudo box import /tmp/keeper.tar.gz --name keeper2
           test "$(sudo incus config get keeper2 user.box)" = 1
+          # Importing is minting: the artifact carried keeper's id, and the box
+          # it came from could still be running here — so the id is re-minted,
+          # and 'box info' says which box this now is (#181).
+          id1="$(sudo incus config get keeper2 user.box.id)"
+          echo "$id1" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          test "$id1" != "$id0"
+          sudo box info keeper2 | grep -qE "^ID +$id1$"
           sudo incus exec keeper2 -- true
           sudo box exec keeper2 -- cat /home/dev/proof | grep -qx survives
           sudo incus snapshot list keeper2 --format csv | grep -q '^pre-export'

@@ -416,8 +416,9 @@ is stopped, so use 'box start' for that one.
 EOF
 ;;
     info) cat <<'EOF'
-Show one box: state, type, IP address, and — the reason this exists — the
-labels of its snapshots, with the --from line to clone one.
+Show one box: its identity (name, and the id that outlives a rename), state,
+type, IP address, and — the reason this exists — the labels of its snapshots,
+with the --from line to clone one.
 
   --json   Incus's JSON, straight through, for scripting.
 
@@ -583,11 +584,14 @@ snapshots). What box then re-stamps is THIS host's truth:
     differs, the same move migrate-host makes re-homing a legacy box
   · a fresh machine identity (reset_identity, exactly like a clone), so its
     DHCP lease can never collide with the box it was exported from
+  · a fresh box id (user.box.id, #181) — importing is minting, and the box
+    this artifact came from may still be running, quite possibly here
   · the import EVENT — when the box landed here, and by which box version
 
-The mint stamp is NOT rewritten. The artifact's mint time, box version, image,
-template and origin (mint or clone) are the originating host's truth and
-survive the trip intact — 'box info' shows them unchanged, with an IMPORTED
+The mint stamp is NOT rewritten — save for the id above, which is not a fact
+about the artifact but about a box on a host. The artifact's mint time, box
+version, image, template and origin (mint or clone) are the originating host's
+truth and survive the trip intact — 'box info' shows them unchanged, with an IMPORTED
 line under them saying the mint predates the arrival. In particular the import
 does not overwrite 'origin': a clone that was exported and imported still
 reads as a clone, and still names the box it was cloned from.
@@ -612,6 +616,12 @@ Rename a box. Incus cannot rename a running instance, so stop it first:
 
 Snapshots and Claude auth follow the box; anything referring to the old name by
 hand (a --from line, a script) does not.
+
+The box's id does follow it (#181). A name is an alias — mutable, and not even
+unique across tiers — so 'box info' also shows a 'user.box.id' stamped at mint
+and never rewritten: a record that names the id can still find this box after a
+rename, which is the one thing a record naming the name cannot do. Boxes minted
+before that key existed have no id and read as blank.
 
 'all' is not available as a new name: it is the fleet word 'box start|down|
 restart' take instead of a box name, so a box called 'all' could not be
