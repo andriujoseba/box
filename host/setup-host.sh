@@ -198,6 +198,29 @@ choose_subnet() {
 BOX_SUBNET="$(choose_subnet "${BOX_SUBNET:-}")" || exit 1
 BOX_GW="${BOX_SUBNET%.0/24}.1"
 
+# Where the pool goes, decided here beside the subnet and for the same reason:
+# both gates say "Nothing was changed", and that is only true above the apt
+# calls. This one used to sit down by the pool, where a FRESH host had already
+# been sent through 'apt-get update' and 'apt-get install -y incus' before the
+# gate ever ran — harmless (the install is what setup-host came to do) but the
+# sentence overstated, and the check guarding it could not see the difference
+# because the suite's shim pre-installs incus. It is pure shell with no
+# dependencies, so it moves up unchanged and the claim becomes true on every
+# host. test/cli.sh holds the order the way it holds the subnet gate's.
+BOX_STORAGE_SOURCE="${BOX_STORAGE_SOURCE:-}"
+# btrfs and dir — the only two drivers this script creates — read 'source:' as
+# a filesystem path or a block device. A relative one would be resolved by the
+# DAEMON, against its idea of where it is standing and not yours, so it dies
+# here rather than placing a pool somewhere nobody named.
+case "$BOX_STORAGE_SOURCE" in
+  ''|/*) ;;
+  *) echo "ERROR: BOX_STORAGE_SOURCE must be an absolute path — got '$BOX_STORAGE_SOURCE'." >&2
+     echo "       a block device ('/dev/sdb', which Incus formats and owns outright)" >&2
+     echo "       or a path on an already-mounted filesystem ('/data/bulk/incus')." >&2
+     echo "       Nothing was changed." >&2
+     exit 1 ;;
+esac
+
 # apt, unattended-safe. install.sh now runs us without a human watching, and
 # a fresh cloud image has apt-daily/unattended-upgrades holding the dpkg lock
 # for the first minutes of its life — plain 'apt-get install' then waits on it
@@ -293,35 +316,46 @@ pool_block() {
   [ -z "$2" ] || printf '  source: %s\n' "$2"
 }
 
-# The live pool's source, or nothing. Two probes: 'get' answers with an empty
-# line for a pool whose source was never recorded, which is indistinguishable
+# One key of the live pool's config, or nothing. Two probes: 'get' answers with
+# an empty line for a key that was never recorded, which is indistinguishable
 # from a refusal, and 'show' is the read this script already prints its driver
 # from. Never fatal — '|| true' on both, and the awk reads a variable rather
 # than a pipeline, so this cannot turn fatal later under 'shopt -s
 # inherit_errexit' (bin/box's storage_driver carries the same note, #107).
-pool_source() {
-  local out show
-  out="$(incus storage get default source 2>/dev/null || true)"
+# 'incus storage get' reads the pool's config map straight, with no volatile
+# filtering, so a volatile.* key is a legitimate read here.
+pool_cfg() {
+  local key="$1" out show
+  out="$(incus storage get default "$key" 2>/dev/null || true)"
   if [ -z "$out" ]; then
     show="$(incus storage show default 2>/dev/null || true)"
-    out="$(awk '$1 == "source:" { print $2; exit }' <<<"$show")"
+    out="$(awk -v k="$key:" '$1 == k { print $2; exit }' <<<"$show")"
   fi
   printf '%s' "$out"
 }
 
-BOX_STORAGE_SOURCE="${BOX_STORAGE_SOURCE:-}"
-# btrfs and dir — the only two drivers this script creates — read 'source:' as
-# a filesystem path or a block device. A relative one would be resolved by the
-# DAEMON, against its idea of where it is standing and not yours, so it dies
-# here rather than placing a pool somewhere nobody named.
-case "$BOX_STORAGE_SOURCE" in
-  ''|/*) ;;
-  *) echo "ERROR: BOX_STORAGE_SOURCE must be an absolute path — got '$BOX_STORAGE_SOURCE'." >&2
-     echo "       a block device ('/dev/sdb', which Incus formats and owns outright)" >&2
-     echo "       or a path on an already-mounted filesystem ('/data/bulk/incus')." >&2
-     echo "       Nothing was changed." >&2
-     exit 1 ;;
-esac
+# Is the live pool already at the requested source? Pure — requested, live and
+# initial in, exit status out — so test/cli.sh drives it directly.
+#
+# Two sources, because Incus keeps two. Handed a BLOCK DEVICE, the btrfs driver
+# records what you gave it in 'volatile.initial_source', formats the device,
+# then OVERWRITES 'source' with the new filesystem's UUID — a bare UUID, not a
+# path (lxc/incus@90429bf, driver_btrfs.go). So a host set up with
+# BOX_STORAGE_SOURCE=/dev/sdb reports 'source: 4ff9…' ever after, and reading
+# live 'source' alone would make every re-run of the documented block-device
+# form fire the migration refusal below at the pool it had just correctly
+# placed. The 'dir' driver sets no initial source and mangles nothing, so the
+# fall back to live 'source' is not a courtesy for old pools — it is the only
+# correct read for that driver, and for every path-shaped source.
+#
+# A trailing slash is not a mismatch, on either.
+pool_placed_at() {
+  local want="$1" live="$2" initial="${3:-}"
+  [ -n "$want" ] || return 1
+  if [ "${want%/}" = "${live%/}" ]; then return 0; fi
+  if [ -n "$initial" ] && [ "${want%/}" = "${initial%/}" ]; then return 0; fi
+  return 1
+}
 
 if incus storage show default >/dev/null 2>&1; then
   # The pool exists, so the preseed below is skipped — and with it any chance
@@ -332,8 +366,9 @@ if incus storage show default >/dev/null 2>&1; then
   # boxes means moving every box's root device — a migration with its own risk,
   # its own confirmation and its own drill leg, deliberately not this script's.
   if [ -n "$BOX_STORAGE_SOURCE" ]; then
-    live="$(pool_source)"
-    if [ -z "$live" ]; then
+    live="$(pool_cfg source)"
+    initial="$(pool_cfg volatile.initial_source)"
+    if [ -z "$live" ] && [ -z "$initial" ]; then
       echo "ERROR: BOX_STORAGE_SOURCE=$BOX_STORAGE_SOURCE was requested, but the live pool" >&2
       echo "       'default' reports NO source at all — so this run cannot prove it is" >&2
       echo "       already placed there, and creating it again is not on the table." >&2
@@ -341,10 +376,20 @@ if incus storage show default >/dev/null 2>&1; then
       echo "       Nothing was changed." >&2
       exit 1
     fi
-    if [ "${live%/}" != "${BOX_STORAGE_SOURCE%/}" ]; then
+    if ! pool_placed_at "$BOX_STORAGE_SOURCE" "$live" "$initial"; then
       echo "ERROR: the storage pool 'default' already exists somewhere else." >&2
-      echo "         live:      $live" >&2
+      echo "         live:      ${live:-<none reported>}" >&2
+      # The device the operator actually named, whenever Incus still knows it:
+      # a refusal whose 'live' is a bare UUID names no disk anybody can act on.
+      if [ -n "$initial" ] && [ "${initial%/}" != "${live%/}" ]; then
+        echo "         made from: $initial" >&2
+      fi
       echo "         requested: $BOX_STORAGE_SOURCE" >&2
+      case "$live" in
+        ''|/*) ;;
+        *) echo "       ('live' is not a path because Incus formats a block device and then" >&2
+           echo "        records the new filesystem's UUID as the pool's source.)" >&2 ;;
+      esac
       echo "       A pool is created once, so re-running with BOX_STORAGE_SOURCE set does" >&2
       echo "       NOT move it — and pretending otherwise is how a host ends up filling" >&2
       echo "       its root disk while its operator believes the boxes live elsewhere." >&2
@@ -354,7 +399,15 @@ if incus storage show default >/dev/null 2>&1; then
       echo "       Nothing was changed." >&2
       exit 1
     fi
-    echo "storage: pool 'default' source = $live (already placed there; nothing to do)"
+    # Report the device the operator named, not the UUID it became: on the
+    # block-device form those differ, and the UUID answers a question nobody
+    # asked. Where they are the same (every 'dir' pool, every path source) this
+    # is the line it always was.
+    if [ -n "$initial" ] && [ "${initial%/}" != "${live%/}" ]; then
+      echo "storage: pool 'default' source = $initial (already placed there; Incus records it as '$live'; nothing to do)"
+    else
+      echo "storage: pool 'default' source = $live (already placed there; nothing to do)"
+    fi
   fi
 else
   driver=btrfs

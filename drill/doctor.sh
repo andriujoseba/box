@@ -116,9 +116,14 @@ ufw_dns_findings() {
 # called the shipped loop-backed default DIRTY would red every stock host on
 # the day it shipped.
 pool_findings() {
-  local show="$1" drv src
+  local show="$1" drv src ini
   drv="$(printf '%s\n' "$show" | awk '/^driver:/ { print $2; exit }')"
   src="$(printf '%s\n' "$show" | awk '$1 == "source:" { print $2; exit }')"
+  # The pool made from a block device does NOT report that device: btrfs
+  # formats it and overwrites 'source' with the new filesystem's UUID, keeping
+  # what it was handed in 'volatile.initial_source'. Reporting the UUID alone
+  # answers "where do my boxes live" with a string naming no disk on the host.
+  ini="$(printf '%s\n' "$show" | awk '$1 == "volatile.initial_source:" { print $2; exit }')"
   printf 'driver = %s\n' "${drv:-<unreadable>}"
   # The driver decides whether a clone is near-free; it is the same fact
   # bin/box reads before deciding whether to take a mark (#104, #130).
@@ -127,6 +132,9 @@ pool_findings() {
     printf 'source = <none reported> — the pool is placed under Incus own state directory, on the ROOT filesystem\n'
   else
     printf 'source = %s\n' "$src"
+    if [ -n "$ini" ] && [ "$ini" != "$src" ]; then
+      printf 'made from = %s — the device this pool was built on; the source above is the filesystem UUID Incus wrote onto it\n' "$ini"
+    fi
     case "$src" in
       /var/lib/incus/*|/var/lib/lxd/*)
         printf 'that is Incus own state directory: every box root device is charged against "/" — "df -h /" is the number that matters\n'
