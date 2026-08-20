@@ -598,6 +598,7 @@ stamps what it knew, and `box info` reads it back:
 
 ```
 NAME       work
+ID         3f2504e0-4f89-41d3-9a0c-0305e82c3301
 STATE      RUNNING
 TYPE       VM
 IPV4       10.x.x.x
@@ -615,6 +616,34 @@ _unpinned alias on a moving remote_, so what it resolved to at that mint is the
 only reproducible fact. `box info --json` carries every key verbatim — they
 ride `incus list --format json` in `config`.
 
+**`ID` is which box this is; `NAME` only looks like it**
+([#181](https://github.com/heavy-duty/box/issues/181)). `box rename` is a
+passthrough Incus is right to accept — same instance, every key riding along —
+but to a script, a log or a note that kept the name, a rename is
+indistinguishable from an `rm` and a fresh mint. Names are not unique either:
+two restricted users each hold their own `work` in their own `user-<uid>`
+project, and an admin a third. So `box new` stamps `user.box.id`, a kernel v4
+UUID drawn on the **host**, and the name becomes an alias — the container
+id + name shape, or Kubernetes' `uid` + `metadata.name`.
+
+Host-side is the whole design, and the guest's `/etc/machine-id` is the
+tempting answer that fails four ways: it is unreadable while the box is
+**stopped** (the boxes an inventory most cares about), it does not exist until
+systemd's first boot, the agents inside the box can rewrite it, and it
+duplicates on exactly the operations box already guards — snapshot, export,
+import, clone. Instance config is readable while stopped, invisible and
+unwritable from inside the box, and re-stampable with one `incus config set`.
+There is deliberately **no map file**: Incus config _is_ the map, and a
+name↔id file on disk would be a second source of truth with no writer for the
+paths that bypass box.
+
+**Anything that mints, re-stamps.** A fresh mint, a `--from` clone and an
+import each draw their own id — for a clone, inheriting it would be the bug,
+since it would claim to _be_ its source — while a snapshot and a restore leave
+it alone, because a restore is the same box. `box list` never shows it (that
+table is for humans; the id is for machines), and the id **authorises
+nothing**: `user.box=1` stays the ownership boundary.
+
 **A clone re-stamps.** `incus copy` preserves `user.*` keys, so a clone inherits
 its source's template and user for free — but inheriting the mint stamp would
 not make it stale, it would make it **false**: the clone was not present at that
@@ -624,7 +653,7 @@ box version that cloned it) and leaves the lineage keys alone, because the
 clone's disk genuinely did come from that image, template and role. `origin.from`
 records one hop: a clone of a clone names its parent, not its grandparent.
 
-**An import records the trip, and rewrites nothing**
+**An import records the trip, and rewrites nothing but the id**
 ([#131](https://github.com/heavy-duty/box/issues/131)). Everything `incus
 import` restores is the _artifact's_ truth, so an imported box keeps its mint
 stamp verbatim — the mint time, the box version, the image and the origin
@@ -643,6 +672,14 @@ would destroy that: the clone above would come back claiming to be an import,
 with nothing left saying it was ever a clone and an `origin.from` naming a
 lineage no key explains. The import is a _third_ fact, orthogonal to the first
 two, so it takes its own keys and leaves every other one alone.
+
+The `ID` is the one exception, and it is not really one: an id is not a fact
+about the artifact but about a box on a host, and the box this artifact came
+from may still be running — quite possibly on _this_ host, which is what the
+MAC regeneration on the same path already exists to survive. Importing is
+minting, so the id is re-minted; the old one is not kept, because lineage is
+[#131](https://github.com/heavy-duty/box/issues/131)'s question and this key
+owes only the identity itself.
 
 The `IMPORTED` line sits directly under `MINTED` because that adjacency is what
 stops the mint time being misread as this host's. Note what it does not claim:

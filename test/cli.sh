@@ -1661,10 +1661,26 @@ export FAKE_BASE_IMAGE=deadbeefcafe0123456789   # what the alias resolves to
 # Every mint logs its probes to $log.curl, which is how "exactly one probe per
 # mint" and "no probe at all for a seed with no pin" become assertions.
 export FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9"
+# The one host fact box_id() reads (#181), made to fail on demand: a shim 'cat'
+# that refuses ONLY the kernel's uuid file and execs the real one for every
+# other path. A blanket refusal would break box_version() — which reads VERSION
+# through cat — and fail the mint for a reason that is not the one under test.
+# Prepended to PATH via SHIM_PREFIX, so the degraded runs share every other
+# knob with the ordinary ones.
+NOUUID="$(mktemp -d)"
+cat > "$NOUUID/cat" <<'SHIM'
+#!/usr/bin/env bash
+[ "${1:-}" = /proc/sys/kernel/random/uuid ] && exit 1
+for real in /bin/cat /usr/bin/cat; do [ -x "$real" ] && exec "$real" "$@"; done
+exit 127
+SHIM
+chmod +x "$NOUUID/cat"
+
 mintbox() {  # mintbox <logfile> <args...> — the real box, shimmed, no TTY
   local log="$1"; shift
   : > "$log"; : > "$log.curl"
-  env FAKE_INCUS_LOG="$log" FAKE_CURL_LOG="$log.curl" PATH="$MSHIM:$RIGSHIM:$PATH" \
+  env FAKE_INCUS_LOG="$log" FAKE_CURL_LOG="$log.curl" \
+      PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$MSHIM:$RIGSHIM:$PATH" \
       "$BOX" "$@" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
@@ -1718,6 +1734,51 @@ check "mint: resolves the pin exactly ONCE, in the parent shell (#150)" 0 "1" \
 check "mint: ...and the seed it shipped carries that same resolved ref (#150)" 0 "" \
   launch_has "$MLOG" 'heavy-duty/rig/9\.9\.9/install\.sh'
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+
+# --- the identity (#181) ----------------------------------------------------
+# The SHAPE, not merely the presence: a hostname, the box's own name or a
+# counter would all satisfy a bare "is set", and none of them is stable across
+# the rename this key exists for. The assertion is stricter than box_id()'s own
+# parser on purpose — the parser accepts any well-formed UUID because its job
+# is to refuse garbage, while what the kernel actually hands out is a v4, and
+# a source that quietly stopped being one is worth a red.
+check "mint: stamps a stable identity — a v4 UUID (#181)" 0 "" \
+  launch_has "$MLOG" 'user\.box\.id=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+# Drawn on the HOST, and the function that draws it never speaks to a guest.
+# That is the whole argument against /etc/machine-id: a guest-side identity is
+# unreadable while the box is stopped, absent until first boot, and writable by
+# the agents the box runs.
+check "mint: the id comes from the host kernel (#181)" 0 "" \
+  grep -qF '/proc/sys/kernel/random/uuid' "$ROOT/bin/box"
+box_id_never_asks_the_guest() {
+  ! awk '/^box_id\(\) \{/,/^\}/' "$ROOT/bin/box" | grep -q 'incus'
+}
+check "mint: ...and box_id() never asks the box for it (#181)" 0 "" \
+  box_id_never_asks_the_guest
+# An id every box shares is not an identity. Two mints, two ids.
+MLOG2="$MWORK/mint2.log"
+check "mint: a second mint runs to completion" 0 "ready" \
+  mintbox "$MLOG2" new --name w1b --template claude-box --container
+stamped_id() { launchline "$1" | grep -oE 'user\.box\.id=[0-9a-f-]+' | head -1 | cut -d= -f2; }
+mint_ids_differ() {
+  local a b; a="$(stamped_id "$1")"; b="$(stamped_id "$2")"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]
+}
+check "mint: two boxes minted on one host get DIFFERENT ids (#181)" 0 "" \
+  mint_ids_differ "$MLOG" "$MLOG2"
+# A host that cannot answer gets no id — never a dead mint over a metadata
+# key, and never an empty 'user.box.id=' that a config grep would find. This is
+# the same absence every box minted before #181 carries, and every reader
+# already tolerates it.
+export SHIM_PREFIX="$NOUUID"
+NOIDLOG="$MWORK/noid.log"
+check "mint: a host with no UUID source still mints (#181)" 0 "ready" \
+  mintbox "$NOIDLOG" new --name w7 --template claude-box --container
+check "mint: ...and says out loud that this box has no stable id (#181)" 0 "no stable id" \
+  mintbox "$NOIDLOG" new --name w7 --template claude-box --container
+check "mint: ...stamping no id at all, rather than an empty key (#181)" 1 "" \
+  launch_has "$NOIDLOG" 'user\.box\.id'
+unset SHIM_PREFIX
 # The timestamp's SHAPE, so a local-time or seconds-since-epoch spelling fails
 # here: UTC ISO 8601, which is the only form that sorts and travels.
 check "mint: stamps the mint time as UTC ISO 8601 (#103)" 0 "" \
@@ -1870,6 +1931,54 @@ clear_precedes_start() {
 check "clone: the mode.asked clear precedes the start too (#103)" 0 "" \
   clear_precedes_start "$CLONELOG"
 
+# The identity is the sharpest case of the sharpest edge (#181). Every OTHER
+# inherited key is either lineage that stays true or a fact box re-stamps;
+# an inherited id is a clone asserting it IS its source, to every reader that
+# trusts the id to mean one box.
+check "clone: re-stamps a fresh id — a clone is a different box (#181)" 0 "" \
+  restamp_has "$CLONELOG" 'user\.box\.id=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+restamp_id() { grep -F 'config set' "$1" | grep -oE 'user\.box\.id=[0-9a-f-]+' | head -1 | cut -d= -f2; }
+clone_id_is_its_own() {
+  local c m; c="$(restamp_id "$CLONELOG")"; m="$(stamped_id "$MLOG")"
+  [ -n "$c" ] && [ "$c" != "$m" ]
+}
+check "clone: ...and not a constant this build hands every box (#181)" 0 "" \
+  clone_id_is_its_own
+# It rides the SAME 'config set' as origin=clone, so the ordering assertion
+# above covers it: the clone is never observable, not for a moment, wearing
+# its source's identity.
+check "clone: the id lands on the same pre-start re-stamp as the origin (#181)" 0 "" \
+  restamp_precedes_start "$CLONELOG"
+# The degraded clone is the one case where doing nothing is wrong. No id can be
+# drawn, and 'incus copy' has already carried the source's in — so it is UNSET,
+# the same call mode.asked gets, for a stronger reason: a false identity is
+# worse than none.
+export SHIM_PREFIX="$NOUUID"
+NOIDCLONE="$MWORK/noid-clone.log"
+check "clone: a host with no UUID source still clones (#181)" 0 "cloned" \
+  mintbox "$NOIDCLONE" new --name w8 --from work/authed
+check "clone: ...and UNSETS the id it inherited from the source (#181)" 0 "" \
+  grep -qF 'config unset w8 user.box.id' "$NOIDCLONE"
+check "clone: ...rather than letting it claim to BE its source (#181)" 1 "" \
+  restamp_has "$NOIDCLONE" 'user\.box\.id'
+check "clone: ...and says out loud that this clone has no stable id (#181)" 0 "no stable id" \
+  mintbox "$NOIDCLONE" new --name w8 --from work/authed
+# Before the start, like every other identity write on this path. Fail-closed:
+# an absent line makes the arithmetic fail, not pass.
+id_unset_precedes_start() {
+  local u s
+  u="$(grep -n 'config unset .* user.box.id' "$1" | head -1 | cut -d: -f1)"
+  s="$(grep -n '^incus start ' "$1" | head -1 | cut -d: -f1)"
+  [ -n "$u" ] && [ -n "$s" ] && [ "$u" -lt "$s" ]
+}
+check "clone: the inherited-id clear precedes the start (#181)" 0 "" \
+  id_unset_precedes_start "$NOIDCLONE"
+unset SHIM_PREFIX
+# ...and the ordinary clone does NOT unset it: it was re-stamped, and an unset
+# landing after the set would leave the clone with no identity at all.
+check "clone: an ordinary clone never unsets the id it just re-stamped (#181)" 1 "" \
+  grep -qE 'config unset .* user\.box\.id' "$CLONELOG"
+
 # --- the read half: 'box info' surfaces it ---------------------------------
 # A stamp nothing can read is not done. cmd_info printed NAME/STATE/TYPE/IPV4
 # and surfaced none of the keys that already existed.
@@ -1903,6 +2012,26 @@ check "info: surfaces the template with its user and role (#103)" \
 check "info: surfaces which rig converged it (#103)" \
   0 "RIG        heavy-duty/rig@main" infobox "$STAMPED"
 check "info: surfaces the origin (#103)" 0 "ORIGIN     mint" infobox "$STAMPED"
+
+# The identity reads back in the HEADER, not in the provenance block (#181).
+# The block below answers how this box came to BE; the id answers which box it
+# IS — the fact the NAME line only appears to carry, since a rename moves the
+# name and leaves the id exactly where it was.
+IDCFG="$MWORK/identified.cfg"
+{ cat "$STAMPED"; echo 'user.box.id 3f2504e0-4f89-41d3-9a0c-0305e82c3301'; } > "$IDCFG"
+check "info: surfaces the id (#181)" \
+  0 "ID         3f2504e0-4f89-41d3-9a0c-0305e82c3301" infobox "$IDCFG"
+# Adjacency is the point: NAME and ID are one statement of identity, and an id
+# printed below the mint block would read as one more provenance field.
+id_follows_name() {
+  local out; out="$(infobox "$1")"
+  [ "$(printf '%s\n' "$out" | grep -cE '^(NAME|ID)')" -eq 2 ] &&
+  [ "$(printf '%s\n' "$out" | grep -nE '^ID' | head -1 | cut -d: -f1)" -eq 2 ]
+}
+check "info: ...directly under NAME, which is the alias it outlives (#181)" 0 "" \
+  id_follows_name "$IDCFG"
+check "info: ...and the state block it always printed is untouched (#181)" \
+  0 "IPV4       10.1.2.3" infobox "$IDCFG"
 # Still the box it always was: the new block is additive, above the snapshots.
 check "info: still prints the state block it always did" 0 "IPV4       10.1.2.3" infobox "$STAMPED"
 
@@ -1938,6 +2067,38 @@ check "info: ...and says the mint was not recorded, rather than inventing one" \
 info_has() { infobox "$1" | grep -qE "$2"; }
 check "info: ...and prints no half-empty IMAGE/ORIGIN lines for keys it lacks" 1 "" \
   info_has "$LEGACY" '^(IMAGE|ORIGIN|RIG|MODE) '
+# Every box minted before #181 has no id, and nothing synthesises one at read
+# time: an id a reader invents is not stable, which is the whole point of
+# having one. Absence renders as silence, the same rule the block above keeps.
+check "info: a box minted before the id prints no ID line (#181)" 1 "" \
+  info_has "$LEGACY" '^ID '
+check "info: ...and neither does a stamped box that predates the key (#181)" 1 "" \
+  info_has "$STAMPED" '^ID '
+check "info: ...while the box itself still renders, exit 0 (#181)" \
+  0 "NAME       work" infobox "$STAMPED"
+# 'list' is the human table and stays four narrow columns: a full UUID would
+# dominate it, and the audience that wants an id is reading --json or 'info'.
+# Driven, not asserted on the source — the fixture carries an id and the table
+# must simply never show one.
+listbox() {  # listbox <cfg-file> — 'box list' against a canned config
+  env FAKE_INCUS_LOG=/dev/null FAKE_CFG="$1" FAKE_ROW='work,RUNNING,VIRTUAL-MACHINE,0' \
+    PATH="$MSHIM:$PATH" "$BOX" list </dev/null 2>&1
+}
+list_has_id() { listbox "$1" | grep -qE '(^|[[:space:]])ID([[:space:]]|$)|[0-9a-f]{8}-[0-9a-f]{4}-'; }
+check "list: still prints the box it always did (#181)" 0 "work" listbox "$IDCFG"
+check "list: ...and never the id — that is what --json and 'info' are for (#181)" 1 "" \
+  list_has_id "$IDCFG"
+# A snapshot and a restore are the SAME box, so neither writes the key. cmd_new
+# and cmd_import are the only minting doors, and only they re-stamp.
+snapshot_leaves_id_alone() {
+  ! awk '/^cmd_snapshot\(\) \{/,/^\}/' "$ROOT/bin/box" | grep -q 'user\.box\.id'
+}
+check "snapshot: leaves the id alone — a snapshot is the same box (#181)" 0 "" \
+  snapshot_leaves_id_alone
+# 'restore' is a table row straight to 'incus snapshot restore', so there is no
+# function to inspect: what proves it is that the row has no re-stamp in it.
+check "restore: is a passthrough row, so it cannot rewrite the id (#181)" 0 "" \
+  bash -c 'grep -F "\"restore^" "'"$ROOT"'/bin/box" | grep -qv "user.box.id"'
 # A pre-rename box carries user.claudebox=1 and no metadata at all, and is
 # always a Claude box — the same mapping box_user() makes, honored forever.
 PRERENAME="$MWORK/prerename.cfg"; printf 'user.claudebox 1\n' > "$PRERENAME"
@@ -2018,7 +2179,8 @@ tar -czf "$ARTIFACT" -C "$IWORK" backup/index.yaml
 importbox() {  # importbox <logfile> <cfg-file|""> — the real box, shimmed
   local log="$1" cfg="$2"
   : > "$log"
-  env FAKE_INCUS_LOG="$log" FAKE_CFG="$cfg" PATH="$ISHIM:$PATH" \
+  env FAKE_INCUS_LOG="$log" FAKE_CFG="$cfg" \
+    PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$ISHIM:$PATH" \
     "$BOX" import "$ARTIFACT" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
@@ -2031,6 +2193,9 @@ import_set() { grep -F 'config set' "$1" | grep -qE "$2"; }
 
 # --- the first trip ---------------------------------------------------------
 # The artifact of a box that was MINTED elsewhere and never imported before.
+# The id it carried is a fixed, obviously-fake one so the re-mint below can be
+# asserted by INEQUALITY: a drawn id that happened to equal the artifact's is
+# the one way "re-minted" and "carried through" look alike (#181).
 MINTED_ART="$IWORK/minted.cfg"
 cat > "$MINTED_ART" <<'CFG'
 user.box 1
@@ -2040,6 +2205,7 @@ user.box.version 0.7.0
 user.box.template claude
 user.box.user claude
 user.box.origin mint
+user.box.id 11111111-1111-4111-8111-111111111111
 CFG
 ILOG="$IWORK/import.log"
 check "import: a shimmed 'box import' runs to completion (#131)" 0 "imported work" \
@@ -2060,6 +2226,39 @@ check "import: counts the trip — the first one is 1 (#131)" 0 "" \
 # into BEING — mint or clone — and the import is a third, orthogonal fact.
 check "import: does NOT overwrite origin — an import is not a coming-into-being (#131)" 1 "" \
   import_set "$ILOG" 'user\.box\.origin='
+
+# The identity is the ONE stamp key this path rewrites (#181), and it is not an
+# exception to "the artifact's truth survives": an id is not a fact about the
+# artifact but about a box on a host, and the box this one was exported from
+# may still be running — quite possibly on this same host, which is what the
+# MAC regeneration already exists to survive. Importing is minting.
+check "import: re-mints the id — importing is minting (#181)" 0 "" \
+  import_set "$ILOG" 'user\.box\.id=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+check "import: ...so the artifact's id does not survive the trip (#181)" 1 "" \
+  import_set "$ILOG" 'user\.box\.id=11111111-1111-4111-8111-111111111111'
+# It rides the same pre-start 'config set' as the import record, so an imported
+# box is never observable wearing the identity of the box it came from.
+import_id_precedes_start() {
+  local s t
+  s="$(grep -n 'config set .*user.box.id=' "$1" | head -1 | cut -d: -f1)"
+  t="$(grep -n '^incus start ' "$1" | head -1 | cut -d: -f1)"
+  [ -n "$s" ] && [ -n "$t" ] && [ "$s" -lt "$t" ]
+}
+check "import: the re-mint precedes the start (#181)" 0 "" \
+  import_id_precedes_start "$ILOG"
+# Degraded, and the same call the clone makes: the artifact's id rode in
+# unchallenged, and an id two live boxes share is worse than an id one lacks.
+export SHIM_PREFIX="$NOUUID"
+NOIDIMP="$IWORK/noid-import.log"
+check "import: a host with no UUID source still imports (#181)" 0 "imported work" \
+  importbox "$NOIDIMP" "$MINTED_ART"
+check "import: ...and unsets the id the artifact carried (#181)" 0 "" \
+  grep -qF 'config unset work user.box.id' "$NOIDIMP"
+check "import: ...rather than letting two boxes wear one id (#181)" 1 "" \
+  import_set "$NOIDIMP" 'user\.box\.id='
+check "import: ...and says out loud that this box has no stable id (#181)" 0 "no stable id" \
+  importbox "$NOIDIMP" "$MINTED_ART"
+unset SHIM_PREFIX
 check "import: does NOT restamp the mint time — it is the origin host's (#131)" 1 "" \
   import_set "$ILOG" 'user\.box\.created='
 check "import: does NOT restamp the box version that MINTED it (#131)" 1 "" \
@@ -2238,6 +2437,14 @@ check "info: ...and prints no IMPORTED line for a key it does not have (#131)" 1
 check "help import: names the import record it writes (#131)" 0 "import EVENT" \
   "$BOX" help import
 check "help import: says the mint stamp is NOT rewritten (#131)" 0 "does not overwrite" \
+  "$BOX" help import
+# The help is where an operator meets the id, and 'rename' is where they need
+# it: the verb's own text is what says the name is an alias and the id is not.
+check "help rename: says the id follows the box (#181)" 0 "user.box.id" \
+  "$BOX" help rename
+check "help info: says the id outlives a rename (#181)" 0 "outlives a rename" \
+  "$BOX" help info
+check "help import: names the fresh id it draws (#181)" 0 "fresh box id" \
   "$BOX" help import
 
 rm -rf "$ISHIM" "$IWORK"
@@ -5174,6 +5381,12 @@ check "an ordinary rename target still reaches incus" 0 "renamed work to archive
   renamebox archive
 check "...as a real 'incus rename' call" 0 "1" \
   fleet_calls rename
+# ...and the identity rides straight through it, which is the whole of #181:
+# 'rename' moves the NAME and touches no config, so a box that was renamed is
+# still provably the same box. Asserted on the drive rather than on the source,
+# because what matters is that no call was made.
+check "rename: the id is never written, so it survives the rename (#181)" 1 "" \
+  grep -qE 'config (set|unset) .*user\.box\.id' "$FLOG"
 # Same contract as the mint doors, and the reason the token runs ahead of the
 # 'box' precondition: refusing a name box will never carry must not depend on a
 # reachable daemon. This suite runs with no incus on PATH, so the bare call is
