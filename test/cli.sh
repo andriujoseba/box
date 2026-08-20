@@ -1636,17 +1636,26 @@ cat > "$MSHIM/incus" <<'SHIM'
 #                    empty = incus does not know it (the degraded mint)
 #   FAKE_CFG         a file of "<key> <value>" lines answering 'config get'
 #   FAKE_ROW         the csv row 'list --columns nstS' returns
+#   FAKE_TYPE        what 'list --columns t' returns — the instance type the
+#                    #171 disk hint branches on; empty = incus did not say
+#   FAKE_ROOT_SIZE   what 'config device get <i> root size' returns; empty =
+#                    no per-instance root override (the container answer)
 # The launch carries a whole cloud-init seed, so the call is logged with its
 # newlines flattened — an assertion about "the launch line" must see one line.
 printf 'incus %s\n' "$*" | tr '\n' ' ' >> "$FAKE_INCUS_LOG"
 printf '\n' >> "$FAKE_INCUS_LOG"
 case "$*" in
   *volatile.base_image) printf '%s\n' "${FAKE_BASE_IMAGE-}" ;;
+  # Both 'config get <i> <key>' and its --expanded form (#171 reads what the
+  # instance will RUN with, profiles included) — the key is the last word
+  # either way, so one arm answers both.
   "config get "*)
     [ -n "${FAKE_CFG:-}" ] || exit 0
     key="$*"; key="${key##* }"
     awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_CFG" ;;
+  "config device get "*) printf '%s\n' "${FAKE_ROOT_SIZE-}" ;;
   *"--columns nstS") printf '%s\n' "${FAKE_ROW-}" ;;
+  *"--columns t")    printf '%s\n' "${FAKE_TYPE-}" ;;
   *"--columns 4")    echo '10.1.2.3 (enp5s0)' ;;
 esac
 exit 0
@@ -1978,6 +1987,150 @@ unset SHIM_PREFIX
 # landing after the set would leave the clone with no identity at all.
 check "clone: an ordinary clone never unsets the id it just re-stamped (#181)" 1 "" \
   grep -qE 'config unset .* user\.box\.id' "$CLONELOG"
+
+# --- a clone's SIZING: the refused case and the silent one (#171) ----------
+# Two halves of one defect. The refusal was correct (#57 settled that flags
+# shape a fresh mint) and a dead end: it named 'box incus' without the
+# incantation, at the one moment box holds all three values the caller asked
+# for. And the refusal only fires if the flags were PASSED — drop them and the
+# clone came up sized by its source with nothing saying what that size was.
+#
+# The incantations are DRIVEN, never matched. #171's own proposed message read
+# 'box incus <box> -- config set limits.cpu 2', which cmd_incus turns into
+# 'incus config set limits.cpu 2 <inst>' — the instance in the value's place,
+# because the instance is appended when no {} appears. Text assertions would
+# have shipped that verbatim; running the printed line cannot.
+SIZELOG="$MWORK/size.log"
+check "clone sizing: --from with the size flags still REFUSES, exit 2 (#57, #171)" \
+  2 "shape a fresh mint" \
+  mintbox "$SIZELOG" new --name w9 --from work --cpu 2 --memory 4GiB --disk 20GiB
+# The refusal is a refusal: it lands before the transfer, as it always did.
+check "clone sizing: ...and nothing was copied — the refusal comes first (#171)" 1 "" \
+  grep -q '^incus copy ' "$SIZELOG"
+check "clone sizing: prints the cpu incantation, with the caller's own value (#171)" \
+  0 "box incus w9 -- config set {} limits.cpu 2" cat "$SIZELOG.out"
+check "clone sizing: prints the memory incantation (#171)" \
+  0 "box incus w9 -- config set {} limits.memory 4GiB" cat "$SIZELOG.out"
+check "clone sizing: prints the disk incantation (#171)" \
+  0 "box incus w9 -- config device set {} root size=20GiB" cat "$SIZELOG.out"
+# The disk line is the one box has NOT watched work (#171 §3), and it says so
+# rather than implying parity with two live config sets.
+check "clone sizing: ...and prices the disk line as the unmeasured one (#171)" \
+  0 "NOT the same kind of command" cat "$SIZELOG.out"
+# Now RUN what it printed, through box's own escape hatch, and check where the
+# instance landed. This is the assertion that would have caught the issue's
+# proposal, and it fails the day cmd_incus's substitution changes.
+HINTCFG="$MWORK/hints.cfg"; printf 'user.box 1\n' > "$HINTCFG"
+HINTLOG="$MWORK/hints.log"
+run_printed_hints() {  # run_printed_hints <refusal-output> <incus-log>
+  local line
+  : > "$2"
+  # Capture first, THEN read (#124's class) — and box's own printed words are
+  # what is being word-split here, never anything a caller supplied.
+  grep -oE 'box incus .*' "$1" > "$MWORK/hints.txt" || true
+  while IFS= read -r line; do
+    local words; read -r -a words <<<"$line"
+    env FAKE_INCUS_LOG="$2" FAKE_CFG="$HINTCFG" \
+        PATH="$MSHIM:$RIGSHIM:$PATH" "$BOX" "${words[@]:1}" </dev/null >/dev/null 2>&1
+  done < "$MWORK/hints.txt"
+}
+run_printed_hints "$SIZELOG.out" "$HINTLOG"
+# Counted, not just spot-checked: three lines were printed and three calls must
+# have landed. The pattern is narrow on purpose — cmd_incus's own resolve_box
+# logs a 'config get' per run, and a loose count would go green on those alone.
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: the printed lines are RUNNABLE — three reached incus (#171)" 0 "3" \
+  bash -c 'grep -cE "^incus config (set|device set) w9 " "$1"' _ "$HINTLOG"
+# Position, not presence: 'config set w9 limits.cpu 2' is the contract, and
+# 'config set limits.cpu 2 w9' is the bug the issue's message would have had.
+check "clone sizing: ...cpu lands the instance BEFORE the key (#171)" 0 "" \
+  grep -qE '^incus config set w9 limits\.cpu 2 *$' "$HINTLOG"
+check "clone sizing: ...memory lands the instance before the key (#171)" 0 "" \
+  grep -qE '^incus config set w9 limits\.memory 4GiB *$' "$HINTLOG"
+check "clone sizing: ...and the root device line resolves the same way (#171)" 0 "" \
+  grep -qE '^incus config device set w9 root size=20GiB *$' "$HINTLOG"
+# One line per flag ACTUALLY passed. A message that prints all three whatever
+# was asked for is a template, not an answer, and it tells the operator to set
+# resources they never mentioned.
+SIZELOG2="$MWORK/size-cpu.log"
+check "clone sizing: one flag, one line — the cpu line is there (#171)" \
+  2 "box incus w9 -- config set {} limits.cpu 2" \
+  mintbox "$SIZELOG2" new --name w9 --from work --cpu 2
+check "clone sizing: ...and nothing about memory the caller never asked for (#171)" 1 "" \
+  grep -qF 'limits.memory' "$SIZELOG2.out"
+check "clone sizing: ...and nothing about a disk the caller never asked for (#171)" 1 "" \
+  grep -qF 'root size=' "$SIZELOG2.out"
+# A container's root rides the storage pool — the same fact the mint path
+# states when --disk meets container mode. Handing a container operator a
+# root-size command would be a line that does nothing.
+SIZELOG3="$MWORK/size-ct.log"
+export FAKE_TYPE=CONTAINER
+check "clone sizing: the container clone still refuses, and says why (#171)" \
+  2 "rides the" \
+  mintbox "$SIZELOG3" new --name w9 --from work --cpu 2 --disk 20GiB
+check "clone sizing: ...printing no root-size command at all (#171)" 1 "" \
+  grep -qF 'config device set' "$SIZELOG3.out"
+# ...while the cpu line, which has nothing to do with the instance type, stays.
+check "clone sizing: ...and the cpu line is unaffected by the type (#171)" 0 "" \
+  grep -qF 'box incus w9 -- config set {} limits.cpu 2' "$SIZELOG3.out"
+unset FAKE_TYPE
+# Fail OPEN when incus does not say what the source is: the caveat already
+# names the container case, so an over-explained line costs a paragraph while a
+# suppressed one withholds the handle this whole issue is about.
+SIZELOG4="$MWORK/size-unknown.log"
+check "clone sizing: an unreadable source type still prints the disk line (#171)" \
+  2 "config device set {} root size=20GiB" \
+  mintbox "$SIZELOG4" new --name w9 --from work --disk 20GiB
+
+# The silent case. A clone narrates what it inherited — the stamp, the id, the
+# pristine question — and said nothing about the resources it came up with,
+# which is how a fleet ships a builder on a reviewer's 2 CPU and finds out
+# under load (heavy-duty/crew#55). Read off the daemon, never inferred: this
+# path never ran load_template, so box's own defaults would be the sizing of a
+# mint that did not happen.
+SIZECFG="$MWORK/clone-sized.cfg"
+cat > "$SIZECFG" <<'CFG'
+user.box 1
+limits.cpu 6
+limits.memory 12GiB
+CFG
+SIZEDCLONE="$MWORK/sized-clone.log"
+export FAKE_CFG="$SIZECFG" FAKE_ROOT_SIZE=80GiB
+check "clone: narrates the resources it actually carries (#171)" \
+  0 "it carries the source's resources: cpu=6 mem=12GiB disk=80GiB" \
+  mintbox "$SIZEDCLONE" new --name w10 --from work/authed
+# --expanded, because the question is what the instance will RUN with: a
+# profile added by hand is as real as box's own per-instance stamp, and a bare
+# 'config get' would report only the override.
+check "clone: reads the limits with --expanded, not just the override (#171)" 0 "" \
+  grep -qF 'incus config get --expanded w10 limits.cpu' "$SIZEDCLONE"
+# The root size is a DEVICE key, not a config one — its absence is how the
+# container case answers, so it must never be read off limits.*.
+check "clone: reads the root size as a device key (#171)" 0 "" \
+  grep -qE '^incus config device get w10 root size *$' "$SIZEDCLONE"
+unset FAKE_ROOT_SIZE
+# A container clone has no per-instance root override, so incus answers
+# nothing — and box prints no disk figure rather than inventing one from the
+# pool or from a template it never loaded.
+CTCLONE="$MWORK/ct-clone.log"
+check "clone: no root override → the figures it HAS, and no disk guess (#171)" \
+  0 "it carries the source's resources: cpu=6 mem=12GiB" \
+  mintbox "$CTCLONE" new --name w11 --from work/authed
+check "clone: ...and says nothing at all about a disk (#171)" 1 "" \
+  grep -qF 'disk=' "$CTCLONE.out"
+unset FAKE_CFG
+# The fully degraded read: incus answers none of the three. Silence here is
+# indistinguishable from the bug this line exists to fix, so it says so and
+# names the verb that has the whole config.
+check "clone: an unreadable clone says so rather than going quiet again (#171)" \
+  0 "incus reported no resource figures" \
+  mintbox "$MWORK/blind-clone.log" new --name w12 --from work/authed
+# The help is the other half of the discoverability fix: it stated the rule and
+# not the path, and the path it now states is the {} form that runs.
+check "new --help: names the handle, not just the door (#171)" 0 \
+  "box incus <box> -- config set {} limits.cpu 4" "$BOX" help new
+check "new --help: ...and prices the disk line as the unmeasured one (#171)" 0 \
+  "not watched work" "$BOX" help new
 
 # --- the read half: 'box info' surfaces it ---------------------------------
 # A stamp nothing can read is not done. cmd_info printed NAME/STATE/TYPE/IPV4
