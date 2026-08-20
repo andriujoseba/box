@@ -268,13 +268,99 @@ fi
 # incusbr0, default profile) with only the driver deliberate; dir remains the
 # fallback so a host that cannot do btrfs still works — just slowly, and it
 # says so.
-if ! incus storage show default >/dev/null 2>&1; then
+#
+# WHERE that pool lives is a second decision, independent of the driver (#180).
+# With no 'source:' key Incus creates the pool inside its own state directory,
+# /var/lib/incus/storage-pools/default — on the root filesystem. Every box's
+# root device then sits in that loop-backed image, so the disk a template asks
+# for (BOX_DISK, 60GiB by default) is charged against '/', and a whole fleet
+# competes with the operating system for one partition. BOX_STORAGE_SOURCE is
+# that placement and it is passed through to 'source:' VERBATIM: Incus reads a
+# block device (/dev/sdb — formatted and owned outright, the recommended form)
+# and a path on an already-mounted filesystem (/data/bulk/incus — shared with
+# whatever else is there) through the same key, and this script telling the two
+# apart would only be guessing at what Incus already knows. Unset emits no
+# 'source:' line at all, so an upgraded host keeps byte-for-byte the pool it
+# has. Placement is HOST state, decided once with the pool, which is why it is
+# a setup-host variable and not a 'box new' flag — box new owns no resize verb
+# for the same reason (docs/box-design.md).
+
+# The preseed's storage_pools block, composed in one place so test/cli.sh can
+# drive every driver/source combination against it — and so the unset case is
+# provably the same bytes it has always been.
+pool_block() {
+  printf 'storage_pools:\n- name: default\n  driver: %s\n' "$1"
+  [ -z "$2" ] || printf '  source: %s\n' "$2"
+}
+
+# The live pool's source, or nothing. Two probes: 'get' answers with an empty
+# line for a pool whose source was never recorded, which is indistinguishable
+# from a refusal, and 'show' is the read this script already prints its driver
+# from. Never fatal — '|| true' on both, and the awk reads a variable rather
+# than a pipeline, so this cannot turn fatal later under 'shopt -s
+# inherit_errexit' (bin/box's storage_driver carries the same note, #107).
+pool_source() {
+  local out show
+  out="$(incus storage get default source 2>/dev/null || true)"
+  if [ -z "$out" ]; then
+    show="$(incus storage show default 2>/dev/null || true)"
+    out="$(awk '$1 == "source:" { print $2; exit }' <<<"$show")"
+  fi
+  printf '%s' "$out"
+}
+
+BOX_STORAGE_SOURCE="${BOX_STORAGE_SOURCE:-}"
+# btrfs and dir — the only two drivers this script creates — read 'source:' as
+# a filesystem path or a block device. A relative one would be resolved by the
+# DAEMON, against its idea of where it is standing and not yours, so it dies
+# here rather than placing a pool somewhere nobody named.
+case "$BOX_STORAGE_SOURCE" in
+  ''|/*) ;;
+  *) echo "ERROR: BOX_STORAGE_SOURCE must be an absolute path — got '$BOX_STORAGE_SOURCE'." >&2
+     echo "       a block device ('/dev/sdb', which Incus formats and owns outright)" >&2
+     echo "       or a path on an already-mounted filesystem ('/data/bulk/incus')." >&2
+     echo "       Nothing was changed." >&2
+     exit 1 ;;
+esac
+
+if incus storage show default >/dev/null 2>&1; then
+  # The pool exists, so the preseed below is skipped — and with it any chance
+  # of honoring a placement. That skip used to be SILENT: setting
+  # BOX_STORAGE_SOURCE on a host that already has a pool did nothing and said
+  # nothing, and the operator learned it from 'df' weeks later. That silence is
+  # the defect this refusal closes (#180). Moving a pool that already carries
+  # boxes means moving every box's root device — a migration with its own risk,
+  # its own confirmation and its own drill leg, deliberately not this script's.
+  if [ -n "$BOX_STORAGE_SOURCE" ]; then
+    live="$(pool_source)"
+    if [ -z "$live" ]; then
+      echo "ERROR: BOX_STORAGE_SOURCE=$BOX_STORAGE_SOURCE was requested, but the live pool" >&2
+      echo "       'default' reports NO source at all — so this run cannot prove it is" >&2
+      echo "       already placed there, and creating it again is not on the table." >&2
+      echo "       read it by hand:  incus storage show default" >&2
+      echo "       Nothing was changed." >&2
+      exit 1
+    fi
+    if [ "${live%/}" != "${BOX_STORAGE_SOURCE%/}" ]; then
+      echo "ERROR: the storage pool 'default' already exists somewhere else." >&2
+      echo "         live:      $live" >&2
+      echo "         requested: $BOX_STORAGE_SOURCE" >&2
+      echo "       A pool is created once, so re-running with BOX_STORAGE_SOURCE set does" >&2
+      echo "       NOT move it — and pretending otherwise is how a host ends up filling" >&2
+      echo "       its root disk while its operator believes the boxes live elsewhere." >&2
+      echo "       Moving a pool that carries boxes means moving every box's root device:" >&2
+      echo "       that is a migration, not a re-run (issue #180). To re-run this script" >&2
+      echo "       against the host as it stands, unset BOX_STORAGE_SOURCE." >&2
+      echo "       Nothing was changed." >&2
+      exit 1
+    fi
+    echo "storage: pool 'default' source = $live (already placed there; nothing to do)"
+  fi
+else
   driver=btrfs
   command -v mkfs.btrfs >/dev/null 2>&1 || apt_get install -y btrfs-progs || driver=dir
   if ! incus admin init --preseed <<PRESEED
-storage_pools:
-- name: default
-  driver: $driver
+$(pool_block "$driver" "$BOX_STORAGE_SOURCE")
 networks:
 - name: incusbr0
   type: bridge
@@ -291,10 +377,35 @@ profiles:
       type: nic
 PRESEED
   then
+    # --minimal cannot carry a source: it creates the pool under /var/lib/incus,
+    # on the root filesystem — the exact placement the operator asked to avoid.
+    # Falling back to it here would be the same silence as the skip above, one
+    # step further along, so a requested placement makes the preseed failure
+    # fatal instead. With nothing requested, the fallback is what it always was.
+    if [ -n "$BOX_STORAGE_SOURCE" ]; then
+      echo "ERROR: the storage preseed failed, and BOX_STORAGE_SOURCE=$BOX_STORAGE_SOURCE" >&2
+      echo "       cannot be honored by the '--minimal' fallback: minimal places the pool" >&2
+      echo "       under /var/lib/incus, on the root filesystem. Refusing rather than" >&2
+      echo "       building a host whose boxes live somewhere you did not name." >&2
+      echo "       incus said why above. Fix that, or re-run without BOX_STORAGE_SOURCE" >&2
+      echo "       to accept the root-filesystem pool." >&2
+      exit 1
+    fi
     echo "storage: $driver preseed failed — falling back to --minimal (dir: every clone is a full disk copy)" >&2
     incus admin init --minimal
   fi
-  echo "storage: pool 'default' driver = $(incus storage show default | awk '/^driver:/ {print $2}')"
+  # Report both halves: the driver decides whether a clone is near-free, the
+  # source decides which disk fills up (#180). Read back rather than echoed
+  # from the inputs — the fallback above can have changed both.
+  pool_show="$(incus storage show default 2>/dev/null || true)"
+  echo "storage: pool 'default' driver = $(awk '/^driver:/ {print $2; exit}' <<<"$pool_show")"
+  pool_live="$(awk '$1 == "source:" {print $2; exit}' <<<"$pool_show")"
+  if [ -n "$pool_live" ]; then
+    echo "storage: pool 'default' source = $pool_live"
+  else
+    echo "storage: pool 'default' source = <none> — loop-backed under /var/lib/incus, i.e." \
+         "on the root filesystem; BOX_STORAGE_SOURCE places a FRESH host's pool elsewhere (#180)"
+  fi
 fi
 
 # Isolated NAT network. IPv6 off: one less egress path to reason about.
