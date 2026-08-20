@@ -379,8 +379,9 @@ labels of its snapshots, with the --from line to clone one.
 EOF
 ;;
     shell) cat <<'EOF'
-Open an interactive shell in a running box as the 'claude' user. This is the
-only entry path — there is no SSH and no inbound route to a box.
+Open an interactive shell in a running box as its template's user. This is the
+tenant entry path; 'box root' is the operator path. Neither uses SSH, and there
+is no inbound route to a box.
 
   box shell work
 EOF
