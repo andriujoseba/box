@@ -298,6 +298,15 @@ check "render_userdata: extracted from bin/box (guards the awk)" 0 "RIG_REPO" ca
 check "render_userdata: the pin's defaults came with it (guards the grep)" 0 "heavy-duty/rig" cat "$RUFN"
 check "render_userdata: the pin's RESOLUTION came with it too (#150)" 0 "releases/latest" cat "$RUFN"
 check "render_userdata: the extracted function is valid bash"    0 "" bash -n "$RUFN"
+# Two probes for two channels — box's own in install.sh (#83) and rig's here
+# (#150) — and they are the same trick, so they must stay the same trick. Not
+# byte-identical (this one takes the repo as an argument and time-boxes the
+# request), so what is asserted is the pair of facts a rewrite of either would
+# break: the redirect they read, and the tag shape they accept from it.
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "the rig pin probe reads the same redirect install.sh does (#83, #150)" 0 "" \
+  bash -c 'for f in "$@"; do grep -q "releases/latest\"" "$f" || exit 1
+             grep -q "\*/releases/tag/?\*" "$f" || exit 1; done' _ "$ROOT/install.sh" "$RUFN"
 
 SEED="$(mktemp)"
 printf '#cloud-config\nruncmd:\n  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash\n' > "$SEED"

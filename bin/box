@@ -1119,8 +1119,10 @@ load_template() {
 # stamp that disagrees with the seed is worse than no stamp at all.
 rig_repo() { printf '%s\n' "${RIG_REPO:-heavy-duty/rig}"; }
 
-# rig's latest release, resolved the no-API way — byte-for-byte the probe
-# install.sh uses for box's own default channel (#83): GitHub answers
+# rig's latest release, resolved the no-API way — the same probe install.sh
+# uses for box's own default channel (#83), taking the repo as an argument
+# rather than off a global, and time-boxed because a mint must not hang on a
+# HEAD request: GitHub answers
 # https://github.com/<repo>/releases/latest with a redirect to
 # .../releases/tag/<tag>, so one HEAD request reads the tag off the Location
 # header. No API, no token, no rate-limit pain. Prints the bare tag; fails
