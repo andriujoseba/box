@@ -1832,7 +1832,7 @@ cmd_new() {
     # new verb doing this: it passes resource overrides through 'box new', which
     # is exactly what #57 said a flag may touch.
     #
-    # -c is unconditional; -d is not, and the pre-flight above is why. A source
+    # -c is unconditional; -d is not, and src_has_local_root is why. A source
     # whose root comes from a profile cannot take a copy-time device override,
     # so --disk is REFUSED there rather than sent and hoped for — and refused
     # whole, before the copy, because a clone that took --cpu and dropped
@@ -1911,10 +1911,10 @@ cmd_new() {
     wait_agent "$instance"
     reset_identity "$instance"
     echo "box: cloned $srcref — isolation and auth state carry over from the source."
-    # The silent case #171 calls worse than the refused one. The refusal above
-    # only fires if the caller PASSED the flags; drop them — which is what a
-    # caller does once it knows better — and the clone came up with whatever
-    # the source had, with nothing anywhere saying what that was. It was
+    # The silent case #171 calls worse than the refused one, and the half that
+    # survives the flags becoming supported: a caller who names no size — the
+    # ordinary clone — still gets whatever the source had, and nothing on this
+    # path ever said what that was. It was
     # discoverable only by running 'box info' and reading limits.* out of a
     # config dump, and the way a fleet found out was under load: a builder
     # cloned from a reviewer-sized gold is 2 CPU where its role declares 4
