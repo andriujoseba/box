@@ -2546,16 +2546,104 @@ printf 'storage_pools:\n- name: default\n  driver: btrfs\n' > "$W180/pre180.yaml
 pblock btrfs "" > "$W180/unset.yaml"
 check "pool_block: with no source, byte-for-byte the pre-#180 block" 0 "" \
   cmp -s "$W180/pre180.yaml" "$W180/unset.yaml"
-check "pool_block: a source is emitted verbatim" 0 "  source: /dev/sdb" pblock btrfs /dev/sdb
+check "pool_block: a source is emitted verbatim" 0 "  source: '/dev/sdb'" pblock btrfs /dev/sdb
 check "pool_block: ...and the driver line is untouched beside it" 0 "  driver: btrfs" pblock btrfs /dev/sdb
 # shellcheck disable=SC2016  # the $() runs in the inner bash, not this one
 check "pool_block: ...as a key OF the pool, i.e. under the driver" 0 "" bash -c '
-  . "'"$POOLFN"'"; [ "$(pool_block btrfs /dev/sdb | tail -1)" = "  source: /dev/sdb" ]'
+  . "'"$POOLFN"'"; [ "$(pool_block btrfs /dev/sdb | tail -1)" = "  source: '"'"'/dev/sdb'"'"'" ]'
 # AC6: the dir fallback is a DRIVER decision and placement is not — a host that
 # cannot do btrfs still places its pool where it was told to.
-check "pool_block: the dir fallback carries the source too" 0 "  source: /data/bulk/incus" \
+check "pool_block: the dir fallback carries the source too" 0 "  source: '/data/bulk/incus'" \
   pblock dir /data/bulk/incus
 check "pool_block: ...and is still the dir driver" 0 "  driver: dir" pblock dir /data/bulk/incus
+
+# "Verbatim" is a claim about the value INCUS PARSES, not about the bytes on
+# the line, and a substring check cannot tell the two apart. A plain YAML
+# scalar ends at ' #' — so '/data/bulk/a #archive', a legal directory name and
+# a legal Incus source, used to reach the daemon as '/data/bulk/a' and the pool
+# was built somewhere nobody named, silently: the very defect #180 exists to
+# close, arriving through the front door (panel round 2).
+#
+# Held from both sides. First WITHOUT a parser, so a runner missing pyyaml
+# still fails on the regression rather than skipping it: the emitted source
+# must be a QUOTED scalar, which is exactly what makes the value survive.
+check "pool_block: the source is emitted as a QUOTED yaml scalar" 0 "" bash -c '
+  . "'"$POOLFN"'"; [ "$(pool_block btrfs "/data/bulk/a #archive" | tail -1)" \
+     = "  source: '"'"'/data/bulk/a #archive'"'"'" ]'
+check "pool_block: ...so the comment marker is inside the quotes, not opening one" 0 "" bash -c '
+  . "'"$POOLFN"'"; pool_block btrfs "/data/bulk/a #archive" | tail -1 | grep -qE "^  source: .*archive.$"'
+check "pool_block: a quote in the source is doubled, as yaml escapes it" 0 "" bash -c '
+  . "'"$POOLFN"'"; [ "$(pool_block btrfs "/data/o'"'"'brien" | tail -1)" \
+     = "  source: '"'"'/data/o'"'"''"'"'brien'"'"'" ]'
+# ...then WITH one, which is the assertion that actually means it: parse the
+# block Incus is handed and compare the source it would read against the value
+# the operator set. Every shape a plain scalar mangles, round-tripped.
+if [ -n "${HAVE_YAML:-}" ]; then
+  roundtrip() { # roundtrip <value> — emitted, parsed, compared
+    bash -c '. "'"$POOLFN"'"; pool_block btrfs "$1" > "$2"' _ "$1" "$W180/rt.yaml" \
+      && python3 -c '
+import sys, yaml
+want = sys.argv[1]
+got = yaml.safe_load(open(sys.argv[2]))["storage_pools"][0]["source"]
+if got != want:
+    print("parsed %r, wanted %r" % (got, want)); sys.exit(1)
+' "$1" "$W180/rt.yaml"
+  }
+  check "pool_block: a source containing ' #' round-trips through a yaml parser" 0 "" \
+    roundtrip '/data/bulk/a #archive'
+  check "pool_block: ...and one containing a space" 0 "" roundtrip '/data/bulk/box pool'
+  check "pool_block: ...and one containing a quote" 0 "" roundtrip "/data/o'brien/pool"
+  check "pool_block: ...and one containing ': ', which used to break the preseed" 0 "" \
+    roundtrip '/data/bulk/a: b'
+  check "pool_block: ...and the documented block device, unchanged by any of it" 0 "" \
+    roundtrip /dev/sdb
+  # The preseed as a WHOLE still parses with the source quoted — the block is
+  # spliced into a larger document, and a broken scalar there fails the run.
+  check "pool_block: the block is well-formed yaml on its own" 0 "" bash -c '
+    . "'"$POOLFN"'"; pool_block btrfs "/data/bulk/a #archive" > "'"$W180"'/whole.yaml"
+    python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "'"$W180"'/whole.yaml"'
+else
+  echo "skip: pool_block yaml round-trip (no python3+pyyaml here; CI has both)"
+fi
+
+# The other half of verbatim: reading one back. yaml_scalar is pure — a 'key:'
+# line's value in, the value YAML means out — so it is extracted and driven
+# like every other seam here. awk's $2 answered "/data/bulk/box" for a pool on
+# "/data/bulk/box pool", which is a wrong answer that looks like a right one.
+YSFN="$(mktemp)"
+awk '/^yaml_scalar\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$YSFN"
+awk '/^yaml_value\(\) \{/,/^\}/'  "$ROOT/host/setup-host.sh" >> "$YSFN"
+check "yaml_scalar: extracted from setup-host.sh (guards the awk)" 0 "printf" cat "$YSFN"
+check "yaml_scalar: the extracted functions are valid bash" 0 "" bash -n "$YSFN"
+ys() { bash -c ". '$YSFN'; yaml_scalar \"\$1\"; echo" _ "$1"; }
+yv() { bash -c ". '$YSFN'; yaml_value \"\$1\" \"\$2\"; echo" _ "$1" "$2"; }
+check "yaml_scalar: a plain scalar is itself" 0 "/dev/sdb" ys " /dev/sdb"
+check "yaml_scalar: a plain scalar keeps its spaces" 0 "/data/bulk/box pool" ys " /data/bulk/box pool"
+check "yaml_scalar: a single-quoted scalar loses only its quotes" 0 "/data/bulk/a #archive" \
+  ys " '/data/bulk/a #archive'"
+check "yaml_scalar: a doubled quote inside one is a single quote" 0 "/data/o'brien" \
+  ys " '/data/o''brien'"
+check "yaml_scalar: a double-quoted scalar is unescaped too" 0 '/data/a"b' ys ' "/data/a\"b"'
+check "yaml_scalar: trailing whitespace is yaml's, not the value's" 0 "" bash -c '
+  . "'"$YSFN"'"; [ "$(yaml_scalar "  /dev/sdb   ")" = "/dev/sdb" ]'
+# The recorded-but-empty value every loop-backed pool carries, in both
+# spellings: absence, not a source named '""'. One normalisation, every key.
+check "yaml_scalar: a bare pair of quotes is absence" 0 "" bash -c '
+  . "'"$YSFN"'"; [ -z "$(yaml_scalar "\"\"")" ] && [ -z "$(yaml_scalar "'"''"'")" ]'
+check "yaml_scalar: a lone quote is not a quoted scalar" 0 "'" ys "'"
+check "yaml_value: reads the value past the first colon, whole" 0 "/data/bulk/a #archive" \
+  yv source "config:
+  source: '/data/bulk/a #archive'"
+check "yaml_value: ...and a value containing a colon survives it" 0 "/data/a: b" \
+  yv source "config:
+  source: '/data/a: b'"
+check "yaml_value: a key it cannot find reads as absent" 0 "" \
+  yv volatile.initial_source "config:
+  source: /dev/sdb"
+check "yaml_value: the driver comes off the same read" 0 "btrfs" \
+  yv driver "name: default
+driver: btrfs"
+rm -f "$YSFN"
 
 # The re-run's match test, pure (requested, live, initial → exit status), and
 # driven directly rather than only through the shim — because the shim is
@@ -2611,7 +2699,32 @@ check "setup-host: a fresh host places the pool where BOX_STORAGE_SOURCE says" 0
   runsetup BOX_STORAGE_SOURCE=/dev/sdb BOX_SUBNET=10.89.0.0/24 \
            FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p2.log"
 check "setup-host: ...the preseed carrying it verbatim" 0 "" \
-  grep -qF '  |   source: /dev/sdb' "$W180/p2.log"
+  grep -qF "  |   source: '/dev/sdb'" "$W180/p2.log"
+# ...and the shape a plain scalar silently truncated, driven all the way to the
+# preseed's stdin: the pool must be asked for at the path the operator typed,
+# not at the prefix before its comment marker.
+check "setup-host: a source containing ' #' reaches the preseed whole" 0 "Host ready" \
+  runsetup "BOX_STORAGE_SOURCE=/data/bulk/a #archive" BOX_SUBNET=10.89.0.0/24 \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST" FAKE_INCUS_LOG="$W180/p10.log"
+check "setup-host: ...quoted, so yaml does not read the rest as a comment" 0 "" \
+  grep -qF "  |   source: '/data/bulk/a #archive'" "$W180/p10.log"
+if [ -n "${HAVE_YAML:-}" ]; then
+  # The preseed as the daemon receives it: the shim logs every stdin verb's
+  # input under its own call line with a '  | ' prefix, so take the block that
+  # follows the preseed call, strip the prefix, and parse what Incus was handed.
+  check "setup-host: ...and the preseed Incus was handed parses to that source" 0 "" bash -c '
+    awk "/^incus admin init --preseed/ { f = 1; next }
+         f && /^  \\| / { sub(/^  \\| /, \"\"); print; next }
+         f { exit }" "$1" > "$2"
+    [ -s "$2" ] || { echo "no preseed block found in $1"; exit 1; }
+    python3 -c "
+import sys, yaml
+got = yaml.safe_load(open(sys.argv[1]))[\"storage_pools\"][0][\"source\"]
+want = \"/data/bulk/a #archive\"
+if got != want:
+    print(\"preseed carried %r, wanted %r\" % (got, want)); sys.exit(1)
+" "$2"' _ "$W180/p10.log" "$W180/p10.yaml"
+fi
 # D3, the defect: the pool is created once, so a re-run cannot move it. It used
 # to skip in silence; now it names both sources and dies.
 check "setup-host: an existing pool placed ELSEWHERE refuses" 1 "already exists somewhere else" \
@@ -2671,6 +2784,33 @@ check "setup-host: ...with the UUID Incus records named beside it" \
   0 "Incus records it as '$UUID'" runblockdev /dev/sdb
 check "setup-host: ...having actually asked for the initial source" 0 "" \
   grep -qF 'storage get default volatile.initial_source' "$W180/p8.log"
+# The FRESH run reports the same way, and this is the run where it matters
+# most: the operator has just typed /dev/sdb, and btrfs has just written a
+# filesystem UUID over 'source'. Answering with the UUID alone names no disk
+# on the host — it was the last line still doing so.
+check "setup-host: a fresh placed host reports the DEVICE, not the UUID it became" \
+  0 "source = /dev/sdb" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb BOX_SUBNET=10.89.0.0/24 \
+           "FAKE_POOL_SOURCE=$UUID" FAKE_POOL_INITIAL_SOURCE=/dev/sdb \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...with the UUID Incus wrote named beside it" \
+  0 "Incus records it as '$UUID'" \
+  runsetup BOX_STORAGE_SOURCE=/dev/sdb BOX_SUBNET=10.89.0.0/24 \
+           "FAKE_POOL_SOURCE=$UUID" FAKE_POOL_INITIAL_SOURCE=/dev/sdb \
+           FAKE_IP4_DEFAULT="$D_INBOX" FAKE_IP4_ADDRS="$A_GUEST"
+# ...and where Incus mangled nothing — every dir pool, every path source — it
+# is the one line it always was, with no parenthetical to explain.
+check "setup-host: a fresh path-source host reports that path plainly" \
+  0 "source = /data/bulk/incus" \
+  runsetup BOX_STORAGE_SOURCE=/data/bulk/incus BOX_SUBNET=10.89.0.0/24 \
+           FAKE_POOL_SOURCE=/data/bulk/incus FAKE_IP4_DEFAULT="$D_INBOX" \
+           FAKE_IP4_ADDRS="$A_GUEST"
+check "setup-host: ...saying nothing about a UUID it does not have" 1 "" bash -c '
+  runsetup() { env FAKE_UID=1000 FAKE_GROUPS="users incus-admin" \
+      PATH="'"$SETUPSHIM:$SHIMDIR"':$PATH" "$@" bash "'"$ROOT"'/host/setup-host.sh"; }
+  runsetup BOX_STORAGE_SOURCE=/data/bulk/incus BOX_SUBNET=10.89.0.0/24 \
+           FAKE_POOL_SOURCE=/data/bulk/incus FAKE_IP4_DEFAULT="'"$D_INBOX"'" \
+           FAKE_IP4_ADDRS="'"$A_GUEST"'" 2>&1 | grep -q "Incus records it as"'
 check "setup-host: ...and it reached the rest of the run, not a refusal" 0 "" \
   grep -q 'network show boxnet' "$W180/p8.log"
 # ...and it is a READ of that key, not an assumption: another device still
@@ -2811,7 +2951,12 @@ rm -f "$SIGFN"
 # and named, and a placed pool must not carry that warning.
 # ---------------------------------------------------------------------------
 PFFN="$(mktemp)"
-awk '/^pool_findings\(\) \{/,/^\}/' "$ROOT/drill/doctor.sh" > "$PFFN"
+# The two readers come with it: pool_findings reads its scalars through them,
+# and extracting the report without them would drive a function this file
+# assembled rather than the one doctor.sh ships.
+awk '/^yaml_scalar\(\) \{/,/^\}/'   "$ROOT/drill/doctor.sh" > "$PFFN"
+awk '/^yaml_value\(\) \{/,/^\}/'    "$ROOT/drill/doctor.sh" >> "$PFFN"
+awk '/^pool_findings\(\) \{/,/^\}/' "$ROOT/drill/doctor.sh" >> "$PFFN"
 check "pool_findings: extracted from doctor.sh (guards the awk)" 0 "driver = " cat "$PFFN"
 check "pool_findings: the extracted function is valid bash" 0 "" bash -n "$PFFN"
 pf() { bash -c ". '$PFFN'; pool_findings \"\$1\"" _ "$1"; }
@@ -2899,6 +3044,34 @@ driver: btrfs
 config:
   source: /var/lib/incus/disks/default.img
   volatile.initial_source: \"\""
+# AC5 on a source with a space in it. This section exists to answer "my boxes
+# filled the root disk" with a path the operator can act on, and reading the
+# line with awk's $2 answered it with a DIFFERENT path — '/data/bulk/box' for a
+# pool on '/data/bulk/box pool' — which is worse than not answering, because
+# nothing about it looks wrong. Both shapes Incus emits: plain for a space,
+# quoted once the value contains ' #'.
+P_SPACE="name: default
+driver: btrfs
+config:
+  source: /data/bulk/box pool"
+P_HASH="name: default
+driver: btrfs
+config:
+  source: '/data/bulk/a #archive'"
+check "pool_findings: a source containing a space is reported WHOLE" \
+  0 "source = /data/bulk/box pool" pf "$P_SPACE"
+check "pool_findings: a quoted source is reported without its quotes" \
+  0 "source = /data/bulk/a #archive" pf "$P_HASH"
+check "pool_findings: ...and neither is mistaken for the root filesystem" 1 "" bash -c '
+  . "'"$PFFN"'"; { pool_findings "'"$P_SPACE"'"; pool_findings "'"$P_HASH"'"; } | grep -q "charged against"'
+# The device a quoted-and-mangled pool was made from is read the same way: this
+# is the line that names the disk, so truncating it names the wrong disk.
+check "pool_findings: a quoted initial source names the whole device" \
+  0 "made from = /dev/disk/by-id/scsi-0QEMU disk2" pf "name: default
+driver: btrfs
+config:
+  source: 4ff9b8f1-6e6a-4d0f-9a3c-0d1f2e3a4b5c
+  volatile.initial_source: '/dev/disk/by-id/scsi-0QEMU disk2'"
 rm -f "$PFFN"
 
 # The wiring, and the judgement inside it: the pool is read off the profile
