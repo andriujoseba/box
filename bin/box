@@ -591,8 +591,8 @@ snapshots). What box then re-stamps is THIS host's truth:
 The mint stamp is NOT rewritten — save for the id above, which is not a fact
 about the artifact but about a box on a host. The artifact's mint time, box
 version, image, template and origin (mint or clone) are the originating host's
-truth and survive the trip intact — 'box info' shows them unchanged, with an IMPORTED
-line under them saying the mint predates the arrival. In particular the import
+truth and survive the trip intact — 'box info' shows them unchanged, with an
+IMPORTED line under them saying the mint predates the arrival. In particular it
 does not overwrite 'origin': a clone that was exported and imported still
 reads as a clone, and still names the box it was cloned from.
 
