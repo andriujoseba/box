@@ -317,6 +317,17 @@ for d in "$ROOT"/templates/*/; do
   # template's package list must carry tmux or the verb dies inside.
   check "template '$t': installs tmux (#65)" 0 "" \
     grep -qE '^[[:space:]]*-[[:space:]]+tmux$' "$d/user-data.yaml"
+  # #174: host suspend can leave a guest hours adrift. Every discovered
+  # template therefore installs chrony, gives it an unlimited post-start
+  # step window, and explicitly leaves the service enabled and running.
+  check "template '$t': installs chrony (#174)" 0 "" \
+    grep -qE '^[[:space:]]*-[[:space:]]+chrony$' "$d/user-data.yaml"
+  check "template '$t': writes the chrony step drop-in (#174)" 0 "" \
+    grep -qE '^[[:space:]]*-[[:space:]]+path:[[:space:]]+/etc/chrony/conf\.d/box-makestep\.conf$' "$d/user-data.yaml"
+  check "template '$t': permits steps after every update (#174)" 0 "" \
+    grep -qE '^[[:space:]]+makestep[[:space:]]+1\.0[[:space:]]+-1$' "$d/user-data.yaml"
+  check "template '$t': enables and starts chrony (#174)" 0 "" \
+    grep -qE '^[[:space:]]*-[[:space:]]+systemctl enable --now chrony$' "$d/user-data.yaml"
   # BOX_USER is duplicated into the cloud-init by hand (the file reaches
   # Incus verbatim) — assert the two halves actually agree, per template.
   tuser="$(tpl "$ROOT" "$t" | sed -n 's/.*USER=\([^ ]*\).*/\1/p')"
@@ -366,8 +377,8 @@ for d in "$ROOT"/templates/*/; do
   check "template '$t': nothing that joins or admits (no tailscale/authkey/ssh)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "tailscale|authkey|ssh"' _ "$d/user-data.yaml"
   # shellcheck disable=SC2016
-  check "template '$t': no context-file heredoc (the #80 guard lives in rig's roles)" 1 "" \
-    bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "write_files|CLAUDE\.md|AGENTS\.md"' _ "$d/user-data.yaml"
+  check "template '$t': no context file (the #80 guard lives in rig's roles)" 1 "" \
+    bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "CLAUDE\.md|AGENTS\.md"' _ "$d/user-data.yaml"
 done
 
 # The staging seed's boot demands are part of its contract (#68/#69): the VM
