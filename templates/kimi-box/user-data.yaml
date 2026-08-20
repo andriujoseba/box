@@ -23,9 +23,11 @@ runcmd:
   # Preinstall rig so the box can converge — and re-converge — via
   # 'rig bootstrap kimi-box'. @RIG_REPO@/@RIG_REF@ are the pin point (#81):
   # box substitutes them at mint from the RIG_REPO/RIG_REF environment
-  # (default heavy-duty/rig @ main — unpinned, tracking main, the same
-  # honest edge as rig's own unpinned box install, until rig#32 ships a
-  # release flow). The pin covers both the installer fetched AND the tree
+  # (default heavy-duty/rig @ its LATEST RELEASE, resolved at mint off the
+  # releases/latest redirect — #150 closed the unpinned default, because a
+  # released box converging its guests against rig's development tip ships a
+  # combination nobody drilled; RIG_REF=main is still the dev channel, said
+  # explicitly). The pin covers both the installer fetched AND the tree
   # it installs, so a branch under review is testable end to end.
   # HOME=/root: cloud-init runs runcmd as root but with NO $HOME in the
   # environment, and the rig installer (set -u) reads $HOME for its DEST —
