@@ -1238,6 +1238,11 @@ cat > "$CSHIM/incus" <<'SHIM'
 [ -n "${FAKE_INCUS_LOG:-}" ] && printf 'incus %s\n' "$*" >> "$FAKE_INCUS_LOG"
 case "$*" in
   "config get work user.box") echo 1 ;;
+  "exec work -- bash -l")
+    if [ "${FAKE_ROOT_STOPPED:-0}" = 1 ]; then
+      echo "Error: Instance is not running" >&2
+      exit 1
+    fi ;;
   "config get "*)             exit 1 ;;
 esac
 exit 0
@@ -1268,6 +1273,10 @@ check "root: reaches Incus directly as root, without guest sudo" 0 "" \
   grep -qFx 'incus exec work -- bash -l' "$ROOTLOG"
 check "root: a nonexistent box fails through the shared box guard" 1 "no such box" \
   runbox "$CWORK/root-missing.log" root missing
+root_stopped() { FAKE_ROOT_STOPPED=1 runbox "$CWORK/root-stopped.log" root work; }
+check "root: a stopped box preserves Incus's failure" 1 "Instance is not running" \
+  root_stopped
+# shellcheck disable=SC2016  # $inst and the command substitution are literal bin/box source.
 check "root: shell implementation remains the tenant-user contract" 0 "" \
   grep -qFx 'cmd_shell() { incus exec "$inst" -- sudo -u "$(box_user "$inst")" -i; }' "$BOX"
 
