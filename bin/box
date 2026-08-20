@@ -319,16 +319,27 @@ is no flag for a network or a security key, on purpose.
 
 The flags work on --from too (#171). They ride the copy itself — incus sizes
 the clone's volume as it creates it, so there is no resize, no restart and no
-step inside the guest. Either way the clone says what it came up with, so a
-clone's sizing is never something you have to go and ask 'box info' for.
+step inside the guest. Every box says what it came up with when it comes up,
+clone or fresh mint, so sizing is never something to go and ask 'box info' for.
 
---disk is the one with a precondition: it can only ride the copy where the
-source has its own root device. A container's root rides the storage pool and
-box's older mints may take theirs from the profile — box checks, refuses
-rather than sending a broken device, and prints the route to size the clone
-afterwards instead. Stop the box before taking that route: on a 'dir' or
-'btrfs' pool a running instance accepts the new size and defers it to the next
-start, which reads exactly like it worked.
+--disk is the one with a precondition: it can only ride a copy whose source has
+a root device of its own. A container's root rides the storage pool (no size to
+copy — box says so and clones anyway), and a VM whose root comes from a profile
+cannot take the override at all: box refuses there, before anything is created,
+rather than writing a device that is not a root disk.
+
+To change a box's resources after it exists, the escape hatch is the path:
+
+  box incus <box> -- config set {} limits.cpu 4
+  box incus <box> -- config set {} limits.memory 8GiB
+  box incus <box> -- config device set {} root size=60GiB
+
+The {} is where the box name goes ('box help incus'). STOP THE BOX before that
+third one: on a 'dir' or 'btrfs' pool incus takes the new size on a running
+instance, reports it back from 'config show', and defers the actual change to
+the next start — which reads exactly like it worked. zfs and lvm apply it live.
+Growing a VM's root still leaves the guest filesystem to grow inside the box,
+and no local driver will shrink one: for a smaller box, mint a smaller box.
 
 BOX_LAUNCH_TIMEOUT=<seconds> (default 600) bounds the 'incus launch' call —
 a launch that overruns it fails loudly instead of hanging forever (#93).
@@ -1700,6 +1711,20 @@ snapshot_bootstrapped() {
 # issue covering it (triage, #171) — so this predicate is measured against the
 # SOURCE, which box can see, and never against the behaviour, which nobody
 # here has run.
+# An instance's type, lowercased, or empty where incus does not say. The one
+# fact that decides D4 from D3 (#171): a container's root rides the storage
+# pool and has no per-instance size at all, while a VM's may or may not be its
+# own device. Empty is not container — an unreadable type falls through to the
+# fail-closed root-device check, which refuses rather than proceeds.
+inst_type_of() {   # inst_type_of <instance>
+  local rows
+  # Capture first, THEN read (#124's class): a multi-line writer piped straight
+  # into an early-exit reader can hand pipefail a 141, which here would read as
+  # "not a container" and take the wrong branch of the decision above.
+  rows="$(incus list "$1" --format csv --columns t 2>/dev/null </dev/null || true)"
+  printf '%s\n' "$rows" | head -n1 | tr -d '"' | tr '[:upper:]' '[:lower:]'
+}
+
 src_has_local_root() {   # src_has_local_root <source-ref>
   local yaml
   yaml="$(incus config show "$1" 2>/dev/null </dev/null || true)"
@@ -1710,68 +1735,65 @@ src_has_local_root() {   # src_has_local_root <source-ref>
     END { exit(found ? 0 : 1) }'
 }
 
-# What box prints when --disk cannot ride the copy (#171). --cpu and --memory
-# always can — '-c' is a flat config merge with no precondition — so this
-# message is only ever about the root device, and it says which of the two
-# reasons applies rather than one vague sentence covering both.
+# What box prints when --disk cannot be served at all (#171 D3): a VM source
+# whose root device comes from a profile, where a copy-time override would not
+# merge but REPLACE. The container case never reaches here — it has had a
+# decided answer since #57 and D4 keeps it (note, no -d, proceed).
 #
-# '{}' is load-bearing and not decoration. 'box incus <box> -- <args>' appends
-# the instance at the END when no {} appears (cmd_incus), so a line reading
-# 'config device set root size=20GiB' would run
-# 'incus config device set root size=20GiB <inst>' — the instance sitting
-# after the value. #171's own proposed message had exactly that bug, which is
-# why test/cli.sh DRIVES these lines back through cmd_incus instead of
-# matching their text: the day that substitution changes, this reds rather
-# than shipping an incantation nobody can run.
-clone_disk_refusal() {   # clone_disk_refusal <source-instance> <source-ref>
-  local srcinst="$1" srcref="$2" rows type=""
-  # Capture first, THEN read (#124's class): a multi-line writer piped straight
-  # into an early-exit reader can hand pipefail a 141, and here that would read
-  # as "type unknown" and print the wrong branch of this message.
-  rows="$(incus list "$srcinst" --format csv --columns t 2>/dev/null </dev/null || true)"
-  type="$(printf '%s\n' "$rows" | head -n1 | tr -d '"' | tr '[:upper:]' '[:lower:]')"
-  echo "box: --disk cannot ride this copy, and box will not pretend it did."
-  if [ "$type" = container ]; then
-    echo "box: '$srcinst' is a CONTAINER: its root rides the storage pool, and there is"
-    echo "box: no per-instance size to copy or to set. The mint path says the same thing"
-    echo "box: when --disk meets container mode — this is that fact, one verb over."
-  else
-    echo "box: '$srcref' carries no LOCAL root device — its root comes from a profile."
-    echo "box: incus's copy-time device override does not merge onto a profile device,"
-    echo "box: it REPLACES it: the clone would get a root of 'size' and nothing else —"
-    echo "box: no type, no path — which incus does not recognise as a root disk at all."
-    echo "box: That is a broken instance, not a smaller one, so box refuses to send it."
-  fi
+# NO LINE OF THIS MESSAGE MAY BEGIN WITH 'incus ' OR 'box ', and test/cli.sh
+# asserts the absence anchored that way — the same discipline #160's wall
+# carries. The verb that would fix the source, 'incus config device override',
+# is triage's inference off the create.go/copy.go divergence and nobody has
+# watched it work here; this file already refuses to invent a 'bootstrapped'
+# mark (bin/box:1990) and to offer 'restore pristine' where no mark exists
+# (bin/box:1994-2006), and printing an unwatched route would be that same lie
+# in a third place. Naming the mechanism mid-sentence is the mechanism being
+# explained; a line that starts with a command is a route being offered.
+#
+# The two routes it DOES offer are the two box has watched: drop the flag, or
+# mint fresh — which is the path that sets 'root,size=' at bin/box:1794.
+clone_disk_refusal() {   # clone_disk_refusal <source-ref>
+  local srcref="$1"
+  echo "box: --disk cannot be applied to this copy, and box will not quietly drop it."
+  echo "box: '$srcref' has no root device of its own — its root comes from a profile."
+  echo "box: A copy-time size override does not merge onto a profile's device, it"
+  echo "box: REPLACES it: the clone would come up with a root of 'size' and nothing"
+  echo "box: else — no type, no path — which incus does not count as a root disk at"
+  echo "box: all. That is a broken instance, not a smaller one."
   echo "box:"
-  echo "box: --cpu and --memory have no such precondition and would have ridden the"
-  echo "box: copy; nothing was copied, because a partly-honoured size flag is the"
-  echo "box: silent wrong-sizing this whole change exists to end (#171)."
-  # '!=' and never '[ = ] && return': under 'set -e' the && form makes the
-  # failing test the statement's last command and exits the whole run on the
-  # branch that is supposed to continue. Same trap as #43's silent end.
-  [ "$type" != container ] || return 0
+  echo "box: NOTHING WAS CREATED. No copy ran, so --cpu and --memory were not applied"
+  echo "box: either: there is no instance for them to have been applied to. A clone"
+  echo "box: that took two of your three sizes and said nothing about the third is the"
+  echo "box: silent wrong-sizing this refusal exists to prevent (#171)."
   echo "box:"
-  echo "box: THE WAY OUT: clone without --disk, then size the root on the clone —"
-  echo "box:   box incus $name -- config device set {} root size=$disk"
-  echo "box: STOP THE BOX FIRST. On a 'dir' or 'btrfs' pool that command exits 0 on a"
-  echo "box: running instance and 'config show' reports the new size, while the backing"
-  echo "box: file is untouched until the next start (incus defers the quota). On zfs"
-  echo "box: and lvm it applies live. Growing a VM's root also leaves the guest"
-  echo "box: filesystem to be grown inside the box afterwards, and a SHRINK is refused"
-  echo "box: by every local driver — for a smaller box, mint a smaller gold."
+  echo "box: TWO WAYS ON, both of them measured:"
+  echo "box:   · drop --disk and take the source's root size, whatever it is — the"
+  echo "box:     clone will say what that turned out to be;"
+  echo "box:   · mint fresh with --disk instead of cloning, which sizes the root at"
+  echo "box:     creation the way every box's own mint does."
   echo "box:"
-  echo "box: OR give the source a local root device first, and re-run this command:"
-  echo "box:   box incus $srcinst -- config device override {} root size=<current>"
-  echo "box: Neither route has been run on hardware by box (#171); both are read off"
-  echo "box: incus's own source, and the first is the one box already uses at mint."
-  return 0
+  echo "box: There is a third route — giving the source its own root device first, by"
+  echo "box: overriding the profile's onto it — and box is not printing it, because"
+  echo "box: nobody has watched that one work here (#171)."
 }
 
-# What an instance ACTUALLY carries, read back off the daemon (#171). A clone
-# skips load_template entirely, so box's own T_CPU/T_MEMORY/T_DISK resolution
-# never ran on this path and printing those would state the defaults of a mint
-# that did not happen. Every figure here is read; none is inferred, and one
-# that does not read prints nothing rather than a guess.
+# What an instance ACTUALLY carries, read back off the daemon (#171 D6) —
+# called from BOTH branches, which is the whole point of it being a function.
+# The issue argued the clone was bad because it was silent where the mint
+# spoke; the mint speaks no more than the clone does and never has, so ruling
+# the clone alone would have left that asymmetry standing in the new tree
+# pointing the other way. One helper, one line, both paths.
+#
+# READ, never echoed from intent, and that is what makes it worth printing on
+# the mint path where box already knows T_CPU/T_MEMORY/T_DISK: those are what
+# box ASKED for. On the clone path they were never resolved at all — the
+# template lookup does not run — so echoing them would state the defaults of a
+# mint that did not happen. And under D1 a clone can now be PARTLY overridden,
+# cpu from the flag and memory from the source, which is the state that most
+# needs saying out loud and which no intent-side value knows.
+#
+# Every figure here is read; none is inferred, and one that does not read
+# prints nothing rather than a guess.
 #
 # --expanded because the question is what the instance will RUN with: box
 # stamps limits.* per instance at mint, but a profile added by hand is just as
@@ -1794,20 +1816,14 @@ narrate_resources() {   # narrate_resources <instance>
   # indistinguishable from the bug, and the operator's next move ('box info')
   # is the same one either way.
   if [ "${#parts[@]}" -eq 0 ]; then
-    echo "box: incus reported no resource figures for this clone — 'box info $name' has"
+    echo "box: incus reported no resource figures for '$name' — 'box info $name' has"
     echo "box: whatever the instance carries."
     return 0
   fi
-  # Read AFTER the copy, so when the size flags rode it this same line is the
-  # confirmation that the override landed — box asserting nothing it has not
-  # then read back off the daemon. Which sentence it is depends on whether the
-  # caller asked for anything: "the source's" is a claim about lineage and is
-  # false the moment -c or -d was passed.
-  if [ -z "$cpu$memory$disk" ]; then
-    echo "box: it carries the source's resources: ${parts[*]}"
-  else
-    echo "box: sized at the copy, read back from incus: ${parts[*]}"
-  fi
+  # Read AFTER the instance exists, so on the clone path this same line is the
+  # confirmation that any -c/-d override landed — box asserting nothing it has
+  # not then read back off the daemon.
+  echo "box: resources, read back from incus: ${parts[*]}"
   echo "box: (to change them: box incus $name -- config set {} limits.cpu <n>, and see"
   echo "box: 'box help incus' — the {} is where the box name goes.)"
 }
@@ -1832,20 +1848,44 @@ cmd_new() {
     # new verb doing this: it passes resource overrides through 'box new', which
     # is exactly what #57 said a flag may touch.
     #
-    # -c is unconditional; -d is not, and src_has_local_root is why. A source
-    # whose root comes from a profile cannot take a copy-time device override,
-    # so --disk is REFUSED there rather than sent and hoped for — and refused
-    # whole, before the copy, because a clone that took --cpu and dropped
-    # --disk is the silent wrong-sizing this change exists to end.
+    # -c is unconditional; -d is not, and src_has_local_root is why (D2). Three
+    # outcomes, and the difference between the last two is principled rather
+    # than a judgement call:
+    #
+    #   · container source — no -d, the note bin/box:1802 already prints at
+    #     mint, and the copy PROCEEDS (D4). In container mode --disk is
+    #     CATEGORICALLY inapplicable — the root rides the storage pool — and
+    #     box has had a decided, shipped answer for that since #57. Firing it
+    #     on this path too is the answer arriving where it was missing, not a
+    #     new refusal.
+    #   · VM source with no local root device — DIE, before the copy (D3). Here
+    #     the flag is applicable in general and merely unservable for THIS
+    #     source, which is the new case and has no shipped answer. Proceeding
+    #     with a note would hand the caller a clone at the source's size when
+    #     they asked for 20GiB, which is the silent wrong-sizing #171 opened on.
+    #   · anything else — the override rides the copy.
+    #
+    # NOT FORCEABLE, and deliberately unlike #160's wall. There --force costs a
+    # transfer and then incus's error: a real price a user may choose to pay for
+    # their own file. Forcing here would write a device that is not a root disk
+    # onto a fresh clone — there is no version of that the caller wanted, so
+    # there is no door through it to offer.
+    #
+    # And box grows no -s/--storage argument on this call, ever (D2):
+    # applyStoragePool's fallback assigns devices["root"] = {type, path, pool}
+    # and DISCARDS the size, so a pool flag beside -d root,size= would silently
+    # drop the sizing. test/cli.sh asserts the copy argv never carries one.
     local copyargs=()
     [ -z "$cpu" ]    || copyargs+=(-c "limits.cpu=$cpu")
     [ -z "$memory" ] || copyargs+=(-c "limits.memory=$memory")
     if [ -n "$disk" ]; then
-      if src_has_local_root "$srcref"; then
+      if [ "$(inst_type_of "$(iname_of "$src")")" = container ]; then
+        echo "box: note — --disk applies to VM mode only; this container's root rides the pool" >&2
+      elif src_has_local_root "$srcref"; then
         copyargs+=(-d "root,size=$disk")
       else
-        { clone_disk_refusal "$(iname_of "$src")" "$srcref"; } >&2
-        usage_error "--disk cannot ride a copy from a source with no local root device (#171)"
+        { clone_disk_refusal "$srcref"; } >&2
+        die "--disk cannot be applied to a copy from a source with no root device of its own (#171)"
       fi
     fi
     incus copy "$srcref" "$instance" ${copyargs[@]+"${copyargs[@]}"}
@@ -1911,18 +1951,6 @@ cmd_new() {
     wait_agent "$instance"
     reset_identity "$instance"
     echo "box: cloned $srcref — isolation and auth state carry over from the source."
-    # The silent case #171 calls worse than the refused one, and the half that
-    # survives the flags becoming supported: a caller who names no size — the
-    # ordinary clone — still gets whatever the source had, and nothing on this
-    # path ever said what that was. It was
-    # discoverable only by running 'box info' and reading limits.* out of a
-    # config dump, and the way a fleet found out was under load: a builder
-    # cloned from a reviewer-sized gold is 2 CPU where its role declares 4
-    # (heavy-duty/crew#55, which warns at its own call site because it knows
-    # the profile it WANTED and not what the source carries — only box, here,
-    # knows that). So this line sits in the same block as the rest of what a
-    # clone inherited: the stamp, the id, the pristine question.
-    narrate_resources "$instance"
     # A clone gets NO 'pristine' of its own (#104). It skips cloud-init and
     # the rig hook entirely, so the pristine MOMENT never happens here —
     # anything box marked at clone time would be "whatever the source was",
@@ -2214,6 +2242,23 @@ cmd_new() {
       snapshot_bootstrapped "$instance" "$name"
     fi
   fi
+  # The sizing, said out loud on BOTH paths (#171 D6). It sits after the 'fi'
+  # rather than once in each branch on purpose: the parity is then structural
+  # and not remembered, and a third way of bringing a box into being cannot
+  # ship silent about its resources the way the clone did. What it prints is
+  # read off the daemon, so on the clone path it is also the confirmation that
+  # a -c/-d override landed, and on the mint path it is the resolved values
+  # confirmed rather than the asked-for ones echoed.
+  #
+  # The silent case #171 calls worse than the refused one: a caller who names
+  # no size — the ordinary clone, and every mint — got whatever the source or
+  # the template had, discoverable only by running 'box info' and reading
+  # limits.* out of a config dump. The way a fleet found out was under load,
+  # a builder cloned from a reviewer-sized gold coming up 2 CPU where its role
+  # declares 4 (heavy-duty/crew#55, which warns at its own call site because
+  # it knows the profile it WANTED and not what the source carries — only box,
+  # here, knows that).
+  narrate_resources "$instance"
   # The login hint belongs to the claude-box template — read the EFFECTIVE
   # template off the instance, so a clone of a claude-box box gets it too and
   # a blank box is not told to run a binary it doesn't have.
