@@ -103,6 +103,40 @@ ufw_dns_findings() {
   return 0
 }
 
+# --- Where the boxes' root disks actually live (#180) -----------------------
+# "My boxes filled the root disk" is a placement question, and answering it
+# needed an Incus lesson: the pool declares a driver and, unless setup-host was
+# given BOX_STORAGE_SOURCE, no source — so Incus builds it as a loop-backed
+# image under its own state directory, on '/'. Pure text in, report lines out
+# (the gw_squat_signature seam, so test/cli.sh drives it against canned pool
+# config): 'incus storage show <pool>' output in, one line per finding.
+#
+# It JUDGES NOTHING — every line here is informational and none of them touch
+# the verdict. Where a pool lives is a choice, not a fault, and a doctor that
+# called the shipped loop-backed default DIRTY would red every stock host on
+# the day it shipped.
+pool_findings() {
+  local show="$1" drv src
+  drv="$(printf '%s\n' "$show" | awk '/^driver:/ { print $2; exit }')"
+  src="$(printf '%s\n' "$show" | awk '$1 == "source:" { print $2; exit }')"
+  printf 'driver = %s\n' "${drv:-<unreadable>}"
+  # The driver decides whether a clone is near-free; it is the same fact
+  # bin/box reads before deciding whether to take a mark (#104, #130).
+  [ "$drv" = dir ] && printf "'dir' has no copy-on-write — every snapshot and clone is a FULL copy of a box's root\n"
+  if [ -z "$src" ]; then
+    printf 'source = <none reported> — the pool is placed under Incus own state directory, on the ROOT filesystem\n'
+  else
+    printf 'source = %s\n' "$src"
+    case "$src" in
+      /var/lib/incus/*|/var/lib/lxd/*)
+        printf 'that is Incus own state directory: every box root device is charged against "/" — "df -h /" is the number that matters\n'
+        printf 'a FRESH host places it elsewhere:  BOX_STORAGE_SOURCE=/dev/sdb box setup-host\n'
+        printf 'moving a pool that already carries boxes is a migration, not a re-run (issue #180)\n' ;;
+    esac
+  fi
+  return 0
+}
+
 # The signature, probed INSIDE a box: its routes, read where they live. A
 # poisoned guest looks healthy from every host-side config check — the nested
 # bridge and the captured gateway exist only in the guest's kernel.
@@ -337,6 +371,29 @@ if [ -n "$PROFILES" ]; then
   inf "resources are per-box since 0.4.0 (stamped from the template at mint; BOX_CPU/BOX_MEMORY override)"
 else
   inf "box-net does not exist (a fresh host — setup-host.sh will create it)"
+fi
+
+# The pool is read off the profile that PLACES every box (profiles/box-net.yaml
+# hardcodes root's pool), not guessed from the name setup-host creates — the
+# same read bin/box's storage_driver makes before taking a mark.
+head_ "Storage pool — the disk every box's root device rides on"
+POOL="$(incus profile device get box-net root pool 2>/dev/null)"
+[ -n "$POOL" ] || POOL=default
+POOL_SHOW="$(incus storage show "$POOL" 2>/dev/null)"
+if [ -n "$POOL_SHOW" ]; then
+  inf "pool '$POOL'"
+  while IFS= read -r line; do inf "$line"; done <<<"$(pool_findings "$POOL_SHOW")"
+  # The config is a claim; the filesystem is the fact — and "how full is it"
+  # is half of what anyone asking this question wants. Only for a directory
+  # source: 'df' on a raw block device Incus owns outright answers nothing.
+  src="$(printf '%s\n' "$POOL_SHOW" | awk '$1 == "source:" { print $2; exit }')"
+  if [ -n "$src" ] && [ -d "$src" ]; then
+    inf "$(df -h "$src" 2>/dev/null | awk 'NR == 2 { print "df " $6 ": " $2 " total, " $3 " used, " $4 " free (" $5 ") on " $1 }')"
+  fi
+elif [ "$FRESH" = 1 ]; then
+  inf "no pool yet (a fresh host — setup-host.sh creates it; BOX_STORAGE_SOURCE decides where)"
+else
+  inf "cannot read the storage pool '$POOL' from here"
 fi
 
 head_ "ACL — box-isolate"
