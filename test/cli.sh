@@ -5182,6 +5182,12 @@ check "rename to 'all' is refused with no daemon at all" 1 "reserved" \
   "$BOX" rename work all
 check "rename: the reserved word is refused before the box is resolved" 0 "" \
   newname_precedes_resolve
+# '--' ends box's own option parsing and the rest becomes positionals, so the
+# word arrives as args[1] either way and there is no escape spelling. Driven
+# because "the guard reads the parsed positional, not the command line" is the
+# reason, and a reader should not have to take it on trust.
+check "rename to 'all' after '--' is refused as well" 1 "reserved" \
+  "$BOX" rename work -- all
 # The token is on 'rename' alone: 'restore' also takes a second positional, but
 # it is a snapshot label and no box ends up carrying it.
 check "restore's snapshot label is not caught — a different namespace" 0 "restored work to all" \
