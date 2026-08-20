@@ -61,7 +61,14 @@ set -u
 # flag can no longer change.
 REPO="${BOX_REPO:-heavy-duty/box}"
 REF="${BOX_REF:-main}"
-YES=0; KEEP=0
+YES=0
+# KEEP crossed the exec as a bare `KEEP=`, which this line then set to 0 before
+# anything could read it: --keep-boxes was inert in the second stage — the whole
+# stage — so the teardown phase always ran and the record could never say the run
+# had been asked to keep its boxes (#152). It crosses as DRILL_KEEP now, like
+# every other pin, because a bare KEEP in an operator's environment is not a
+# request to change what the drill asserts.
+KEEP="${DRILL_KEEP:-0}"
 # The record's two settings survive the sg re-exec below as environment, not as
 # flags. Both default empty; DRILL_RUN_ID unset means "generate one once the
 # installed VERSION is known", which is not a decision this line can make yet.
@@ -663,7 +670,6 @@ EOF
     bash -c "$(curl -fsSL "https://raw.githubusercontent.com/$REPO/$REF/install.sh")" \
     || { echo "install failed"; exit 1; }
   export PATH="$HOME/.local/bin:$PATH"
-KEEP="${KEEP:-0}"
 
   # ASSERT WHAT LANDED — never trust that the install obeyed us.
   # This has bitten twice: once on a lagged CDN tarball, once when a STALE local

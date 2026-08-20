@@ -3302,6 +3302,19 @@ check "drill settings: --keep-boxes is read from the command line" 0 "keep=[1]" 
   settings -- --keep-boxes
 check "drill settings: ...and is off when nothing asks for it" 0 "keep=[0]" settings --
 
+# THE half that was broken. KEEP crossed the exec as a bare `KEEP=` and the
+# settings line then reset it to 0 before anything could read it, so
+# --keep-boxes was inert for the whole of the stage that runs the teardown phase
+# and writes the record. The record's invocation field is the first thing to
+# depend on it (#152), and a field that cannot be true is the hand-transcription
+# problem in a new place.
+check "drill settings: ...and DRILL_KEEP is how it crosses the re-exec" 0 "keep=[1]" \
+  settings DRILL_KEEP=1 --
+# A bare KEEP in an operator's environment is not a request to change what the
+# drill asserts — the pin is DRILL_KEEP, like every other one.
+check "drill settings: a stray KEEP in the environment is not the flag" 0 "keep=[0]" \
+  settings KEEP=1 --
+
 # The colour guard. Capturing this output is itself the regression: before #152
 # every verdict carried escape codes into whatever file it was piped to, and the
 # record was then transcribed past them. `grep -q ESC` exits 1 on a clean line.
