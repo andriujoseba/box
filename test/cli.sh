@@ -62,6 +62,7 @@ check "option before command exits 2"          2 "options come after the command
 # A missing required positional is a usage error carrying that command's synopsis.
 check "new without --name exits 2"             2 "usage: box new"    "$BOX" new
 check "shell without a box exits 2"            2 "usage: box shell"  "$BOX" shell
+check "root without a box exits 2"             2 "usage: box root"   "$BOX" root
 check "restore without arg2 needs a box first" 2 "usage: box restore" "$BOX" restore
 # An unknown flag is refused, not swallowed as a positional (the --labl bug).
 check "unknown flag on list exits 2"           2 "unknown option"   "$BOX" list --nope
@@ -1237,6 +1238,11 @@ cat > "$CSHIM/incus" <<'SHIM'
 [ -n "${FAKE_INCUS_LOG:-}" ] && printf 'incus %s\n' "$*" >> "$FAKE_INCUS_LOG"
 case "$*" in
   "config get work user.box") echo 1 ;;
+  "exec work -- bash -l")
+    if [ "${FAKE_ROOT_STOPPED:-0}" = 1 ]; then
+      echo "Error: Instance is not running" >&2
+      exit 1
+    fi ;;
   "config get "*)             exit 1 ;;
 esac
 exit 0
@@ -1255,6 +1261,30 @@ runbox() {  # runbox <logfile> <args...> — the real box, shimmed, no TTY
   cat "$log.out"
   return "$rc"
 }
+
+# --- root: a named host-authorized path that never depends on guest sudo ----
+ROOTLOG="$CWORK/root.log"
+check "root: help explains Incus-socket authorization" 0 "Authorization comes from the host's" \
+  "$BOX" help root
+check "root: help says guest sudo is not required" 0 "does not use or require sudo" \
+  "$BOX" help root
+check "root: dispatches a root login shell" 0 "" runbox "$ROOTLOG" root work
+check "root: reaches Incus directly as root, without guest sudo" 0 "" \
+  grep -qFx 'incus exec work -- bash -l' "$ROOTLOG"
+check "root: a nonexistent box fails through the shared box guard" 1 "no such box" \
+  runbox "$CWORK/root-missing.log" root missing
+root_stopped() { FAKE_ROOT_STOPPED=1 runbox "$CWORK/root-stopped.log" root work; }
+check "root: a stopped box preserves Incus's failure" 1 "Instance is not running" \
+  root_stopped
+# shellcheck disable=SC2016  # $inst and the command substitution are literal bin/box source.
+check "root: shell implementation remains the tenant-user contract" 0 "" \
+  grep -qFx 'cmd_shell() { incus exec "$inst" -- sudo -u "$(box_user "$inst")" -i; }' "$BOX"
+check "root: live rehearsal removes the tenant sudoers entry" 0 "" \
+  grep -qF 'box root precondition:' "$ROOT/drill/multiuser.sh"
+check "root: live rehearsal measures tenant and root entry identities" 0 "" \
+  grep -qF 'entry identities after removing' "$ROOT/drill/multiuser.sh"
+check "root: live rehearsal refuses a foreign root shell" 0 "" \
+  grep -qF 'cannot box root' "$ROOT/drill/multiuser.sh"
 
 # --- restore: the gate refuses, and nothing is destroyed --------------------
 RLOG="$CWORK/restore.log"

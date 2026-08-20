@@ -90,6 +90,15 @@ U1=boxdrill1; U2=boxdrill2
 # wedge the run forever — the drill's oldest trap, honored here.
 as_u() { local u="$1"; shift; runuser -u "$u" -- "$@" </dev/null; }
 
+# Feed one command to an interactive box entry path without granting it a
+# terminal. Both `sudo -i` (box shell) and `bash -l` (box root) read the pipe;
+# pinning `exit` keeps a changed shell startup from waiting on runner stdin.
+entry_uid_as_u() { # entry_uid_as_u <user> <shell|root> <box>
+  local u="$1" verb="$2" b="$3"
+  printf 'id -u\nexit\n' | runuser -u "$u" -- box "$verb" "$b" 2>/dev/null \
+    | tr -d '\r' | grep -E '^[0-9]+$' | tail -1
+}
+
 # Probe a TCP door from INSIDE a box and answer reachable/refused/dropped by
 # reading curl's MESSAGE, never its exit code (drill.sh's box_probe, scoped
 # down): "refused" means a packet ARRIVED and was answered — which, for an
@@ -236,6 +245,38 @@ as_u "$U1" box exec mine -- bash -lc '
   && ok "(b) box exec preserves multiline commands, including the silent-success set shape" \
   || no "(b) box exec corrupted a multiline command (#169)"
 
+# #176: the named root path exists specifically so operator access never
+# depends on a privilege the tenant holds inside the guest. Remove that
+# privilege for real, then measure both entry contracts through the restricted
+# user's CLI and certificate: shell remains the tenant; root remains UID 0.
+# shellcheck disable=SC2016 # $1/$u expand in the guest sh, not this rehearsal.
+as_u "$U1" incus exec mine -- sh -c '
+  u="$1"
+  for f in /etc/sudoers /etc/sudoers.d/*; do
+    [ -f "$f" ] || continue
+    sed -i "/^${u}[[:space:]]/d" "$f"
+  done
+' sh "$target_user" >/dev/null 2>&1
+# shellcheck disable=SC2016 # $1/$u expand in the guest sh, not this rehearsal.
+if as_u "$U1" incus exec mine -- sh -c '
+  u="$1"
+  ! grep -R -E "^${u}[[:space:]]" /etc/sudoers /etc/sudoers.d 2>/dev/null
+' sh "$target_user"; then
+  ok "(b) box root precondition: $target_user has no sudoers entry"
+else
+  no "(b) box root precondition FAILED: $target_user still has a sudoers entry"
+fi
+tenant_uid="$(as_u "$U1" incus exec mine -- id -u "$target_user" 2>/dev/null)"
+shell_uid="$(entry_uid_as_u "$U1" shell mine)"
+[ -n "$tenant_uid" ] && [ "$shell_uid" = "$tenant_uid" ] && [ "$shell_uid" -ne 0 ] \
+  && ok "(b) box shell still enters as $target_user (uid $shell_uid) without tenant sudo" \
+  || no "(b) box shell identity changed without tenant sudo (want uid ${tenant_uid:-?}, got ${shell_uid:-?})"
+root_uid="$(entry_uid_as_u "$U1" root mine)"
+[ "$root_uid" = 0 ] \
+  && ok "(b) box root enters as uid 0 without tenant sudo" \
+  || no "(b) box root did not enter as uid 0 without tenant sudo (got ${root_uid:-?})"
+aud "b. entry identities after removing $target_user sudoers: shell=${shell_uid:-?}, root=${root_uid:-?}"
+
 as_u "$U1" box info mine 2>/dev/null | grep -qF "$(boxnet_pfx)" \
   && ok "(g) box info shows a boxnet ($(boxnet_pfx)x) address — placed on the hardened network" \
   || no "(g) mine has no boxnet address in box info"
@@ -266,6 +307,12 @@ n2="$(as_u "$U2" box list 2>/dev/null | grep -c '^mine ')"
 as_u "$U1" incus list --project "$p2" >/dev/null 2>&1 \
   && no "(c) $U1 can list $U2's project" \
   || ok "(c) $U2's project refuses $U1"
+out="$(printf 'id -u\nexit\n' | runuser -u "$U2" -- box root c1 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "no such box"; then
+  ok "(c) $U2 cannot box root $U1's distinctly named box"
+else
+  no "(c) foreign box root refusal was not proved (rc=$rc, said: $(printf '%s' "$out" | head -1))"
+fi
 aud "c. cross-user visibility: $U1=$n1 'mine', $U2=$n2 'mine', foreign project listing refused"
 
 phase "g. the isolation contract, measured from INSIDE the boxes"

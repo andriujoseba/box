@@ -471,6 +471,7 @@ box templates                # list the templates this install can mint
 box list                     # list your boxes
 box info <box>               # one box: state, IP, exposures, provenance, snapshots
 box shell <box>              # enter as the template's user
+box root <box>               # enter as root through the host's Incus authorization
 box exec <box> -- <cmd...>   # run a command in the box
 box tmux <box> [session]     # attach/create a tmux session — survives disconnects
 box snapshot <box> [label]   # checkpoint (label defaults to manual-<epoch>)
