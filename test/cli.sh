@@ -2012,6 +2012,26 @@ check "info: surfaces the template with its user and role (#103)" \
 check "info: surfaces which rig converged it (#103)" \
   0 "RIG        heavy-duty/rig@main" infobox "$STAMPED"
 check "info: surfaces the origin (#103)" 0 "ORIGIN     mint" infobox "$STAMPED"
+
+# The identity reads back in the HEADER, not in the provenance block (#181).
+# The block below answers how this box came to BE; the id answers which box it
+# IS — the fact the NAME line only appears to carry, since a rename moves the
+# name and leaves the id exactly where it was.
+IDCFG="$MWORK/identified.cfg"
+{ cat "$STAMPED"; echo 'user.box.id 3f2504e0-4f89-41d3-9a0c-0305e82c3301'; } > "$IDCFG"
+check "info: surfaces the id (#181)" \
+  0 "ID         3f2504e0-4f89-41d3-9a0c-0305e82c3301" infobox "$IDCFG"
+# Adjacency is the point: NAME and ID are one statement of identity, and an id
+# printed below the mint block would read as one more provenance field.
+id_follows_name() {
+  local out; out="$(infobox "$1")"
+  [ "$(printf '%s\n' "$out" | grep -cE '^(NAME|ID)')" -eq 2 ] &&
+  [ "$(printf '%s\n' "$out" | grep -nE '^ID' | head -1 | cut -d: -f1)" -eq 2 ]
+}
+check "info: ...directly under NAME, which is the alias it outlives (#181)" 0 "" \
+  id_follows_name "$IDCFG"
+check "info: ...and the state block it always printed is untouched (#181)" \
+  0 "IPV4       10.1.2.3" infobox "$IDCFG"
 # Still the box it always was: the new block is additive, above the snapshots.
 check "info: still prints the state block it always did" 0 "IPV4       10.1.2.3" infobox "$STAMPED"
 
@@ -2047,6 +2067,15 @@ check "info: ...and says the mint was not recorded, rather than inventing one" \
 info_has() { infobox "$1" | grep -qE "$2"; }
 check "info: ...and prints no half-empty IMAGE/ORIGIN lines for keys it lacks" 1 "" \
   info_has "$LEGACY" '^(IMAGE|ORIGIN|RIG|MODE) '
+# Every box minted before #181 has no id, and nothing synthesises one at read
+# time: an id a reader invents is not stable, which is the whole point of
+# having one. Absence renders as silence, the same rule the block above keeps.
+check "info: a box minted before the id prints no ID line (#181)" 1 "" \
+  info_has "$LEGACY" '^ID '
+check "info: ...and neither does a stamped box that predates the key (#181)" 1 "" \
+  info_has "$STAMPED" '^ID '
+check "info: ...while the box itself still renders, exit 0 (#181)" \
+  0 "NAME       work" infobox "$STAMPED"
 # A pre-rename box carries user.claudebox=1 and no metadata at all, and is
 # always a Claude box — the same mapping box_user() makes, honored forever.
 PRERENAME="$MWORK/prerename.cfg"; printf 'user.claudebox 1\n' > "$PRERENAME"
@@ -2127,7 +2156,8 @@ tar -czf "$ARTIFACT" -C "$IWORK" backup/index.yaml
 importbox() {  # importbox <logfile> <cfg-file|""> — the real box, shimmed
   local log="$1" cfg="$2"
   : > "$log"
-  env FAKE_INCUS_LOG="$log" FAKE_CFG="$cfg" PATH="$ISHIM:$PATH" \
+  env FAKE_INCUS_LOG="$log" FAKE_CFG="$cfg" \
+    PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$ISHIM:$PATH" \
     "$BOX" import "$ARTIFACT" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
@@ -2140,6 +2170,9 @@ import_set() { grep -F 'config set' "$1" | grep -qE "$2"; }
 
 # --- the first trip ---------------------------------------------------------
 # The artifact of a box that was MINTED elsewhere and never imported before.
+# The id it carried is a fixed, obviously-fake one so the re-mint below can be
+# asserted by INEQUALITY: a drawn id that happened to equal the artifact's is
+# the one way "re-minted" and "carried through" look alike (#181).
 MINTED_ART="$IWORK/minted.cfg"
 cat > "$MINTED_ART" <<'CFG'
 user.box 1
@@ -2149,6 +2182,7 @@ user.box.version 0.7.0
 user.box.template claude
 user.box.user claude
 user.box.origin mint
+user.box.id 11111111-1111-4111-8111-111111111111
 CFG
 ILOG="$IWORK/import.log"
 check "import: a shimmed 'box import' runs to completion (#131)" 0 "imported work" \
@@ -2169,6 +2203,39 @@ check "import: counts the trip — the first one is 1 (#131)" 0 "" \
 # into BEING — mint or clone — and the import is a third, orthogonal fact.
 check "import: does NOT overwrite origin — an import is not a coming-into-being (#131)" 1 "" \
   import_set "$ILOG" 'user\.box\.origin='
+
+# The identity is the ONE stamp key this path rewrites (#181), and it is not an
+# exception to "the artifact's truth survives": an id is not a fact about the
+# artifact but about a box on a host, and the box this one was exported from
+# may still be running — quite possibly on this same host, which is what the
+# MAC regeneration already exists to survive. Importing is minting.
+check "import: re-mints the id — importing is minting (#181)" 0 "" \
+  import_set "$ILOG" 'user\.box\.id=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+check "import: ...so the artifact's id does not survive the trip (#181)" 1 "" \
+  import_set "$ILOG" 'user\.box\.id=11111111-1111-4111-8111-111111111111'
+# It rides the same pre-start 'config set' as the import record, so an imported
+# box is never observable wearing the identity of the box it came from.
+import_id_precedes_start() {
+  local s t
+  s="$(grep -n 'config set .*user.box.id=' "$1" | head -1 | cut -d: -f1)"
+  t="$(grep -n '^incus start ' "$1" | head -1 | cut -d: -f1)"
+  [ -n "$s" ] && [ -n "$t" ] && [ "$s" -lt "$t" ]
+}
+check "import: the re-mint precedes the start (#181)" 0 "" \
+  import_id_precedes_start "$ILOG"
+# Degraded, and the same call the clone makes: the artifact's id rode in
+# unchallenged, and an id two live boxes share is worse than an id one lacks.
+export SHIM_PREFIX="$NOUUID"
+NOIDIMP="$IWORK/noid-import.log"
+check "import: a host with no UUID source still imports (#181)" 0 "imported work" \
+  importbox "$NOIDIMP" "$MINTED_ART"
+check "import: ...and unsets the id the artifact carried (#181)" 0 "" \
+  grep -qF 'config unset work user.box.id' "$NOIDIMP"
+check "import: ...rather than letting two boxes wear one id (#181)" 1 "" \
+  import_set "$NOIDIMP" 'user\.box\.id='
+check "import: ...and says out loud that this box has no stable id (#181)" 0 "no stable id" \
+  importbox "$NOIDIMP" "$MINTED_ART"
+unset SHIM_PREFIX
 check "import: does NOT restamp the mint time — it is the origin host's (#131)" 1 "" \
   import_set "$ILOG" 'user\.box\.created='
 check "import: does NOT restamp the box version that MINTED it (#131)" 1 "" \
