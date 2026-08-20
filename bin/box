@@ -60,6 +60,10 @@ box_tier() {
 #   box      first positional is a box: resolve it, and REFUSE if the instance
 #            isn't tagged user.box=1 (or the legacy user.claudebox=1) — the boundary, enforced, not assumed
 #   arg2     a second positional is required
+#   newname  the second positional is a name the box will CARRY afterwards, so
+#            it goes through the reserved-word guard — 'rename' is a mint door
+#            in the only sense D2 cares about (#179). Not on 'restore', whose
+#            second positional is a snapshot label and a different namespace.
 #   stopped  the box must not be running
 #   confirm  destructive: prompt unless --force. The row supplies the words
 #            (last field) — see 'confirm prompt' below.
@@ -107,7 +111,7 @@ CMDS=(
   "restore^<box> <snapshot> [--force]^box,arg2,confirm^Roll a box back to one of its snapshots — irreversible, and it asks first^incus:snapshot restore^restored {} to {1}^roll {} back to snapshot '{1}' and discard everything in the box since it was taken"
   "export^<box> [<file>] [--instance-only]^box^Export a stopped box to one portable file — it survives 'box rm' and this host^fn:cmd_export^"
   "import^<file> [--name <box>]^^Mint a box from an exported file, re-stamped onto this host's stack^fn:cmd_import^"
-  "rename^<box> <new-name>^box,arg2,stopped^Rename a box (it must be stopped first)^incus:rename^renamed {} to {1}"
+  "rename^<box> <new-name>^box,arg2,newname,stopped^Rename a box (it must be stopped first)^incus:rename^renamed {} to {1}"
   "down^<box>|all^box,fleet^Stop a box — or all of yours — keeping state ('start' resumes it)^incus:stop^stopped {}"
   "start^<box>|all^box,fleet^Start a stopped box, or all of yours^incus:start^started {}"
   "restart^<box>|all^box,fleet^Restart a box, or all of yours — one incus call, not stop-then-start^incus:restart^restarted {}"
@@ -608,6 +612,10 @@ Rename a box. Incus cannot rename a running instance, so stop it first:
 
 Snapshots and Claude auth follow the box; anything referring to the old name by
 hand (a --from line, a script) does not.
+
+'all' is not available as a new name: it is the fleet word 'box start|down|
+restart' take instead of a box name, so a box called 'all' could not be
+started, stopped or restarted by name.
 EOF
 ;;
     rm) cat <<'EOF'
@@ -1040,12 +1048,21 @@ fill() {   # $1 = template, $2 = what {} stands for
 # you get a hole in one of them.
 FLEET_WORD=all
 
-# The collision the fleet word creates, refused at the only two doors that can
-# mint one: a box literally named 'all' would be unreachable by every verb
-# that took the word, and the alternative — an escape syntax — buys one
-# pathological name at the cost of a rule on every lifecycle command (#179
-# D2). Refused at mint rather than papered over at use.
-refuse_fleet_word() {   # $1 = the name being minted
+# The collision the fleet word creates: a box literally named 'all' would be
+# unreachable by every verb that took the word, and the alternative — an escape
+# syntax — buys one pathological name at the cost of a rule on every lifecycle
+# command (#179 D2). Refused where the name is SET rather than papered over at
+# use.
+#
+# The rule is "every door that leaves a box carrying a name", and it is stated
+# that way on purpose. This comment used to name the doors instead — "the only
+# two that can mint one" — and the census was wrong: 'rename' sets a name too,
+# through a table row rather than a function, so it had no guard while the
+# README said flatly that 'all' is not a legal box name. A census in a comment
+# is a thing that goes stale silently; the rule is what a new row should be
+# read against. Today: cmd_new, cmd_import, and the 'newname' precondition
+# token that carries it into the table.
+refuse_fleet_word() {   # $1 = the name being set
   if [ "$1" = "$FLEET_WORD" ]; then
     die "'$FLEET_WORD' is reserved — it is the fleet word 'box start|down|restart' take instead of a box name. Pick another name."
   fi
@@ -2863,6 +2880,17 @@ cmd_expose() {
 
 row="$(cmd_row "$cmd")" || unknown_command "$cmd"
 IFS='^' read -r _ _ pre _ action ok cnf <<<"$row"
+
+# The reserved word, refused before anything is asked of the daemon — the same
+# order 'new' and 'import' put it in, where the guard precedes require_stack, so
+# the refusal never depends on a reachable Incus. Ahead of the 'box'
+# precondition for exactly that reason: resolving the FIRST positional is a
+# daemon round trip, and whether 'all' is a legal new name does not depend on
+# the answer. ':-' because rows without the token may have no second positional
+# at all, and this runs before need_arg2 under set -u; the empty string is not
+# the fleet word, so the usage errors below still come from need_name and
+# need_arg2 as they always did.
+case ",$pre," in *,newname,*) refuse_fleet_word "${args[1]:-}" ;; esac
 
 # 'all' short-circuits the resolve and nothing else: the name is still
 # required, so 'box restart' with no argument is still a usage error, and a

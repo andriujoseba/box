@@ -4811,6 +4811,11 @@ case "${1:-}" in
     # and dedupes. Only the modern tag answers here, so a fleet that acted
     # twice per box would show up as duplicate lifecycle calls in the log.
     case "$*" in
+      *--columns\ s*)
+        # box_state()'s read, which the 'stopped' precondition goes through.
+        # A different --columns spelling from boxes_csv()'s 'nstS', so the two
+        # reads cannot be confused for one another here either.
+        state_of "${2:-}"; echo ;;
       *user.box=1*)
         for b in ${FAKE_BOXES:-}; do
           printf '%s,%s,CONTAINER,0\n' "$b" "$(state_of "$b")"
@@ -4892,6 +4897,17 @@ guard_precedes_stack() {
   sed -n '/^cmd_new()/,/^}/p' "$ROOT/bin/box" \
     | grep -o 'refuse_fleet_word\|require_stack' \
     | head -1 | grep -q refuse_fleet_word
+}
+# The same contract for the table door: the 'newname' precondition has to run
+# ahead of the 'box' one, because resolving the first positional is a daemon
+# round trip and whether 'all' is a legal new name does not depend on it. Line
+# numbers rather than a first-match grep: the two markers are on different
+# lines, and asking which comes first is the whole assertion.
+newname_precedes_resolve() {
+  local g r
+  g="$(grep -n '\*,newname,\*)' "$ROOT/bin/box" | head -1 | cut -d: -f1)"
+  r="$(grep -n 'inst=.*resolve_box' "$ROOT/bin/box" | head -1 | cut -d: -f1)"
+  [ -n "$g" ] && [ -n "$r" ] && [ "$g" -lt "$r" ]
 }
 
 # --- D1: restart is one incus call, not down-then-start ---------------------
@@ -5094,7 +5110,7 @@ check "dead daemon: an unreachable --remote is caught as well" 1 "not answering"
 check "dead daemon: an ANSWERING daemon with no boxes is still D6" 0 "nothing to down" \
   fleetbox "" "" down all
 
-# --- D2: 'all' is reserved, refused at both doors that mint a name ----------
+# --- D2: 'all' is reserved, refused at every door that SETS a name ----------
 # No shim needed: the refusal lands before any daemon call, which is itself
 # the point — a name box will never mint cannot depend on a reachable daemon.
 check "new --name all is refused" 1 "reserved" \
@@ -5133,6 +5149,43 @@ check "import --name all: the guard is what refused it" 0 "" \
   import_says_reserved --name all
 check "import under an ordinary name is not caught by the guard" 1 "" \
   import_says_reserved
+
+# --- ...including 'rename', which sets a name through a ROW -----------------
+# The third door, and the one that shipped unguarded: 'new' and 'import' are
+# function actions with a call site to put the guard in, while 'rename' is a
+# table row whose second positional went straight to 'incus rename'. A box
+# renamed to 'all' is unreachable by all three lifecycle verbs, which is the
+# collision D2 exists to prevent — so the reserved word has to be refused where
+# the name is SET, not only where a box is first minted.
+renamebox() {   # renamebox <new-name> — a stopped 'work', shimmed
+  mixedbox "work=STOPPED" "work" "" rename work "$@"
+}
+check "rename to 'all' is refused — a rename sets a name too" 1 "reserved" \
+  renamebox all
+check "rename to 'all' names the fleet word" 1 "fleet word" \
+  renamebox all
+# The assertion that fails at the head this was found on: the message alone
+# would pass for a build that refused after the daemon had already renamed it.
+check "rename to 'all': the daemon is never asked to rename" 1 "" \
+  grep -qE '^incus rename ' "$FLOG"
+# The other direction, so the guard cannot be satisfied by refusing every
+# rename: an ordinary target still reaches Incus and still reports.
+check "an ordinary rename target still reaches incus" 0 "renamed work to archive" \
+  renamebox archive
+check "...as a real 'incus rename' call" 0 "1" \
+  fleet_calls rename
+# Same contract as the mint doors, and the reason the token runs ahead of the
+# 'box' precondition: refusing a name box will never carry must not depend on a
+# reachable daemon. This suite runs with no incus on PATH, so the bare call is
+# the probe, and the order is pinned structurally beside it.
+check "rename to 'all' is refused with no daemon at all" 1 "reserved" \
+  "$BOX" rename work all
+check "rename: the reserved word is refused before the box is resolved" 0 "" \
+  newname_precedes_resolve
+# The token is on 'rename' alone: 'restore' also takes a second positional, but
+# it is a snapshot label and no box ends up carrying it.
+check "restore's snapshot label is not caught — a different namespace" 0 "restored work to all" \
+  mixedbox "work=STOPPED" "work" "" restore work all --force
 rm -rf "$FSHIM" "$FWORK"
 
 # --- the real-daemon half, pinned so it cannot be deleted quietly -----------

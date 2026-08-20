@@ -571,7 +571,9 @@ line, one failing box does not stop the others, and the exit status is
 non-zero if any of them failed; with no boxes it succeeds and says so. The
 fleet forms do not prompt — they are reversible acts on your own boxes — and
 `rm` deliberately has no `all` form. Because the word is taken, `all` is not
-a legal box name: `box new --name all` is refused.
+a legal box name: `box new --name all` is refused, and so are `box import
+--name all` and `box rename <box> all` — every door that would leave a box
+carrying the word.
 
 A fleet is usually mixed, so a box already in the state you asked for counts
 as a success: `box down all` reports the ones that were already down and
