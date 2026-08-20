@@ -1994,15 +1994,17 @@ check "clone: an ordinary clone never unsets the id it just re-stamped (#181)" 1
 # --- a clone's SIZING: the flags that ride the copy, and the silent case ----
 # Two halves of one defect (#171). The flags were refused on --from on #57's
 # premise that honouring them meant a post-hoc resize; they do not — 'incus
-# copy' takes -c/-d and sizes the volume as it creates it. And the refusal
-# only ever fired if the flags were PASSED: drop them and the clone came up
-# sized by its source with nothing saying what that size was.
+# copy' takes -c/-d and the root override is applied before the volume is
+# created, so nothing is ever resized. And the refusal only ever fired if the
+# flags were PASSED: drop them and the box came up sized by its source or its
+# template with nothing saying what that size was — true of the fresh mint as
+# much as the clone, which is why D6 narrates both.
 #
-# What box prints in the one case that IS still refused is DRIVEN, never
-# matched. #171's own proposed message read 'box incus <box> -- config set
-# limits.cpu 2', which cmd_incus turns into 'incus config set limits.cpu 2
-# <inst>' — the instance in the value's place, because it is appended when no
-# {} appears. A text assertion would have shipped that verbatim.
+# What box prints is DRIVEN, never matched. The issue's own proposed message
+# read 'box incus <box> -- config set limits.cpu 2', which cmd_incus turns
+# into 'incus config set limits.cpu 2 <inst>' — the instance in the value's
+# place, because it is appended when no {} appears. A text assertion would
+# have shipped that verbatim.
 #
 # A source with its own root device, which is what box's VM mints produce.
 LOCALROOT="$MWORK/localroot.yaml"
@@ -2032,81 +2034,207 @@ devices:
 name: work
 YAML
 
+copyline() { grep -m1 '^incus copy ' "$1"; }
 SIZELOG="$MWORK/size.log"
 FAKE_SHOW="$(cat "$LOCALROOT")"; export FAKE_SHOW
-check "clone sizing: --from WITH the size flags now mints (#171)" 0 "cloned" \
+check "clone sizing: --from WITH the size flags now mints (#171 D1)" 0 "cloned" \
   mintbox "$SIZELOG" new --name w9 --from work --cpu 2 --memory 4GiB --disk 20GiB
-# The whole mechanism, on one line: the override rides the copy itself, so the
-# volume is created at the size asked for. A second call fixing it up
-# afterwards would be the post-hoc resize #57 ruled out, and is not this.
-copyline() { grep -m1 '^incus copy ' "$1"; }
-check "clone sizing: the cpu override rides the copy (#171)" 0 "-c limits.cpu=2" \
+# The whole mechanism on one line: the override rides the copy, so the volume
+# is created at the size asked for. A second call fixing it up afterwards would
+# be the post-hoc resize #57 ruled out, and is not this.
+check "clone sizing: the cpu override rides the copy (#171 D1)" 0 "-c limits.cpu=2" \
   copyline "$SIZELOG"
-check "clone sizing: the memory override rides the copy (#171)" 0 "-c limits.memory=4GiB" \
+check "clone sizing: the memory override rides the copy (#171 D1)" 0 "-c limits.memory=4GiB" \
   copyline "$SIZELOG"
-check "clone sizing: the root size rides the copy as a DEVICE override (#171)" \
+check "clone sizing: the root size rides it as a DEVICE override (#171 D1)" \
   0 "-d root,size=20GiB" copyline "$SIZELOG"
-# No second pass: a 'config set limits.*' after the copy would mean box had
-# resized rather than sized, which is the thing #57 refused and the thing
-# incus's copy-time path makes unnecessary.
-check "clone sizing: ...and nothing resizes it afterwards (#57, #171)" 1 "" \
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: ...in ONE copy call, not a copy and a fix-up (#171 D1)" 0 "1" \
+  bash -c 'grep -c "^incus copy " "$1"' _ "$SIZELOG"
+check "clone sizing: ...and nothing resizes it afterwards (#57, #171 D1)" 1 "" \
   restamp_has "$SIZELOG" 'limits\.'
-# One line per flag ACTUALLY passed: a caller who names one resource must not
-# have the other two set behind their back.
+# -s beside -d root,size= silently DROPS the sizing: applyStoragePool's
+# fallback rebuilds the root device as {type, path, pool} and discards the
+# size. box passes no pool flag today and this is what stops one arriving.
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: the copy argv never carries -s/--storage (#171 D2)" 1 "" \
+  bash -c 'grep -m1 "^incus copy " "$1" | grep -qE " (-s|--storage) "' _ "$SIZELOG"
+# Only a flag actually passed contributes an argument.
 SIZELOG2="$MWORK/size-cpu.log"
-check "clone sizing: one flag, one override (#171)" 0 "cloned" \
+check "clone sizing: one flag, one override (#171 D1)" 0 "cloned" \
   mintbox "$SIZELOG2" new --name w9 --from work --cpu 2
-check "clone sizing: ...the cpu override is there (#171)" 0 "-c limits.cpu=2" \
+check "clone sizing: ...the cpu override is there (#171 D1)" 0 "-c limits.cpu=2" \
   copyline "$SIZELOG2"
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "clone sizing: ...and no memory the caller never asked for (#171)" 1 "" \
+check "clone sizing: ...and no memory the caller never asked for (#171 D1)" 1 "" \
   bash -c 'grep -m1 "^incus copy " "$1" | grep -qF "limits.memory"' _ "$SIZELOG2"
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "clone sizing: ...and no root device the caller never asked for (#171)" 1 "" \
+check "clone sizing: ...and no root device the caller never asked for (#171 D1)" 1 "" \
   bash -c 'grep -m1 "^incus copy " "$1" | grep -qF "root,size"' _ "$SIZELOG2"
-# A plain clone is untouched by any of this: no flags, no overrides, and the
-# copy line is exactly what it always was.
+# A plain clone is untouched by all of it: no flags, no overrides.
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "clone sizing: a flagless clone passes no overrides at all (#171)" 1 "" \
+check "clone sizing: a flagless clone passes no overrides at all (#171 D1)" 1 "" \
   bash -c 'grep -m1 "^incus copy " "$1" | grep -qE " -[cd] "' _ "$CLONELOG"
 
-# The pre-flight, and the reason it exists. incus's copy.go does not merge a
-# -d override onto a profile-inherited device the way create.go does — it
-# installs the override AS the device, so a profile-rooted source would be
-# copied with a root of 'size' and nothing else: no type, no path, not a root
-# disk at all. box reads the source and refuses rather than sending it.
-check "clone sizing: box reads the source's OWN devices, not the expanded set (#171)" 0 "" \
+# The pre-flight (D2). incus's copy.go does not merge a -d override onto a
+# profile-inherited device the way create.go does — it installs the override AS
+# the device, so a profile-rooted source would be copied with a root of 'size'
+# and nothing else: no type, no path, not a root disk at all.
+check "clone sizing: box reads the source's OWN devices (#171 D2)" 0 "" \
   grep -qE '^incus config show work *$' "$SIZELOG"
-check "clone sizing: ...never --expanded, which would fold the profile back in (#171)" 1 "" \
+check "clone sizing: ...never --expanded, which folds the profile back in (#171 D2)" 1 "" \
   grep -qF 'config show --expanded' "$SIZELOG"
+# D3: die BEFORE the copy. Not a warning-and-proceed — the caller asked for a
+# 20GiB clone, and handing them the source's size with a note beside it is the
+# silent wrong-sizing this issue opened on.
 SIZELOG3="$MWORK/size-profroot.log"
 FAKE_SHOW="$(cat "$PROFROOT")"; export FAKE_SHOW
-check "clone sizing: a profile-rooted source REFUSES --disk, exit 2 (#171)" \
-  2 "no LOCAL root device" \
+check "clone sizing: a profile-rooted VM source DIES, exit 1 (#171 D3)" \
+  1 "no root device of its own" \
   mintbox "$SIZELOG3" new --name w9 --from work --cpu 2 --disk 20GiB
-# Refused WHOLE. A clone that took --cpu and dropped --disk is precisely the
-# silent wrong-sizing this change exists to end, so nothing is copied at all.
-check "clone sizing: ...and nothing was copied — not even the flags that could (#171)" 1 "" \
+# Asserted on the shim's record, not on the message: a message that says
+# nothing was created, while the copy ran, is the failure mode #160 named.
+check "clone sizing: ...and NO copy ran at all (#171 D3)" 1 "" \
   grep -q '^incus copy ' "$SIZELOG3"
-check "clone sizing: ...and it says so rather than leaving that inferred (#171)" \
-  0 "nothing was copied" cat "$SIZELOG3.out"
-# The deferred-quota trap, which is the reason this route carries a warning at
-# all: on dir and btrfs, 'config device set root size=' on a RUNNING instance
-# exits 0 and reports the new size while the backing file waits for the next
-# start. Advice that reads as working and does not is worse than none.
-check "clone sizing: the way out says to stop the box first (#171)" \
-  0 "STOP THE BOX FIRST" cat "$SIZELOG3.out"
-check "clone sizing: ...and names the pools that defer it (#171)" \
-  0 "'dir' or 'btrfs'" cat "$SIZELOG3.out"
-# Shrink is refused by every local driver upstream; box says so instead of
-# growing a parser of its own to pre-empt it (a #171 non-goal).
-check "clone sizing: ...and points a shrink at a smaller gold, not a resize (#171)" \
-  0 "mint a smaller gold" cat "$SIZELOG3.out"
-# Now RUN what the refusal printed, through box's own escape hatch, and check
-# where the instance lands. This is the assertion the issue's proposal fails.
+check "clone sizing: ...it says nothing was created (#171 D3)" \
+  0 "NOTHING WAS CREATED" cat "$SIZELOG3.out"
+check "clone sizing: ...and that --cpu/--memory went nowhere either (#171 D3)" \
+  0 "were not applied" cat "$SIZELOG3.out"
+check "clone sizing: ...names the condition it refused on (#171 D3)" \
+  0 "comes from a profile" cat "$SIZELOG3.out"
+check "clone sizing: ...and offers the two measured routes (#171 D3)" \
+  0 "drop --disk" cat "$SIZELOG3.out"
+check "clone sizing: ...the second being a fresh mint (#171 D3)" \
+  0 "mint fresh with --disk" cat "$SIZELOG3.out"
+# The house rule, asserted the way #160's wall asserts it: ANCHORED. A line
+# that begins 'incus ' or 'box ' reads as a command to run, and the verb that
+# would fix the source is triage's inference off the copy.go divergence — a
+# route nobody here has watched work. Naming a mechanism mid-sentence is fine;
+# the anchor is exactly what draws that line.
+no_command_lines() {   # no_command_lines <output-file>
+  ! sed 's/^box: *//' "$1" | grep -qE '^(incus|box) '
+}
+check "clone sizing: the refusal prints NO runnable line, anchored (#171 D3)" 0 "" \
+  no_command_lines "$SIZELOG3.out"
+# ...and specifically not the override verb, which is the one it must not hand
+# out however it is phrased.
+check "clone sizing: ...and never the unwatched override verb (#171 D3)" 1 "" \
+  grep -qF 'config device override' "$SIZELOG3.out"
+# Not forceable, unlike #160's wall: --force cannot buy a device that is not a
+# root disk, so there is no door through this one.
+SIZELOG4="$MWORK/size-forced.log"
+check "clone sizing: --force does NOT buy past it (#171 D3)" \
+  1 "no root device of its own" \
+  mintbox "$SIZELOG4" new --name w9 --from work --disk 20GiB --force
+check "clone sizing: ...and forced or not, no copy ran (#171 D3)" 1 "" \
+  grep -q '^incus copy ' "$SIZELOG4"
+# D4: container mode keeps the answer it has had since #57 — note, no -d, and
+# the copy PROCEEDS. The difference from D3 is principled: here the flag is
+# categorically inapplicable, there it is merely unservable for this source.
+SIZELOG5="$MWORK/size-ct.log"
+export FAKE_TYPE=CONTAINER
+check "clone sizing: a container source fires the note and CLONES (#171 D4)" \
+  0 "--disk applies to VM mode only" \
+  mintbox "$SIZELOG5" new --name w9 --from work --cpu 2 --disk 20GiB
+check "clone sizing: ...the copy really ran (#171 D4)" 0 "" \
+  grep -q '^incus copy ' "$SIZELOG5"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: ...carrying no -d, because there is no size to set (#171 D4)" 1 "" \
+  bash -c 'grep -m1 "^incus copy " "$1" | grep -qF "root,size"' _ "$SIZELOG5"
+check "clone sizing: ...while --cpu still rides it (#171 D4)" 0 "-c limits.cpu=2" \
+  copyline "$SIZELOG5"
+unset FAKE_TYPE
+# Fail CLOSED on an unreadable source: no answer is not a yes. A false negative
+# costs a refusal and a rerun; a false positive writes a non-root-disk device
+# onto a fresh clone.
+SIZELOG6="$MWORK/size-blind.log"
+export FAKE_SHOW=""
+check "clone sizing: an unreadable source refuses rather than guessing (#171 D2)" \
+  1 "no root device of its own" \
+  mintbox "$SIZELOG6" new --name w9 --from work --disk 20GiB
+# ...while the flags with no precondition are untouched by any of it.
+SIZELOG7="$MWORK/size-nodisk.log"
+mintbox "$SIZELOG7" new --name w9 --from work --cpu 2 >/dev/null 2>&1 || true
+check "clone sizing: ...and -c needs no pre-flight to ride the copy (#171 D2)" \
+  0 "-c limits.cpu=2" copyline "$SIZELOG7"
+unset FAKE_SHOW
+
+# D6 — BOTH branches narrate, from the same helper, read off the daemon. The
+# issue argued the clone was silent where the mint spoke; the mint speaks no
+# more than the clone does, so ruling the clone alone would have left the same
+# asymmetry pointing the other way.
+SIZECFG="$MWORK/clone-sized.cfg"
+cat > "$SIZECFG" <<'CFG'
+user.box 1
+limits.cpu 6
+limits.memory 12GiB
+CFG
+SIZEDCLONE="$MWORK/sized-clone.log"
+export FAKE_CFG="$SIZECFG" FAKE_ROOT_SIZE=80GiB
+check "clone: narrates the resources it actually carries (#171 D6)" \
+  0 "resources, read back from incus: cpu=6 mem=12GiB disk=80GiB" \
+  mintbox "$SIZEDCLONE" new --name w10 --from work/authed
+# The mint half of D6, which is the part the issue's false comparison hid.
+SIZEDMINT="$MWORK/sized-mint.log"
+check "mint: narrates them too, from the same helper (#171 D6)" \
+  0 "resources, read back from incus: cpu=6 mem=12GiB disk=80GiB" \
+  mintbox "$SIZEDMINT" new --name w14 --template claude-box --container
+# One helper, one call site, after the branches rejoin — so the parity is
+# structural and a third way of minting cannot ship silent about its sizing.
+# shellcheck disable=SC2016  # the $-strings are literals inside bash -c
+check "mint: the narration is ONE call, after the branches rejoin (#171 D6)" 0 "" bash -c '
+  fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
+  [ "$(printf "%s\n" "$fn" | grep -c "narrate_resources ")" -eq 1 ]'
+# --expanded, because the question is what the instance will RUN with: a
+# profile added by hand is as real as box's own per-instance stamp, and a bare
+# 'config get' would report only the override.
+check "clone: reads the limits with --expanded, not just the override (#171 D6)" 0 "" \
+  grep -qF 'incus config get --expanded w10 limits.cpu' "$SIZEDCLONE"
+# The root size is a DEVICE key, not a config one — its absence is how the
+# container case answers, so it must never be read off limits.*.
+check "clone: reads the root size as a device key (#171 D6)" 0 "" \
+  grep -qE '^incus config device get w10 root size *$' "$SIZEDCLONE"
+unset FAKE_ROOT_SIZE
+# No per-instance root override — the container answer — prints no disk figure
+# rather than inventing one from the pool or from a template it never loaded.
+CTCLONE="$MWORK/ct-clone.log"
+check "clone: no root override → the figures it HAS, and no disk guess (#171 D6)" \
+  0 "resources, read back from incus: cpu=6 mem=12GiB" \
+  mintbox "$CTCLONE" new --name w11 --from work/authed
+check "clone: ...and says nothing at all about a disk (#171 D6)" 1 "" \
+  grep -qF 'disk=' "$CTCLONE.out"
+unset FAKE_CFG
+# The fully degraded read: incus answers none of the three. Silence here is
+# indistinguishable from the bug this line exists to fix, so it says so and
+# names the verb that has the whole config.
+check "clone: an unreadable read-back says so rather than going quiet (#171 D6)" \
+  0 "incus reported no resource figures" \
+  mintbox "$MWORK/blind-clone.log" new --name w12 --from work/authed
+check "mint: ...and the mint path degrades the same way (#171 D6)" \
+  0 "incus reported no resource figures" \
+  mintbox "$MWORK/blind-mint.log" new --name w15 --template claude-box --container
+
+# D5 — the post-copy handle, where box does print one, carries what incus
+# actually does. 'box new --help' is that place now: the D3 refusal prints no
+# command at all, so the handle lives here and nowhere else.
+check "new --help: says the flags work on --from (#171 D1)" 0 \
+  "The flags work on --from too" "$BOX" help new
+check "new --help: ...that they ride the copy rather than resize (#171 D1)" 0 \
+  "no resize, no restart" "$BOX" help new
+check "new --help: ...and carries --disk's precondition (#171 D2)" 0 \
+  "a root device of its own" "$BOX" help new
+check "new --help: the disk handle demands a stopped box (#171 D5)" 0 \
+  "STOP THE BOX" "$BOX" help new
+check "new --help: ...and names the pools that defer the quota (#171 D5)" 0 \
+  "'dir' or 'btrfs'" "$BOX" help new
+check "new --help: ...and that no local driver shrinks a root (#171 D7)" 0 \
+  "will shrink one" "$BOX" help new
+# Every 'box incus' line box prints, RUN back through cmd_incus — the help's
+# three handles and the narration's one. This is the assertion the issue's own
+# proposal fails, and it fails the day cmd_incus's substitution changes.
 HINTCFG="$MWORK/hints.cfg"; printf 'user.box 1\n' > "$HINTCFG"
 HINTLOG="$MWORK/hints.log"
-run_printed_hints() {  # run_printed_hints <refusal-output> <incus-log>
+run_printed_hints() {  # run_printed_hints <output-file> <incus-log>
   local line
   : > "$2"
   # Capture first, THEN read (#124's class) — and it is box's own printed
@@ -2118,105 +2246,28 @@ run_printed_hints() {  # run_printed_hints <refusal-output> <incus-log>
         PATH="$MSHIM:$RIGSHIM:$PATH" "$BOX" "${words[@]:1}" </dev/null >/dev/null 2>&1
   done < "$MWORK/hints.txt"
 }
-run_printed_hints "$SIZELOG3.out" "$HINTLOG"
-# Position, not presence: 'config device set w9 root size=20GiB' is the
-# contract, and 'config device set root size=20GiB w9' is the bug the issue's
-# own message would have shipped.
-check "clone sizing: the printed clone-side route RUNS, instance first (#171)" 0 "" \
-  grep -qE '^incus config device set w9 root size=20GiB *$' "$HINTLOG"
-check "clone sizing: the printed source-side route RUNS the same way (#171)" 0 "" \
-  grep -qE '^incus config device override work root size=<current> *$' "$HINTLOG"
-# Counted, not spot-checked: two routes printed, two calls landed. The pattern
-# is narrow because cmd_incus's own resolve_box logs a 'config get' per run and
-# a loose count would go green on those alone.
+"$BOX" help new > "$MWORK/help-new.out" 2>&1
+run_printed_hints "$MWORK/help-new.out" "$HINTLOG"
+# Position, not presence: 'config set <inst> limits.cpu 4' is the contract, and
+# 'config set limits.cpu 4 <inst>' is the bug the issue's message would have
+# shipped. '<box>' is the help's own placeholder and resolves like any name.
+check "new --help: the printed cpu handle RUNS, instance first (#171 D5)" 0 "" \
+  grep -qE '^incus config set <box> limits\.cpu 4 *$' "$HINTLOG"
+check "new --help: the memory handle lands the same way (#171 D5)" 0 "" \
+  grep -qE '^incus config set <box> limits\.memory 8GiB *$' "$HINTLOG"
+check "new --help: and the root device handle too (#171 D5)" 0 "" \
+  grep -qE '^incus config device set <box> root size=60GiB *$' "$HINTLOG"
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "clone sizing: ...and those are the only two commands it printed (#171)" 0 "2" \
-  bash -c 'grep -cE "^incus config device (set|override) " "$1"' _ "$HINTLOG"
-# A container's root rides the storage pool: there is nothing to size and no
-# route to print, so the message must not hand out one that does nothing.
-SIZELOG4="$MWORK/size-ct.log"
-export FAKE_TYPE=CONTAINER
-check "clone sizing: a container source refuses --disk for its own reason (#171)" \
-  2 "is a CONTAINER" \
-  mintbox "$SIZELOG4" new --name w9 --from work --disk 20GiB
-check "clone sizing: ...and prints no root-size route at all (#171)" 1 "" \
-  grep -qF 'config device set' "$SIZELOG4.out"
-unset FAKE_TYPE
-# Fail CLOSED on an unreadable source: no answer is not a yes. Sending a
-# malformed device costs a broken clone; refusing costs one flag and prints
-# the route.
-SIZELOG5="$MWORK/size-blind.log"
-export FAKE_SHOW=""
-check "clone sizing: an unreadable source refuses --disk rather than guessing (#171)" \
-  2 "no LOCAL root device" \
-  mintbox "$SIZELOG5" new --name w9 --from work --disk 20GiB
-# ...while --cpu and --memory, which have no precondition, are untouched by
-# any of it: a source box can be unreadable and a flat config merge still works.
-SIZELOG6="$MWORK/size-nodisk.log"
-mintbox "$SIZELOG6" new --name w9 --from work --cpu 2 >/dev/null 2>&1 || true
-check "clone sizing: ...and the flags with no precondition still ride it (#171)" \
-  0 "-c limits.cpu=2" copyline "$SIZELOG6"
-unset FAKE_SHOW
-
-# The silent case. A clone narrates what it inherited — the stamp, the id, the
-# pristine question — and said nothing about the resources it came up with,
-# which is how a fleet ships a builder on a reviewer's 2 CPU and finds out
-# under load (heavy-duty/crew#55). Read off the daemon, never inferred: this
-# path never ran load_template, so box's own defaults would be the sizing of a
-# mint that did not happen.
-SIZECFG="$MWORK/clone-sized.cfg"
-cat > "$SIZECFG" <<'CFG'
-user.box 1
-limits.cpu 6
-limits.memory 12GiB
-CFG
-SIZEDCLONE="$MWORK/sized-clone.log"
-export FAKE_CFG="$SIZECFG" FAKE_ROOT_SIZE=80GiB
-check "clone: narrates the resources it actually carries (#171)" \
-  0 "it carries the source's resources: cpu=6 mem=12GiB disk=80GiB" \
-  mintbox "$SIZEDCLONE" new --name w10 --from work/authed
-# --expanded, because the question is what the instance will RUN with: a
-# profile added by hand is as real as box's own per-instance stamp, and a bare
-# 'config get' would report only the override.
-check "clone: reads the limits with --expanded, not just the override (#171)" 0 "" \
-  grep -qF 'incus config get --expanded w10 limits.cpu' "$SIZEDCLONE"
-# The root size is a DEVICE key, not a config one — its absence is how the
-# container case answers, so it must never be read off limits.*.
-check "clone: reads the root size as a device key (#171)" 0 "" \
-  grep -qE '^incus config device get w10 root size *$' "$SIZEDCLONE"
-# Read AFTER the copy, so when the flags rode it the same line is the proof
-# the override landed — and it stops calling the figures "the source's", which
-# is a claim about lineage that -c and -d have just made false.
-SIZEDASKED="$MWORK/sized-asked.log"
-FAKE_SHOW="$(cat "$LOCALROOT")"; export FAKE_SHOW
-check "clone: a sized clone reports what it was sized TO, not the source (#171)" \
-  0 "sized at the copy, read back from incus: cpu=6 mem=12GiB disk=80GiB" \
-  mintbox "$SIZEDASKED" new --name w13 --from work --cpu 6 --memory 12GiB --disk 80GiB
-unset FAKE_SHOW FAKE_ROOT_SIZE
-# A container clone has no per-instance root override, so incus answers
-# nothing — and box prints no disk figure rather than inventing one from the
-# pool or from a template it never loaded.
-CTCLONE="$MWORK/ct-clone.log"
-check "clone: no root override → the figures it HAS, and no disk guess (#171)" \
-  0 "it carries the source's resources: cpu=6 mem=12GiB" \
-  mintbox "$CTCLONE" new --name w11 --from work/authed
-check "clone: ...and says nothing at all about a disk (#171)" 1 "" \
-  grep -qF 'disk=' "$CTCLONE.out"
+check "new --help: ...those three and no fourth (#171 D5)" 0 "3" \
+  bash -c 'grep -cE "^incus config (set|device set) " "$1"' _ "$HINTLOG"
+# The narration's own handle, driven the same way.
+NARRHINT="$MWORK/narr-hints.log"
+export FAKE_CFG="$SIZECFG"
+mintbox "$MWORK/hint-clone.log" new --name w16 --from work/authed >/dev/null 2>&1 || true
 unset FAKE_CFG
-# The fully degraded read: incus answers none of the three. Silence here is
-# indistinguishable from the bug this line exists to fix, so it says so and
-# names the verb that has the whole config.
-check "clone: an unreadable clone says so rather than going quiet again (#171)" \
-  0 "incus reported no resource figures" \
-  mintbox "$MWORK/blind-clone.log" new --name w12 --from work/authed
-# The help is the other half of the discoverability fix: it stated a rule that
-# is no longer true, and now states the mechanism and its one precondition.
-check "new --help: says the flags work on --from (#171)" 0 \
-  "The flags work on --from too" "$BOX" help new
-check "new --help: ...that they ride the copy rather than resize (#171)" 0 \
-  "no resize, no restart" "$BOX" help new
-check "new --help: ...and carries --disk's precondition (#171)" 0 \
-  "only ride the copy where the" "$BOX" help new
+run_printed_hints "$MWORK/hint-clone.log.out" "$NARRHINT"
+check "clone: the narration's own handle RUNS, instance first (#171 D5)" 0 "" \
+  grep -qE '^incus config set w16 limits\.cpu <n> *$' "$NARRHINT"
 
 # --- the read half: 'box info' surfaces it ---------------------------------
 # A stamp nothing can read is not done. cmd_info printed NAME/STATE/TYPE/IPV4

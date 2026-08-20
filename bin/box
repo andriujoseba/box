@@ -1824,8 +1824,12 @@ narrate_resources() {   # narrate_resources <instance>
   # confirmation that any -c/-d override landed — box asserting nothing it has
   # not then read back off the daemon.
   echo "box: resources, read back from incus: ${parts[*]}"
-  echo "box: (to change them: box incus $name -- config set {} limits.cpu <n>, and see"
-  echo "box: 'box help incus' — the {} is where the box name goes.)"
+  # The handle on its own line, and nothing after it. A command with prose
+  # trailing on the same line is a command an operator copies with the prose
+  # attached — and test/cli.sh runs these lines verbatim, so a trailing clause
+  # is not a style question here, it is arguments.
+  echo "box: to change them ({} is where the box name goes, 'box help incus'):"
+  echo "box:   box incus $name -- config set {} limits.cpu <n>"
 }
 
 cmd_new() {
