@@ -2435,7 +2435,11 @@ cmd_import() {
   local blocked=""
   [ "$(box_tier)" != restricted ] || blocked="$(artifact_lowlevel_keys <<<"$index")"
   if [ -n "$blocked" ]; then
-    local nkeys; nkeys="$(printf '%s\n' "$blocked" | wc -l)"
+    local nkeys noun; nkeys="$(printf '%s\n' "$blocked" | wc -l)"
+    # '-ne 1 || noun=key' and never '-eq 1 && noun=key': under 'set -e' the
+    # && form exits the whole run on the common branch, where the test is the
+    # statement's last command and it failed. Same trap as #43's silent end.
+    noun=keys; [ "$nkeys" -ne 1 ] || noun=key
     {
       echo "box: ==================== REFUSED BEFORE THE TRANSFER ===================="
       echo "box: your tier is 'restricted': your boxes live in the incus project"
@@ -2443,7 +2447,7 @@ cmd_import() {
       echo "box: made of, not a setting reachable from inside it, and a restricted"
       echo "box: project refuses low-level instance config."
       echo "box:"
-      echo "box: this artifact carries $nkeys such key(s) — incus stamped them on the box"
+      echo "box: this artifact carries $nkeys such $noun — incus stamped them on the box"
       echo "box: it was exported from, and nobody chose them:"
       # ALL of them, never a head -N. The keys sort alphabetically and the one
       # incus actually died on is 'volatile.uuid.generation' (#156), which is
@@ -2459,9 +2463,9 @@ cmd_import() {
       echo "box:"
       echo "box: THE WAY OUT: nothing was transferred and the artifact is untouched, so"
       echo "box: it is still good anywhere. Landing it on THIS host takes the admin tier"
-      echo "box: (uid 0, or the 'incus-admin' group) — ask whoever ran 'box grant"
-      echo "box: $(id -un)' for you. box prints no incantation here on purpose: the"
-      echo "box: admin-side route into your project is itself unmeasured (#160)."
+      echo "box: (uid 0, or the 'incus-admin' group): ask whoever ran 'box grant $(id -un)'"
+      echo "box: for you. box prints no incantation here on purpose — the admin-side route"
+      echo "box: into your project is itself unmeasured (#160)."
       echo "box: ===================================================================="
     } >&2
     die "the restricted tier cannot import this artifact — refused before the transfer, not after it (#160)"

@@ -2476,8 +2476,21 @@ check "import: ...so it never announces an import it will not perform (#160)" 1 
 # drops precisely the key the message exists to name. Assert both ends.
 check "import: ...listing every key it carries, not a sample (#160)" 1 "volatile.base_image" \
   importfile "$RESTLOG" "$VM_ART"
-check "import: ...and counting them (#160)" 1 "carries 6 such key" \
+check "import: ...and counting them (#160)" 1 "carries 6 such keys" \
   importfile "$RESTLOG" "$VM_ART"
+# One key is not a special case of six, under 'set -euo pipefail': the
+# singular arm is where an '&& noun=key' would end the run on the plural
+# branch, silently and mid-message. Drive it, rather than reasoning about it.
+ONE_ART="$IWORK/one-key.tar.gz"
+mkdir -p "$IWORK/oneart/backup"
+printf 'name: work\nconfig:\n  instance:\n    config:\n      volatile.uuid: 8f4a\n' \
+  > "$IWORK/oneart/backup/index.yaml"
+tar -czf "$ONE_ART" -C "$IWORK/oneart" backup/index.yaml
+ONELOG="$IWORK/one-key.log"
+check "import: an artifact carrying ONE such key still refuses cleanly (#160)" 1 \
+  "carries 1 such key" importfile "$ONELOG" "$ONE_ART"
+check "import: ...reaching the end of the message, not dying inside it (#160)" 1 \
+  "THE WAY OUT" importfile "$ONELOG" "$ONE_ART"
 # No evidence is not evidence of trouble. An artifact whose index.yaml embeds
 # no config tells box nothing about what it carries, and refusing there would
 # refuse artifacts nothing is known about — so it takes the old path.
