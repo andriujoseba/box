@@ -2428,12 +2428,12 @@ VM_ART="$IWORK/vm-work.tar.gz"
 mkdir -p "$IWORK/vmart/backup" && cp "$VM_IDX" "$IWORK/vmart/backup/index.yaml"
 tar -czf "$VM_ART" -C "$IWORK/vmart" backup/index.yaml
 
-importfile() {  # importfile <logfile> <artifact> — the real box, shimmed
-  local log="$1" art="$2"
+importfile() {  # importfile <logfile> <artifact> [flags...] — the real box, shimmed
+  local log="$1" art="$2"; shift 2
   : > "$log"
   env FAKE_INCUS_LOG="$log" FAKE_CFG="" \
     PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$ISHIM:$PATH" \
-    "$BOX" import "$art" </dev/null >"$log.out" 2>&1
+    "$BOX" import "$art" "$@" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
   return "$rc"
@@ -2446,24 +2446,46 @@ RESTLOG="$IWORK/restricted-import.log"
 export SHIM_PREFIX="$RESTRICTED"
 check "import: the restricted tier is refused, not left to incus (#160)" 1 \
   "REFUSED BEFORE THE TRANSFER" importfile "$RESTLOG" "$VM_ART"
-# The three things the acceptance shape requires the failure to name.
-check "import: ...the refusal names the TIER (#160)" 1 "your tier is 'restricted'" \
+# The six things D2 requires the refusal to name: the tier, the project, the
+# offending key, that nothing was transferred, who can land it, and --force
+# with its price. One check each, so a regression names which clause went.
+check "import: ...the refusal names the TIER (#160 D2)" 1 "your tier is 'restricted'" \
   importfile "$RESTLOG" "$VM_ART"
-check "import: ...and the project the tier puts you in (#160)" 1 "user-1000" \
+check "import: ...and the project the tier puts you in (#160 D2)" 1 "user-1000" \
   importfile "$RESTLOG" "$VM_ART"
-check "import: ...the refusal names the KEY incus would have died on (#160)" 1 \
+check "import: ...the refusal names the KEY incus would have died on (#160 D2)" 1 \
   "volatile.uuid.generation" importfile "$RESTLOG" "$VM_ART"
-check "import: ...and the WAY OUT — who can land it instead (#160)" 1 "incus-admin" \
+# The sentence that distinguishes this failure from the reported one: there,
+# the whole 1.38GB had landed before incus spoke.
+check "import: ...that NOTHING was transferred (#160 D2)" 1 "nothing was transferred" \
   importfile "$RESTLOG" "$VM_ART"
+check "import: ...and the WAY OUT — who can land it instead (#160 D2)" 1 "incus-admin" \
+  importfile "$RESTLOG" "$VM_ART"
+check "import: ...and --force, the override (#160 D2, D3)" 1 "--force" \
+  importfile "$RESTLOG" "$VM_ART"
+# Priced, not merely offered: --force costs the full transfer and then incus's
+# error if the project really does refuse. A message naming the escape hatch
+# without its price would sell the very transfer this wall exists to save.
+check "import: ...priced honestly rather than merely offered (#160 D2, D3)" 1 \
+  "full transfer" importfile "$RESTLOG" "$VM_ART"
 # Naming the way out is not the same as inventing one. The admin-side route
-# into a restricted project is unmeasured (#160's own fourth box), so the
-# message says so and hands over no command nobody has run. It may still name
-# 'incus config set' — that is the MECHANISM being explained, not an
-# instruction, and the difference is the whole distinction being asserted.
-check "import: ...and says that route is unmeasured rather than promising it (#160)" 1 \
+# into a restricted project is unmeasured (#160 direction 4), so the message
+# says so and hands over no command nobody has run.
+check "import: ...and says that route is unmeasured rather than promising it (#160 D2)" 1 \
   "unmeasured" importfile "$RESTLOG" "$VM_ART"
-check "import: ...inventing no incantation for it (#160)" 1 "" \
-  grep -qE 'incus (import|move|copy) |--project' "$RESTLOG.out"
+# The absence assertion, ANCHORED. D2 forbids printing an 'incus'/'box'
+# command line asserting a route nobody has run, and the readable form of that
+# is: no line of the message may begin with a command. Anchoring is what lets
+# the message still say 'incus config set' mid-sentence — that names the
+# MECHANISM incus applies, and explaining a mechanism is not offering a route.
+# An unanchored grep would have to choose between the two, and it would choose
+# by banning the explanation, which is the honest half.
+check "import: ...offering no command line to run (#160 D2)" 1 "" \
+  grep -qE '^box: +(sudo )?(incus|box) ' "$RESTLOG.out"
+# And belt-and-braces on the specific incantations an admin-assist route would
+# have to be written with, wherever in a line they appear.
+check "import: ...naming no admin-assist incantation at all (#160 D2)" 1 "" \
+  grep -qE 'incus (import|move|copy|admin) |box (grant|import) |--project' "$RESTLOG.out"
 # The whole point of the issue, and the assertion that fails if the wall ever
 # drifts below the transfer: incus was never asked to import anything.
 check "import: ...BEFORE the transfer — incus import is never reached (#160)" 1 "" \
@@ -2499,6 +2521,63 @@ check "import: an artifact with no readable config is NOT refused (#160)" 0 \
   "imported work" importfile "$BAREREST" "$ARTIFACT"
 check "import: ...it degrades to the old path rather than guessing (#160)" 0 "" \
   import_transferred "$BAREREST"
+
+# Config that is READ and cleared, which is the stronger half of the same
+# point: the fixture above has no config at all, so it proves only that box
+# refuses to guess. This one embeds a config section box parses in full and
+# finds nothing low-level in — an artifact a restricted project has no reason
+# to reject — and it goes through. Without it, a reader that swept up every
+# key it saw would still pass every test above.
+CLEAN_IDX="$IWORK/clean/backup/index.yaml"
+mkdir -p "$IWORK/clean/backup"
+cat > "$CLEAN_IDX" <<'IDX'
+name: work
+backend: dir
+pool: default
+type: container
+config:
+  instance:
+    architecture: x86_64
+    config:
+      image.os: Debian
+      limits.cpu: "4"
+      limits.memory: 4GiB
+      user.box: "1"
+    devices:
+      root:
+        path: /
+        pool: default
+        type: disk
+IDX
+CLEAN_ART="$IWORK/clean-work.tar.gz"
+tar -czf "$CLEAN_ART" -C "$IWORK/clean" backup/index.yaml
+CLEANLOG="$IWORK/clean-import.log"
+check "import: restricted tier + an artifact with no low-level keys imports (#160)" 0 \
+  "imported work" importfile "$CLEANLOG" "$CLEAN_ART"
+check "import: ...reaching the transfer like any other (#160)" 0 "" \
+  import_transferred "$CLEANLOG"
+check "import: ...so the wall is the KEYS and not the tier alone (#160 D1)" 1 "" \
+  grep -qF 'REFUSED BEFORE THE TRANSFER' "$CLEANLOG.out"
+
+# --force is the door (#160 D3). It exists because the refusal is an
+# INFERENCE — read off the artifact's keys, with only the VM case measured —
+# and an inference must never be the last word on a supported tier's own
+# file. Same artifact, same tier, same keys as the refusal above: the only
+# difference is the flag, so what these assert is the flag and nothing else.
+FORCELOG="$IWORK/force-import.log"
+check "import: --force skips the pre-flight on the restricted tier (#160 D3)" 0 \
+  "imported work" importfile "$FORCELOG" "$VM_ART" --force
+check "import: ...and really does reach 'incus import' (#160 D3)" 0 "" \
+  import_transferred "$FORCELOG"
+check "import: ...printing no refusal it just overrode (#160 D3)" 1 "" \
+  grep -qF 'REFUSED BEFORE THE TRANSFER' "$FORCELOG.out"
+# -f is the same flag, and the OPTIONS block promises both spellings.
+check "import: ...under its short spelling too (#160 D3)" 0 "imported work" \
+  importfile "$IWORK/force-short.log" "$VM_ART" -f
+# The door swings one way. --force does not disable the wall for the next
+# import, and it is not a mode: re-run without it and the refusal is back.
+check "import: ...leaving the wall standing for the next import (#160 D3)" 1 \
+  "REFUSED BEFORE THE TRANSFER" importfile "$RESTLOG" "$VM_ART"
 unset SHIM_PREFIX
 
 # The wall is tier-scoped, and this is what stops it becoming an import ban:
@@ -2560,6 +2639,15 @@ check "help import names the key class, not just the tier (#160)" 0 "volatile" \
   "$BOX" help import
 check "help import keeps export one-way rather than implying parity (#160)" 0 "Export still works" \
   "$BOX" help import
+# The override is documented where it is used and where it is listed, and in
+# both places with its price. A flag a user only ever meets in an error
+# message is a flag they meet at the worst possible moment.
+check "help import documents --force (#160 D3)" 0 "--force overrides that refusal" \
+  "$BOX" help import
+check "help import prices it there too, not just in the refusal (#160 D3)" 0 \
+  "pay the whole transfer" "$BOX" help import
+check "the OPTIONS block lists --force for import (#160 D3)" 0 \
+  "pre-flight refusal (import)" "$BOX" help
 
 # --- the read half: 'box info' must not let the mint be misread -------------
 # The whole hazard: MINTED carries a time that is deliberately NOT this host's,
