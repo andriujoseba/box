@@ -2808,13 +2808,17 @@ check "drill: the DRILL_EXPECT guard is called, and before the first phase" 0 ""
 # central criterion, so grep is not evidence for it: replacing the final
 # `[ "$fail" -eq 0 ]` with unconditional success passed every check above.
 #
-# So compose the three extracted blocks — verdicts, ledger, summary — into the
-# runnable skeleton of a drill that has finished, and run it. The exit status
-# asserted below is the real one, produced by the real gate.
+# So compose the four extracted blocks — verdicts, ledger, record, summary —
+# into the runnable skeleton of a drill that has finished, and run it. The exit
+# status asserted below is the real one, produced by the real gate. The record
+# block is composed in even where a scenario emits no record (#152): the point
+# of the skeleton is that it is the script's actual tail, and a tail assembled
+# from three of its four blocks is a different tail.
 # ---------------------------------------------------------------------------
-VERDFN="$(mktemp)"; SUMFN="$(mktemp)"
+VERDFN="$(mktemp)"; SUMFN="$(mktemp)"; RECFN="$(mktemp)"
 awk '/^# >>> drill verdicts/,/^# <<< drill verdicts/' "$ROOT/drill/drill.sh" > "$VERDFN"
 awk '/^# >>> ledger summary/,/^# <<< ledger summary/' "$ROOT/drill/drill.sh" > "$SUMFN"
+awk '/^# >>> drill record/,/^# <<< drill record/'     "$ROOT/drill/drill.sh" > "$RECFN"
 check "drill summary: the verdict helpers extract (guards the awk)" 0 "pass=\$((pass + 1))" \
   cat "$VERDFN"
 check "drill summary: the summary extracts (guards the awk)" 0 "the drill ran SHORT:" cat "$SUMFN"
@@ -2826,8 +2830,10 @@ check "drill summary: ...with the exit gate inside the window, not below it" 0 "
   grep -qF '[ "$fail" -eq 0 ]' "$SUMFN"
 
 # Run the composed skeleton. $1 is the state a finished drill would be in.
+# RECORD empty is a drill run without --emit-record, which is still the common
+# case; the scenarios that DO emit one set it, further down.
 run_summary() {
-  bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; $1; . '$SUMFN'"
+  bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'; RECORD=''; $1; . '$SUMFN'"
 }
 summary_lacks() {   # 0 when the composed run does NOT say $1
   local needle="$1"; shift
@@ -2866,7 +2872,559 @@ check "drill summary: a complete run with one real FAIL EXITS NON-ZERO" 1 \
   "84/85 passed, 1 failed" run_summary "$COMPLETE; pass=84; fail=1"
 check "drill summary: ...and is not mislabelled as a short run" 0 "" \
   summary_lacks "the drill ran SHORT:" "$COMPLETE; pass=84; fail=1"
-rm -f "$LEDGERFN" "$VERDFN" "$SUMFN"
+
+# ---------------------------------------------------------------------------
+# The record emitter (#152). drills/README.md asks a record for six things and
+# drill.sh printed none of them in that shape, so every record was retyped by
+# hand out of coloured terminal output at the end of a forty-minute run — and
+# two fields (the shared run ID, the wall clock) did not exist to retype.
+#
+# Same doctrine as the ledger above it: the emitter is a self-contained block
+# precisely so the SHAPE of a record can be driven on a host with no Incus, no
+# drill and no network. record_collect() touches the world; record_write()
+# touches nothing but the REC_* set, which is what makes it assertable here.
+# ---------------------------------------------------------------------------
+check "drill record: extracted from drill.sh (guards the awk)" 0 "record_write" cat "$RECFN"
+check "drill record: the extracted block is valid bash" 0 "" bash -n "$RECFN"
+
+RECWORK="$(mktemp -d)"; RECOUT="$RECWORK/emitted.md"
+# The block assumes the verdict helpers and the ledger, and nothing else — so
+# the harness supplies exactly those, exactly as the drill does.
+rec() { bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'; $1"; }
+
+# --- the run ID, which had no mechanism at all before this ------------------
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: the default run ID is drill-<version>-<date>-01" 0 \
+  "[drill-9.9.9-20260721-01]" rec 'printf "[%s]" "$(record_run_id 9.9.9 20260721)"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and record_collect derives it from the collected date" 0 \
+  "[drill-9.9.9-20260721-01]" \
+  rec 'REC_VERSION=9.9.9; REC_DATE=2026-07-21; record_collect o/r main 0; printf "[%s]" "$REC_RUN_ID"'
+# An ID passed in is the release set's shared one and must survive collection
+# untouched — three repos reconciling on it is the entire reason it exists.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...but a pinned run ID is never regenerated" 0 "[drill-shared-42]" \
+  rec 'REC_RUN_ID=drill-shared-42; REC_VERSION=9.9.9; REC_DATE=2026-07-21; record_collect o/r main 0; printf "[%s]" "$REC_RUN_ID"'
+
+# --- the wall clock, the other field that did not exist ---------------------
+# drills/README.md's worked example writes "41 minutes wall clock"; 2460s is it.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: seconds become the phrase the worked example uses" 0 \
+  "[41 minutes wall clock]" rec 'printf "[%s]" "$(record_wallclock 2460)"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...rounded to the nearest minute, not truncated" 0 "[42 minutes" \
+  rec 'printf "[%s]" "$(record_wallclock 2490)"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and a sub-minute run is not '0 minutes'" 0 "[under a minute" \
+  rec 'printf "[%s]" "$(record_wallclock 30)"'
+# An unmeasured clock says so. Guessing here would put a fabricated duration in
+# the one artifact whose whole job is to be believed months later.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: an unmeasured clock is stated, never guessed" 0 \
+  "[wall clock not measured]" rec 'printf "[%s]" "$(record_wallclock "")"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and neither is a mangled one" 0 "[wall clock not measured]" \
+  rec 'printf "[%s]" "$(record_wallclock abc)"'
+
+# --- the SHAs, the field that makes a ref mean something later --------------
+RECSHIM="$RECWORK/shim"; mkdir -p "$RECSHIM"
+cat > "$RECSHIM/git" <<'SHIM'
+#!/usr/bin/env bash
+# Fake git: 'ls-remote <url> <pattern>...' prints $FAKE_LSREMOTE as the SHA, or
+# nothing (an unknown ref). Anything else exits 1, as a git that cannot would.
+# FAKE_PEELED, when set, makes it answer the way a real remote answers for an
+# ANNOTATED tag: the tag object first, then the commit as refs/tags/<t>^{}.
+#
+# It answers PATTERN BY PATTERN, which is the whole point of it. `refs/tags/<t>`
+# and `refs/tags/<t>^{}` are two separate refs, and ls-remote matches a pattern
+# against the ref's tail component — so an exact `<t>` selects the tag object
+# ALONE and the peeled line is only ever sent to a caller that asked for `<t>^{}`
+# by name. A shim that appends the peeled line regardless models the response
+# somebody expected instead of the protocol, and confirms their expectation by
+# construction: that is how a version of this file shipped a peel-preferring awk
+# over a query that could never return a peeled line to prefer.
+[ "${1:-}" = ls-remote ] || exit 1
+[ -n "${FAKE_LSREMOTE:-}" ] || exit 0
+ref=''; peel=''
+for pat in "${@:3}"; do
+  case "$pat" in
+    *'^{}') peel=1 ;;
+    *)      [ -n "$ref" ] || ref="$pat" ;;
+  esac
+done
+if [ -n "${FAKE_PEELED:-}" ]; then
+  printf '%s\trefs/tags/%s\n' "$FAKE_LSREMOTE" "${ref:-v1}"
+  # Only for a caller that named the peeled ref. A real remote sends nothing
+  # here otherwise, however annotated the tag is.
+  [ -n "$peel" ] && printf '%s\trefs/tags/%s^{}\n' "$FAKE_PEELED" "${ref:-v1}"
+  exit 0
+fi
+# A branch or a lightweight tag has no peeled ref at all, so the extra pattern
+# matches nothing and the answer is one line whether or not it was asked for.
+printf '%s\trefs/heads/%s\n' "$FAKE_LSREMOTE" "${ref:-main}"
+SHIM
+cat > "$RECSHIM/curl" <<'SHIM'
+#!/usr/bin/env bash
+# Fake curl: prints $FAKE_CURL, or fails as a 404/rate-limited fetch would.
+[ -n "${FAKE_CURL:-}" ] || exit 22
+printf '%s\n' "$FAKE_CURL"
+SHIM
+chmod +x "$RECSHIM/git" "$RECSHIM/curl"
+shim() { PATH="$RECSHIM:$PATH" bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'; $1"; }
+
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: a ref that IS a commit resolves to itself, offline" 0 "[1234567]" \
+  rec 'printf "[%s]" "$(record_sha o/r 1234567890abcdef1234567890abcdef12345678)"'
+# ...which is the case a pinned drill hits, and it must not need a remote: the
+# ls-remote for a full SHA returns nothing, so this used to record 'unresolved'.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...without asking any remote about it" 0 "[1234567]" \
+  shim 'FAKE_LSREMOTE=""; FAKE_CURL=""; printf "[%s]" "$(record_sha o/r 1234567890abcdef1234567890abcdef12345678)"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: a branch resolves through git ls-remote" 0 "[abcdef1]" \
+  shim 'export FAKE_LSREMOTE=abcdef1234567890abcdef1234567890abcdef12; printf "[%s]" "$(record_sha o/r main)"'
+# An ANNOTATED tag resolves to the tag OBJECT, 40 hex characters, so the
+# validator cannot catch it: the record would name an object nobody can check
+# out, which is the exact failure this function's whole apparatus exists to
+# refuse. --ref v0.10.0 is a shape a release drill plausibly takes.
+#
+# This passes ONLY because record_sha asks for `<ref>^{}` by name. The shim
+# below sends the peeled line to a caller that requested it and to nobody else,
+# which is what a real remote does — verified against github.com/git/git, where
+# `ls-remote … v2.51.0` answers with the tag object 6d075e4 alone and the commit
+# c44beea arrives only when `v2.51.0^{}` is asked for too. An earlier shim here
+# appended the peel unconditionally and so proved nothing about the query.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: an annotated tag records the COMMIT, not the tag object" 0 \
+  "[beef111]" \
+  shim 'export FAKE_LSREMOTE=dead0000dead0000dead0000dead0000dead0000
+        export FAKE_PEELED=beef1111beef1111beef1111beef1111beef1111
+        printf "[%s]" "$(record_sha o/r v0.10.0)"'
+# ...and the shim is only worth that if it withholds the peel from a caller who
+# did not ask. Asserted directly, because every claim above rests on it.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and the fake remote peels only when the peel is REQUESTED" 0 \
+  "[1 lines][2 lines]" \
+  shim 'export FAKE_LSREMOTE=dead0000dead0000dead0000dead0000dead0000
+        export FAKE_PEELED=beef1111beef1111beef1111beef1111beef1111
+        printf "[%s lines]" "$(git ls-remote https://x v0.10.0 | grep -c .)"
+        printf "[%s lines]" "$(git ls-remote https://x v0.10.0 "v0.10.0^{}" | grep -c .)"'
+# ...and a lightweight tag or a branch, which send one unpeeled line, are
+# unaffected — the peel is preferred where offered, not required.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...while an unpeeled answer is still the first line" 0 "[dead000]" \
+  shim 'export FAKE_LSREMOTE=dead0000dead0000dead0000dead0000dead0000; printf "[%s]" "$(record_sha o/r v1)"'
+# curl is the fallback because a drill host has it by construction (it fetched
+# install.sh with it) and may have no git at all.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and falls back to the API when git cannot answer" 0 "[9abcdef]" \
+  shim 'export FAKE_LSREMOTE=""; export FAKE_CURL=9abcdef0123456789abcdef0123456789abcdef; printf "[%s]" "$(record_sha o/r main)"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: neither answering is 'unresolved', not blank" 0 "[unresolved]" \
+  shim 'export FAKE_LSREMOTE=""; export FAKE_CURL=""; printf "[%s]" "$(record_sha o/r main)"'
+# A rate-limit body or an error page is not a SHA. Writing one into the record
+# would be a lie with a monospace font on.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and a non-SHA answer is refused by the same validator" 0 \
+  "[unresolved]" \
+  shim 'export FAKE_LSREMOTE=""; export FAKE_CURL="{ message: rate"; printf "[%s]" "$(record_sha o/r main)"'
+
+# --- the path guard, which runs BEFORE the host is formatted ----------------
+check "drill record: no --emit-record is not an error" 0 "" rec 'record_check_path ""'
+check "drill record: a writable path is accepted" 0 "" rec "record_check_path '$RECWORK/new.md'"
+check "drill record: a missing directory is refused, and named" 2 "no such directory" \
+  rec "record_check_path '$RECWORK/nope/rec.md'"
+# THE guard that matters. The emitted file is a skeleton the operator writes
+# prose into, and that edited file is the release evidence the gate reads. A
+# second run pointed at it would eat exactly the judgement calls that make it
+# evidence — so it does not get to, and it finds out at startup rather than
+# forty minutes in.
+printf 'a hand-edited record\n' > "$RECWORK/taken.md"
+check "drill record: an existing record is never overwritten" 2 "already exists" \
+  rec "record_check_path '$RECWORK/taken.md'"
+check "drill record: ...and the refusal says why that matters" 2 "destroys the judgement" \
+  rec "record_check_path '$RECWORK/taken.md'"
+: > "$RECWORK/empty.md"
+check "drill record: ...while an empty file is not a record and may be used" 0 "" \
+  rec "record_check_path '$RECWORK/empty.md'"
+
+# --- the rig pin, read the way the mint reads it ----------------------------
+# bin/box resolves rig_repo/rig_ref to heavy-duty/rig@main when unset. The record
+# must say what the MINT used, so it reads the same defaults — and where that
+# default was in force it records `main`, which is the #81/#150 gap stated as a
+# fact about the run rather than hidden.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: the rig pin defaults exactly as bin/box's does" 0 "[heavy-duty/rig][main]" \
+  rec 'record_collect o/r main 0; printf "[%s][%s]" "$REC_RIG_REPO" "$REC_RIG_REF"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and an overridden rig pin is what lands in the record" 0 "[you/rig][topic]" \
+  rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r main 0; printf "[%s][%s]" "$REC_RIG_REPO" "$REC_RIG_REF"'
+# The invocation has to reproduce the run, so the env pins belong in it: the
+# flags alone name a different drill than the one that ran.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: the invocation carries the env pins, not just the flags" 0 \
+  "RIG_REF=topic bash drill/drill.sh --repo o/r --ref v1" \
+  rec 'export RIG_REF=topic; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--keep-boxes" \
+  rec 'record_collect o/r v1 1; printf "%s" "$REC_INVOCATION"'
+
+# --- the record itself ------------------------------------------------------
+# A finished drill, pinned so every field is assertable. record_collect fills
+# only what is not already set, which is what lets a test pin the world away.
+RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=49 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
+REC_VERSION=9.9.9; REC_DATE=2026-07-21; REC_HOST='bare Debian 13, Incus 6.0.2'
+REC_RUN_ID=drill-9.9.9-20260721-01; REC_BOX_SHA=abc1234; REC_RIG_SHA=def5678
+REC_ELAPSED=2460; record_collect heavy-duty/box release/9.9.9 0"
+emit() {   # emit <state> → the record that state produces, on stdout
+  rm -f "$RECOUT"
+  rec "$RECSTATE; $1; record_write '$RECOUT'" >/dev/null 2>&1
+  cat "$RECOUT" 2>/dev/null
+}
+CLEAN='pass=85; fail=0'
+
+# drills/README.md:34-42 asks for six things. One check each, because a record
+# missing one of them is the hand-transcription this replaces, reintroduced.
+check "drill record: names the version, as the filename must match" 0 \
+  "# Release drill — 9.9.9" emit "$CLEAN"
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: carries the run ID the sibling repos reconcile on" 0 \
+  '**Run ID:** `drill-9.9.9-20260721-01`' emit "$CLEAN"
+check "drill record: names the host — 'real hardware' is the claim" 0 \
+  "**Host:** bare Debian 13, Incus 6.0.2" emit "$CLEAN"
+check "drill record: dates the run" 0 "**Date:** 2026-07-21" emit "$CLEAN"
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: pins box's candidate ref TO A SHA" 0 \
+  'box `release/9.9.9` @ `abc1234`' emit "$CLEAN"
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...and rig's, which is the other half of the combination" 0 \
+  'rig `main` @ `def5678`' emit "$CLEAN"
+check "drill record: says what ran, as a command that reproduces it" 0 \
+  'bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
+check "drill record: gives the numbers and the wall clock" 0 \
+  "**85/85 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
+check "drill record: carries the per-phase ledger a single total cannot say" 0 \
+  "B 49/49" emit "$CLEAN"
+check "drill record: states the floor and the table's total as two facts" 0 \
+  "Probe floor: 85 expected this run; the table declares 85." emit "$CLEAN"
+# DRILL_EXPECT can raise the floor above the table, and the record must not read
+# that as an error — the operator is deliberately demanding more than the table.
+check "drill record: ...which stays readable when DRILL_EXPECT raises the floor" 0 \
+  "Probe floor: 90 expected this run; the table declares 85." \
+  emit "DRILL_EXPECT=90; $CLEAN"
+# The record is pasted into a file and read months later. Escape codes in it are
+# the peculiar thing this issue found: every script emitted ANSI unconditionally.
+# Emitted here rather than read from the check above, so the assertion owns the
+# file it grades and a reordering cannot quietly grade a stale one.
+emit "$CLEAN; no 'a coloured failure' >/dev/null" >/dev/null
+check "drill record: contains no ANSI, whatever the terminal was" 1 "" \
+  grep -q $'\033' "$RECOUT"
+
+# THE thing the harness must not do. A generated file that reads like a finished
+# one invites exactly the transcription-free confidence the last two waivers
+# were written under, so it says what it is — in rendered text, not an HTML
+# comment nobody sees.
+check "drill record: says out loud that it is a draft, not a record" 0 \
+  "Draft — a generated skeleton" emit "$CLEAN"
+check "drill record: ...and says the judgement is the operator's to write" 0 \
+  "a judgement it must not fabricate" emit "$CLEAN"
+
+# THE #153 regression, in the artifact #153 exists to protect. A run that emitted
+# 76 of 85 and failed none is not "76/76 passed" — and the record is precisely
+# where that fraction used to get written down as proof a release was drilled.
+check "drill record: a short run's denominator is the FLOOR, not what ran" 0 \
+  "**76/85 passed" emit "pass=76; fail=0; PHASE_RAN[C]=0"
+check "drill record: ...and the short phase is named in it" 0 "C 0/9" \
+  emit "pass=76; fail=0; PHASE_RAN[C]=0"
+# A DECLARED skip is the honest half: the floor moves, and the record says which
+# probes were not expected and why — recorded as skipped, never as passing.
+check "drill record: a declared skip lowers the record's denominator" 0 \
+  "**76/76 passed" emit "pass=76; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+check "drill record: ...and the skip is recorded AS a skip, beside the failures" 0 \
+  "- SKIP: no isolation stack" \
+  emit "pass=76; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+check "drill record: ...and the waived probes are visible in the ledger line" 0 \
+  "9 waived by declared skips" \
+  emit "pass=76; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+check "drill record: failures land in it verbatim, uncoloured" 0 "- FAIL: the boundary held open" \
+  emit "pass=84; fail=1; no 'the boundary held open' >/dev/null"
+check "drill record: a clean run says so rather than leaving a bare heading" 0 \
+  "Nothing to report" emit "$CLEAN"
+
+# --- the emitter on the real exit path --------------------------------------
+# Everything above drives record_write directly. None of it proves the DRILL
+# emits, or that emitting cannot disturb the exit status #153 made load-bearing.
+# So run the composed skeleton — the script's actual tail — with a record path.
+run_emit() {   # run_emit <state> — EXIT STATUS is the drill's own
+  rm -f "$RECOUT"
+  bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
+    RECORD='$RECOUT'; REPO=heavy-duty/box; REF=release/9.9.9; KEEP=0
+    RUN_ID=drill-9.9.9-20260721-01
+    $RECSTATE; $1
+    . '$SUMFN'"
+}
+check "drill emit: a clean run writes the record and still EXITS 0" 0 \
+  "record written:" run_emit "$CLEAN"
+check "drill emit: ...and the file on disk is the record" 0 "**85/85 passed, 0 failed.**" \
+  cat "$RECOUT"
+check "drill emit: ...pinned to the run ID the drill announced at install time" 0 \
+  "drill-9.9.9-20260721-01" cat "$RECOUT"
+check "drill emit: ...and the operator is told it is a skeleton to edit" 0 \
+  "it is a SKELETON" run_emit "$CLEAN"
+
+# The record is written AFTER the shortfall verdict, so it carries it. Emitting
+# before that `no` fires would put a clean sweep in the record on a short run,
+# which is the defect #153 closed.
+check "drill emit: a short run EXITS NON-ZERO with a record written" 1 \
+  "record written:" run_emit "pass=76; fail=0; PHASE_RAN[C]=0"
+check "drill emit: ...and the record it wrote carries the shortfall, not a sweep" 0 \
+  "FAIL: the drill ran SHORT:" cat "$RECOUT"
+check "drill emit: ...against the full denominator, 76/85" 0 "**76/85 passed" cat "$RECOUT"
+
+# A record that cannot be written must not be able to turn a clean drill red:
+# the exit status is the floor's verdict on the DRILL, and a full disk has no
+# opinion about whether the trust boundary held. It must not be silent either.
+check "drill emit: an unwritable path cannot change the drill's verdict" 0 "FAILED to write" \
+  bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
+    RECORD='$RECWORK/gone/rec.md'; REPO=o/r; REF=v1; KEEP=0; RUN_ID=x
+    $RECSTATE; $CLEAN
+    . '$SUMFN'"
+# ...and no --emit-record writes nothing at all, which is still the common run.
+check "drill emit: without --emit-record nothing is written" 0 "" \
+  bash -c "rm -f '$RECOUT'; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
+    RECORD=''; $RECSTATE; $CLEAN; . '$SUMFN' >/dev/null; [ ! -e '$RECOUT' ]"
+
+# --- the wiring, so the emitter cannot be left correct-but-unreachable ------
+# The path guard must run before the first phase, for the same reason the
+# DRILL_EXPECT guard does: an operator who typo'd it, or who pointed it at a
+# record they already wrote, must find out before the host gets formatted.
+record_guard_runs_first() {
+  local guard first
+  # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+  guard="$(grep -n '^record_check_path "\$RECORD" || exit 2$' "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+  [ -n "$guard" ] || { echo "the record path guard is defined but never called"; return 1; }
+  first="$(grep -nE '^[[:space:]]*phase [A-Za-z-]+ ' "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+  [ "$guard" -lt "$first" ] || { echo "the guard runs at $guard, after the first phase at $first"; return 1; }
+}
+check "drill: the record path guard is called, and before the first phase" 0 "" \
+  record_guard_runs_first
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill: the run ID is announced during the run, not only at the end" 0 \
+  'inf "run ID: $RUN_ID' grep -F 'run ID:' "$ROOT/drill/drill.sh"
+
+# --- the sg re-exec, EXECUTED ------------------------------------------------
+# The drill re-execs itself into the incus-admin group, and --in-group carries no
+# arguments through, so every setting the second stage needs crosses as
+# environment — the clock especially: $SECONDS in the shell that finishes
+# measures the time since the exec, not the drill's.
+#
+# This was two greps for `DRILL_RECORD=` and `DRILL_T0=` in the exec line. A grep
+# proves a string is present; it cannot see that `sg -c` hands its argument to a
+# SHELL, so the values on that line were shell SOURCE. An apostrophe in a record
+# path — legal, and constrained by no option here — closed the quotes and the
+# remainder reparsed as a command, 127, forty minutes into a run whose startup
+# guard had already blessed the path. So the block is extracted and RUN, against
+# shadow's real `sg` argument shape and a second stage that reports what arrived.
+REEXECFN="$(mktemp)"
+awk '/^# >>> group re-exec/,/^# <<< group re-exec/' "$ROOT/drill/drill.sh" > "$REEXECFN"
+check "drill re-exec: extracted from drill.sh (guards the awk)" 0 "sg incus-admin" \
+  cat "$REEXECFN"
+check "drill re-exec: the extracted block is valid bash" 0 "" bash -n "$REEXECFN"
+
+REXWORK="$(mktemp -d)"
+cat > "$REXWORK/sg" <<'SHIM'
+#!/bin/sh
+# Fake sg, in shadow's shape: `sg <group> -c <string>`, string handed to a shell
+# (newgrp.c: execl(shell, prog, "-c", command)). Deliberately /bin/sh, not bash:
+# the drill does not get to choose which shell /etc/passwd names.
+[ "$1" = incus-admin ] || { echo "sg: wrong group: $1" >&2; exit 2; }
+[ "$2" = -c ] || { echo "sg: expected -c, got: $2" >&2; exit 2; }
+exec /bin/sh -c "$3"
+SHIM
+cat > "$REXWORK/stage2.sh" <<'SHIM'
+#!/usr/bin/env bash
+# The second stage, reduced to "say what you were handed". Delimited, so a value
+# that lost or gained a character is visible rather than merely different.
+printf 'argv=[%s] record=[%s] runid=[%s] ref=[%s] repo=[%s] keep=[%s] t0=[%s] ingroup=[%s]\n' \
+  "${1:-}" "$DRILL_RECORD" "$DRILL_RUN_ID" "$BOX_REF" "$BOX_REPO" \
+  "$DRILL_KEEP" "$DRILL_T0" "$IN_GROUP"
+SHIM
+chmod +x "$REXWORK/sg" "$REXWORK/stage2.sh"
+
+reexec() {   # reexec <record> <run-id> <ref> → what the second stage received
+  # The hostile values arrive as POSITIONAL ARGUMENTS, never interpolated into
+  # this snippet: a test that spliced them into its own bash -c would be making
+  # the mistake it is here to catch.
+  PATH="$REXWORK:$PATH" bash -c "set -u
+    . '$REEXECFN'
+    OWNS=0; REPO=heavy-duty/box; KEEP=0; DRILL_T0=1750000000
+    SELF='$REXWORK/stage2.sh'
+    RECORD=\$1; RUN_ID=\$2; REF=\$3
+    reexec_in_group" _ "$1" "$2" "$3"
+}
+
+check "drill re-exec: the settings arrive on the far side at all" 0 \
+  "record=[drills/0.10.0.md] runid=[drill-0.10.0-20260819-01] ref=[release/0.10.0]" \
+  reexec drills/0.10.0.md drill-0.10.0-20260819-01 release/0.10.0
+check "drill re-exec: ...and --in-group is what the second stage is told it is" 0 \
+  "argv=[--in-group] " reexec drills/0.10.0.md drill-0.10.0-20260819-01 release/0.10.0
+# The clock is the field that cannot be recovered on the far side if it is lost:
+# the record's wall clock is measured from it.
+check "drill re-exec: the clock crosses, because \$SECONDS restarts here" 0 \
+  "t0=[1750000000]" reexec '' '' main
+check "drill re-exec: ...and so does IN_GROUP, or the second stage re-execs forever" 0 \
+  "ingroup=[1]" reexec '' '' main
+
+# THE boundary. An apostrophe is legal in a Unix pathname and in a run ID, and
+# this is the reproduction that was reported: the old line exited 127 here.
+check "drill re-exec: an apostrophe in the record path survives verbatim" 0 \
+  "record=[/tmp/release's record.md]" \
+  reexec "/tmp/release's record.md" "run's-id" main
+check "drill re-exec: ...and one in the run ID, which constrains nothing either" 0 \
+  "runid=[run's-id]" reexec "/tmp/release's record.md" "run's-id" main
+# Not just a crash: the same hole executes whatever it is handed. A value that
+# reaches the far side INTACT is a value that was never parsed on the way.
+# shellcheck disable=SC2016  # the $( ) is the LITERAL text being asserted on
+check "drill re-exec: a command substitution crosses as text, not as a command" 0 \
+  'ref=[$(touch '"$REXWORK"'/pwned)]' \
+  reexec '' '' "\$(touch $REXWORK/pwned)"
+check "drill re-exec: ...and nothing it named was executed" 1 "" test -e "$REXWORK/pwned"
+check "drill re-exec: a semicolon is a character in a ref, not a statement" 0 \
+  "ref=[main; echo owned]" reexec '' '' 'main; echo owned'
+# The path to the script itself is interpolated by nobody either — SELF is
+# readlink's answer, and a drill checked out under a directory with a space in it
+# is not an exotic host.
+SPACED="$REXWORK/a dir/it's here"; mkdir -p "$SPACED"
+cp "$REXWORK/stage2.sh" "$SPACED/stage2.sh"
+check "drill re-exec: the drill's own path may contain a space and an apostrophe" 0 \
+  "argv=[--in-group]" \
+  bash -c "PATH='$REXWORK':\$PATH; set -u
+    . '$REEXECFN'
+    OWNS=0; REPO=o/r; REF=main; KEEP=0; DRILL_T0=1; RECORD=; RUN_ID=
+    SELF=\$1
+    reexec_in_group" _ "$SPACED/stage2.sh"
+
+# --- the settings the re-exec carries, resolved ------------------------------
+# The far side of the exec re-runs this block, so what the second stage BELIEVES
+# is whatever these lines make of the environment it was handed. Extracted and
+# driven with the environment emptied, so a default that only looks right
+# because the outer shell happened to export something is visible.
+SETFN="$(mktemp)"
+awk '/^# >>> drill settings/,/^# <<< drill settings/' "$ROOT/drill/drill.sh" > "$SETFN"
+check "drill settings: extracted from drill.sh (guards the awk)" 0 "--emit-record" \
+  cat "$SETFN"
+check "drill settings: the extracted block is valid bash" 0 "" bash -n "$SETFN"
+settings() {   # settings <env-assignment...> -- <argv...> → the resolved settings
+  # Seeded rather than empty: "${env[@]}" on an empty array is an unbound
+  # variable under this file's set -u on bash before 4.4.
+  local env=(_DRILL_SETTINGS_TEST=1)
+  while [ "$1" != -- ]; do env+=("$1"); shift; done; shift
+  # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+  env -i PATH="$PATH" "${env[@]}" bash -c '. "$0"
+    printf "keep=[%s] record=[%s] runid=[%s] repo=[%s] ref=[%s]\n" \
+      "$KEEP" "$RECORD" "$RUN_ID" "$REPO" "$REF"' "$SETFN" "$@"
+}
+check "drill settings: DRILL_RECORD and DRILL_RUN_ID cross the exec" 0 \
+  "record=[/tmp/r.md] runid=[rid-01]" \
+  settings DRILL_RECORD=/tmp/r.md DRILL_RUN_ID=rid-01 --
+check "drill settings: ...and the flags win where both are given" 0 \
+  "record=[/tmp/flag.md] runid=[flag-01]" \
+  settings DRILL_RECORD=/tmp/env.md DRILL_RUN_ID=env-01 -- \
+    --emit-record /tmp/flag.md --run-id flag-01
+check "drill settings: BOX_REPO and BOX_REF cross too, and default sanely" 0 \
+  "repo=[heavy-duty/box] ref=[main]" settings --
+check "drill settings: --keep-boxes is read from the command line" 0 "keep=[1]" \
+  settings -- --keep-boxes
+check "drill settings: ...and is off when nothing asks for it" 0 "keep=[0]" settings --
+
+# THE half that was broken. KEEP crossed the exec as a bare `KEEP=` and the
+# settings line then reset it to 0 before anything could read it, so
+# --keep-boxes was inert for the whole of the stage that runs the teardown phase
+# and writes the record. The record's invocation field is the first thing to
+# depend on it (#152), and a field that cannot be true is the hand-transcription
+# problem in a new place.
+check "drill settings: ...and DRILL_KEEP is how it crosses the re-exec" 0 "keep=[1]" \
+  settings DRILL_KEEP=1 --
+# A bare KEEP in an operator's environment is not a request to change what the
+# drill asserts — the pin is DRILL_KEEP, like every other one.
+check "drill settings: a stray KEEP in the environment is not the flag" 0 "keep=[0]" \
+  settings KEEP=1 --
+
+# The colour guard. Capturing this output is itself the regression: before #152
+# every verdict carried escape codes into whatever file it was piped to, and the
+# record was then transcribed past them. `grep -q ESC` exits 1 on a clean line.
+verdicts_have_ansi() {   # 0 when the emitted verdicts still carry escape codes
+  env "$@" bash -c "set -u; . '$VERDFN'; ok x; no y; note z; phase A B; skipped() { :; }" \
+    | grep -q "$(printf '\033')"
+}
+check "drill colour: a captured verdict carries no ANSI" 1 "" verdicts_have_ansi
+check "drill colour: ...nor does one under NO_COLOR" 1 "" verdicts_have_ansi NO_COLOR=1
+# NO_COLOR's convention is that being SET is the signal, empty included — the
+# reading that trips implementations testing for a non-empty value.
+check "drill colour: ...including an empty NO_COLOR, per the convention" 1 "" \
+  verdicts_have_ansi NO_COLOR=
+check "drill colour: doctor.sh honours it too" 0 "" \
+  grep -qF 'NO_COLOR+x' "$ROOT/drill/doctor.sh"
+check "drill colour: multiuser.sh honours it too" 0 "" \
+  grep -qF 'NO_COLOR+x' "$ROOT/drill/multiuser.sh"
+
+# ...and the three checks above cannot tell the two halves of the guard apart.
+# They pipe into grep, so stdout is never a terminal and `[ ! -t 1 ]` satisfies
+# all three on its own: deleting the NO_COLOR clause left the suite fully green.
+# A pty is what makes the distinction real — ANSI PRESENT on a terminal is the
+# other half, and nothing asserted it either.
+pty_verdicts() {   # pty_verdicts <env...> — the verdicts, on a real terminal
+  env "$@" script -qec \
+    "bash -c 'set -u; . \"$VERDFN\"; ok x; no y; note z; phase A B'" /dev/null
+}
+pty_has_ansi() { pty_verdicts "$@" | grep -q "$(printf '\033')"; }
+# Every case PINS the variable — the baseline unsets it, the other two set it.
+# Inheriting it is what a suite must not do here: NO_COLOR=1 is a valid thing
+# for a developer or a review host to have set, and a baseline that inherits it
+# asserts "ANSI is present" while being told to suppress ANSI. It then fails in
+# precisely the environment whose behaviour it exists to test, and the green it
+# gives anywhere else is a fact about the caller's shell, not about the guard.
+if command -v script >/dev/null 2>&1 && pty_verdicts -u NO_COLOR >/dev/null 2>&1; then
+  check "drill colour: on a real terminal the verdicts ARE coloured" 0 "" \
+    pty_has_ansi -u NO_COLOR
+  check "drill colour: ...and NO_COLOR alone turns them off, terminal or not" 1 "" \
+    pty_has_ansi NO_COLOR=1
+  # The empty case is the one implementations get wrong, and the only one the
+  # tty test cannot stand in for.
+  check "drill colour: ...including an empty NO_COLOR, on a terminal" 1 "" \
+    pty_has_ansi NO_COLOR=
+else
+  # Recorded as a skip rather than passed silently — the #153 discipline, applied
+  # to this file. script(1) is util-linux and present on the CI runner.
+  echo "SKIP: drill colour: the pty checks need script(1); not usable here"
+fi
+
+# The help window is a line range into this file's own header, so a line added
+# above it silently truncates the help. #153 moved it once already.
+check "drill help: names --emit-record" 0 "--emit-record" bash "$ROOT/drill/drill.sh" --help
+check "drill help: names the run ID" 0 "--run-id" bash "$ROOT/drill/drill.sh" --help
+check "drill help: names NO_COLOR" 0 "NO_COLOR" bash "$ROOT/drill/drill.sh" --help
+# ...and still ends where it used to, on the phase list rather than mid-sentence.
+# What that list SAYS is stale is #154's to fix; that the window ends there is
+# this file's to keep true.
+check "drill help: the window still ends on the phase list" 0 "C. Isolation baseline" \
+  bash "$ROOT/drill/drill.sh" --help
+check "drill: an unknown option is still a usage error" 2 "unknown option" \
+  bash "$ROOT/drill/drill.sh" --frobnicate
+
+# The gate reads drills/<version>.md, so the emitter's own documentation lives
+# beside the record format it produces.
+check "drills/README documents the emitter" 0 "" grep -qF -- '--emit-record' "$ROOT/drills/README.md"
+check "drills/README says the emitted record is a starting point" 0 "" \
+  grep -qiF 'skeleton' "$ROOT/drills/README.md"
+check "drills/README says where the shared run ID comes from" 0 "" \
+  grep -qF -- '--run-id' "$ROOT/drills/README.md"
+
+# Every extracted block and every scratch directory, including the two blocks
+# and the fake-`sg` tree added in round 2 — a stray directory on /tmp holding an
+# executable called `sg` is a worse leftover than a stray file.
+rm -rf "$RECWORK" "$REXWORK"
+rm -f "$LEDGERFN" "$VERDFN" "$SUMFN" "$RECFN" "$REEXECFN" "$SETFN"
 
 # The docs keep the new promises.
 check "help setup-host names BOX_SUBNET" 0 "BOX_SUBNET" "$BOX" help setup-host

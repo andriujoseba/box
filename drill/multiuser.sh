@@ -66,12 +66,21 @@ if [ "$YES" -ne 1 ]; then
   case "$reply" in y|Y|yes|YES|Yes) : ;; *) echo "aborted."; exit 1 ;; esac
 fi
 
+# Colour resolved once, and dropped for NO_COLOR (set, any value) or a stdout
+# that is not a terminal (#152). This run's verdicts are transcribed into a
+# release record — drills/README.md's worked example quotes criterion (m) from
+# exactly here — and escape codes in that transcription are noise.
+if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ]; then
+  C_G=''; C_R=''; C_Y=''; C_B=''; C_0=''
+else
+  C_G=$'\033[32m'; C_R=$'\033[31m'; C_Y=$'\033[33m'; C_B=$'\033[1m'; C_0=$'\033[0m'
+fi
 pass=0; fail=0; findings=(); audit=()
-ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; pass=$((pass+1)); }
-no()   { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fail=$((fail+1)); findings+=("FAIL: $*"); }
-note() { printf '  \033[33mNOTE\033[0m  %s\n' "$*"; findings+=("NOTE: $*"); }
+ok()   { printf '  %sPASS%s  %s\n' "$C_G" "$C_0" "$*"; pass=$((pass+1)); }
+no()   { printf '  %sFAIL%s  %s\n' "$C_R" "$C_0" "$*"; fail=$((fail+1)); findings+=("FAIL: $*"); }
+note() { printf '  %sNOTE%s  %s\n' "$C_Y" "$C_0" "$*"; findings+=("NOTE: $*"); }
 inf()  { printf '        %s\n' "$*"; }
-phase(){ printf '\n\033[1m══ %s\033[0m\n' "$*"; }
+phase(){ printf '\n%s══ %s%s\n' "$C_B" "$*" "$C_0"; }
 aud()  { audit+=("$*"); }
 
 U1=boxdrill1; U2=boxdrill2
