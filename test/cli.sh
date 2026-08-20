@@ -2932,8 +2932,15 @@ cat > "$RECSHIM/git" <<'SHIM'
 #!/usr/bin/env bash
 # Fake git: 'ls-remote <url> <ref>' prints $FAKE_LSREMOTE as the SHA, or nothing
 # (an unknown ref). Anything else exits 1, as a git that cannot would.
+# FAKE_PEELED, when set, makes it answer the way a real remote answers for an
+# ANNOTATED tag: the tag object first, then the commit as refs/tags/<t>^{}.
 [ "${1:-}" = ls-remote ] || exit 1
 [ -n "${FAKE_LSREMOTE:-}" ] || exit 0
+if [ -n "${FAKE_PEELED:-}" ]; then
+  printf '%s\trefs/tags/%s\n'      "$FAKE_LSREMOTE" "${3:-v1}"
+  printf '%s\trefs/tags/%s^{}\n'   "$FAKE_PEELED"   "${3:-v1}"
+  exit 0
+fi
 printf '%s\trefs/heads/%s\n' "$FAKE_LSREMOTE" "${3:-main}"
 SHIM
 cat > "$RECSHIM/curl" <<'SHIM'
@@ -2956,6 +2963,22 @@ check "drill record: ...without asking any remote about it" 0 "[1234567]" \
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: a branch resolves through git ls-remote" 0 "[abcdef1]" \
   shim 'export FAKE_LSREMOTE=abcdef1234567890abcdef1234567890abcdef12; printf "[%s]" "$(record_sha o/r main)"'
+# An ANNOTATED tag answers with the tag OBJECT first and the commit second. The
+# first line is 40 hex characters, so the validator below cannot catch it: the
+# record would name an object nobody can check out, which is the exact failure
+# this function's whole apparatus exists to refuse. --ref v0.10.0 is a shape a
+# release drill plausibly takes.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: an annotated tag records the COMMIT, not the tag object" 0 \
+  "[beef111]" \
+  shim 'export FAKE_LSREMOTE=dead0000dead0000dead0000dead0000dead0000
+        export FAKE_PEELED=beef1111beef1111beef1111beef1111beef1111
+        printf "[%s]" "$(record_sha o/r v0.10.0)"'
+# ...and a lightweight tag or a branch, which send one unpeeled line, are
+# unaffected — the peel is preferred where offered, not required.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: ...while an unpeeled answer is still the first line" 0 "[dead000]" \
+  shim 'export FAKE_LSREMOTE=dead0000dead0000dead0000dead0000dead0000; printf "[%s]" "$(record_sha o/r v1)"'
 # curl is the fallback because a drill host has it by construction (it fetched
 # install.sh with it) and may have no git at all.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
@@ -3150,16 +3173,134 @@ record_guard_runs_first() {
 }
 check "drill: the record path guard is called, and before the first phase" 0 "" \
   record_guard_runs_first
-# The drill re-execs itself into the incus-admin group, and --in-group carries no
-# arguments through. Anything the second stage needs crosses as environment — the
-# clock especially: $SECONDS in the shell that finishes measures the wrong thing.
-check "drill: the record settings cross the sg re-exec" 0 "DRILL_RECORD=" \
-  grep -F 'exec sg incus-admin' "$ROOT/drill/drill.sh"
-check "drill: ...and so does the clock, which restarts at that exec" 0 "DRILL_T0=" \
-  grep -F 'exec sg incus-admin' "$ROOT/drill/drill.sh"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill: the run ID is announced during the run, not only at the end" 0 \
   'inf "run ID: $RUN_ID' grep -F 'run ID:' "$ROOT/drill/drill.sh"
+
+# --- the sg re-exec, EXECUTED ------------------------------------------------
+# The drill re-execs itself into the incus-admin group, and --in-group carries no
+# arguments through, so every setting the second stage needs crosses as
+# environment — the clock especially: $SECONDS in the shell that finishes
+# measures the time since the exec, not the drill's.
+#
+# This was two greps for `DRILL_RECORD=` and `DRILL_T0=` in the exec line. A grep
+# proves a string is present; it cannot see that `sg -c` hands its argument to a
+# SHELL, so the values on that line were shell SOURCE. An apostrophe in a record
+# path — legal, and constrained by no option here — closed the quotes and the
+# remainder reparsed as a command, 127, forty minutes into a run whose startup
+# guard had already blessed the path. So the block is extracted and RUN, against
+# shadow's real `sg` argument shape and a second stage that reports what arrived.
+REEXECFN="$(mktemp)"
+awk '/^# >>> group re-exec/,/^# <<< group re-exec/' "$ROOT/drill/drill.sh" > "$REEXECFN"
+check "drill re-exec: extracted from drill.sh (guards the awk)" 0 "sg incus-admin" \
+  cat "$REEXECFN"
+check "drill re-exec: the extracted block is valid bash" 0 "" bash -n "$REEXECFN"
+
+REXWORK="$(mktemp -d)"
+cat > "$REXWORK/sg" <<'SHIM'
+#!/bin/sh
+# Fake sg, in shadow's shape: `sg <group> -c <string>`, string handed to a shell
+# (newgrp.c: execl(shell, prog, "-c", command)). Deliberately /bin/sh, not bash:
+# the drill does not get to choose which shell /etc/passwd names.
+[ "$1" = incus-admin ] || { echo "sg: wrong group: $1" >&2; exit 2; }
+[ "$2" = -c ] || { echo "sg: expected -c, got: $2" >&2; exit 2; }
+exec /bin/sh -c "$3"
+SHIM
+cat > "$REXWORK/stage2.sh" <<'SHIM'
+#!/usr/bin/env bash
+# The second stage, reduced to "say what you were handed". Delimited, so a value
+# that lost or gained a character is visible rather than merely different.
+printf 'argv=[%s] record=[%s] runid=[%s] ref=[%s] repo=[%s] keep=[%s] t0=[%s] ingroup=[%s]\n' \
+  "${1:-}" "$DRILL_RECORD" "$DRILL_RUN_ID" "$BOX_REF" "$BOX_REPO" \
+  "$DRILL_KEEP" "$DRILL_T0" "$IN_GROUP"
+SHIM
+chmod +x "$REXWORK/sg" "$REXWORK/stage2.sh"
+
+reexec() {   # reexec <record> <run-id> <ref> → what the second stage received
+  # The hostile values arrive as POSITIONAL ARGUMENTS, never interpolated into
+  # this snippet: a test that spliced them into its own bash -c would be making
+  # the mistake it is here to catch.
+  PATH="$REXWORK:$PATH" bash -c "set -u
+    . '$REEXECFN'
+    OWNS=0; REPO=heavy-duty/box; KEEP=0; DRILL_T0=1750000000
+    SELF='$REXWORK/stage2.sh'
+    RECORD=\$1; RUN_ID=\$2; REF=\$3
+    reexec_in_group" _ "$1" "$2" "$3"
+}
+
+check "drill re-exec: the settings arrive on the far side at all" 0 \
+  "record=[drills/0.10.0.md] runid=[drill-0.10.0-20260819-01] ref=[release/0.10.0]" \
+  reexec drills/0.10.0.md drill-0.10.0-20260819-01 release/0.10.0
+check "drill re-exec: ...and --in-group is what the second stage is told it is" 0 \
+  "argv=[--in-group] " reexec drills/0.10.0.md drill-0.10.0-20260819-01 release/0.10.0
+# The clock is the field that cannot be recovered on the far side if it is lost:
+# the record's wall clock is measured from it.
+check "drill re-exec: the clock crosses, because \$SECONDS restarts here" 0 \
+  "t0=[1750000000]" reexec '' '' main
+check "drill re-exec: ...and so does IN_GROUP, or the second stage re-execs forever" 0 \
+  "ingroup=[1]" reexec '' '' main
+
+# THE boundary. An apostrophe is legal in a Unix pathname and in a run ID, and
+# this is the reproduction that was reported: the old line exited 127 here.
+check "drill re-exec: an apostrophe in the record path survives verbatim" 0 \
+  "record=[/tmp/release's record.md]" \
+  reexec "/tmp/release's record.md" "run's-id" main
+check "drill re-exec: ...and one in the run ID, which constrains nothing either" 0 \
+  "runid=[run's-id]" reexec "/tmp/release's record.md" "run's-id" main
+# Not just a crash: the same hole executes whatever it is handed. A value that
+# reaches the far side INTACT is a value that was never parsed on the way.
+# shellcheck disable=SC2016  # the $( ) is the LITERAL text being asserted on
+check "drill re-exec: a command substitution crosses as text, not as a command" 0 \
+  'ref=[$(touch '"$REXWORK"'/pwned)]' \
+  reexec '' '' "\$(touch $REXWORK/pwned)"
+check "drill re-exec: ...and nothing it named was executed" 1 "" test -e "$REXWORK/pwned"
+check "drill re-exec: a semicolon is a character in a ref, not a statement" 0 \
+  "ref=[main; echo owned]" reexec '' '' 'main; echo owned'
+# The path to the script itself is interpolated by nobody either — SELF is
+# readlink's answer, and a drill checked out under a directory with a space in it
+# is not an exotic host.
+SPACED="$REXWORK/a dir/it's here"; mkdir -p "$SPACED"
+cp "$REXWORK/stage2.sh" "$SPACED/stage2.sh"
+check "drill re-exec: the drill's own path may contain a space and an apostrophe" 0 \
+  "argv=[--in-group]" \
+  bash -c "PATH='$REXWORK':\$PATH; set -u
+    . '$REEXECFN'
+    OWNS=0; REPO=o/r; REF=main; KEEP=0; DRILL_T0=1; RECORD=; RUN_ID=
+    SELF=\$1
+    reexec_in_group" _ "$SPACED/stage2.sh"
+
+# --- the settings the re-exec carries, resolved ------------------------------
+# The far side of the exec re-runs this block, so what the second stage BELIEVES
+# is whatever these lines make of the environment it was handed. Extracted and
+# driven with the environment emptied, so a default that only looks right
+# because the outer shell happened to export something is visible.
+SETFN="$(mktemp)"
+awk '/^# >>> drill settings/,/^# <<< drill settings/' "$ROOT/drill/drill.sh" > "$SETFN"
+check "drill settings: extracted from drill.sh (guards the awk)" 0 "--emit-record" \
+  cat "$SETFN"
+check "drill settings: the extracted block is valid bash" 0 "" bash -n "$SETFN"
+settings() {   # settings <env-assignment...> -- <argv...> → the resolved settings
+  # Seeded rather than empty: "${env[@]}" on an empty array is an unbound
+  # variable under this file's set -u on bash before 4.4.
+  local env=(_DRILL_SETTINGS_TEST=1)
+  while [ "$1" != -- ]; do env+=("$1"); shift; done; shift
+  # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+  env -i PATH="$PATH" "${env[@]}" bash -c '. "$0"
+    printf "keep=[%s] record=[%s] runid=[%s] repo=[%s] ref=[%s]\n" \
+      "$KEEP" "$RECORD" "$RUN_ID" "$REPO" "$REF"' "$SETFN" "$@"
+}
+check "drill settings: DRILL_RECORD and DRILL_RUN_ID cross the exec" 0 \
+  "record=[/tmp/r.md] runid=[rid-01]" \
+  settings DRILL_RECORD=/tmp/r.md DRILL_RUN_ID=rid-01 --
+check "drill settings: ...and the flags win where both are given" 0 \
+  "record=[/tmp/flag.md] runid=[flag-01]" \
+  settings DRILL_RECORD=/tmp/env.md DRILL_RUN_ID=env-01 -- \
+    --emit-record /tmp/flag.md --run-id flag-01
+check "drill settings: BOX_REPO and BOX_REF cross too, and default sanely" 0 \
+  "repo=[heavy-duty/box] ref=[main]" settings --
+check "drill settings: --keep-boxes is read from the command line" 0 "keep=[1]" \
+  settings -- --keep-boxes
+check "drill settings: ...and is off when nothing asks for it" 0 "keep=[0]" settings --
 
 # The colour guard. Capturing this output is itself the regression: before #152
 # every verdict carried escape codes into whatever file it was piped to, and the
@@ -3178,6 +3319,30 @@ check "drill colour: doctor.sh honours it too" 0 "" \
   grep -qF 'NO_COLOR+x' "$ROOT/drill/doctor.sh"
 check "drill colour: multiuser.sh honours it too" 0 "" \
   grep -qF 'NO_COLOR+x' "$ROOT/drill/multiuser.sh"
+
+# ...and the three checks above cannot tell the two halves of the guard apart.
+# They pipe into grep, so stdout is never a terminal and `[ ! -t 1 ]` satisfies
+# all three on its own: deleting the NO_COLOR clause left the suite fully green.
+# A pty is what makes the distinction real — ANSI PRESENT on a terminal is the
+# other half, and nothing asserted it either.
+pty_verdicts() {   # pty_verdicts <env...> — the verdicts, on a real terminal
+  env "$@" script -qec \
+    "bash -c 'set -u; . \"$VERDFN\"; ok x; no y; note z; phase A B'" /dev/null
+}
+pty_has_ansi() { pty_verdicts "$@" | grep -q "$(printf '\033')"; }
+if command -v script >/dev/null 2>&1 && pty_verdicts >/dev/null 2>&1; then
+  check "drill colour: on a real terminal the verdicts ARE coloured" 0 "" pty_has_ansi
+  check "drill colour: ...and NO_COLOR alone turns them off, terminal or not" 1 "" \
+    pty_has_ansi NO_COLOR=1
+  # The empty case is the one implementations get wrong, and the only one the
+  # tty test cannot stand in for.
+  check "drill colour: ...including an empty NO_COLOR, on a terminal" 1 "" \
+    pty_has_ansi NO_COLOR=
+else
+  # Recorded as a skip rather than passed silently — the #153 discipline, applied
+  # to this file. script(1) is util-linux and present on the CI runner.
+  echo "SKIP: drill colour: the pty checks need script(1); not usable here"
+fi
 
 # The help window is a line range into this file's own header, so a line added
 # above it silently truncates the help. #153 moved it once already.

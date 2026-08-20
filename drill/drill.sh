@@ -53,14 +53,18 @@
 # false FAILs on the first live run. The pipeline verdict must be grep's alone.
 set -u
 
+# >>> drill settings — extracted by test/cli.sh and DRIVEN, because every one of
+# these has to survive the sg re-exec below and the only proof of that is running
+# it. The rule the block embodies: --in-group carries no arguments through, so
+# EVERY setting the second stage needs arrives as environment, and every one of
+# them reads that environment HERE rather than being clobbered to a default the
+# flag can no longer change.
 REPO="${BOX_REPO:-heavy-duty/box}"
 REF="${BOX_REF:-main}"
 YES=0; KEEP=0
 # The record's two settings survive the sg re-exec below as environment, not as
-# flags: --in-group takes no arguments through, so anything the second stage
-# needs is exported. Both default empty; DRILL_RUN_ID unset means "generate one
-# once the installed VERSION is known", which is not a decision this line can
-# make yet.
+# flags. Both default empty; DRILL_RUN_ID unset means "generate one once the
+# installed VERSION is known", which is not a decision this line can make yet.
 RECORD="${DRILL_RECORD:-}"
 RUN_ID="${DRILL_RUN_ID:-}"
 SELF="$(readlink -f "$0")"
@@ -84,6 +88,46 @@ while [ $# -gt 0 ]; do
     *) echo "drill: unknown option: $1" >&2; exit 2 ;;
   esac
 done
+# <<< drill settings
+
+# >>> group re-exec — extracted by test/cli.sh and DRIVEN against a fake `sg`,
+# because the only thing that can prove a quoting rule is executing it.
+#
+# `sg incus-admin -c <string>` hands its argument to a SHELL, so anything
+# interpolated into that string is shell SOURCE and not data. This line used to
+# read `DRILL_RECORD='$RECORD' … bash '$SELF'`, and an apostrophe — legal in a
+# Unix pathname, legal in a run ID, and constrained by neither --emit-record nor
+# --run-id nor --repo nor --ref — closed the quotes and reparsed the remainder as
+# a command. It exited 127 forty minutes in, on the far side of the startup guard
+# that exists to catch bad record paths early (#152).
+#
+# So nothing is interpolated. `sg` execs with the environment intact, which is
+# how --in-group has always got its settings across; the -c string is now a fixed
+# literal whose only expansion is the child shell's own "$DRILL_SELF". That also
+# means it does not matter which shell `sg` picks out of /etc/passwd — there is
+# no quoting in it to get wrong, and no printf %q whose $'…' output would need a
+# bash on the other side.
+#
+# The clock MUST cross: the shell that writes the record is not the shell that
+# started the run, so a $SECONDS-based duration would measure from this line
+# rather than the drill's start.
+reexec_in_group() {
+  export IN_GROUP=1 \
+         DRILL_OWNS_SETUP="$OWNS" \
+         BOX_REPO="$REPO" \
+         BOX_REF="$REF" \
+         DRILL_KEEP="$KEEP" \
+         DRILL_RECORD="$RECORD" \
+         DRILL_RUN_ID="$RUN_ID" \
+         DRILL_T0="$DRILL_T0" \
+         DRILL_SELF="$SELF"
+  # SC2016: not expanding here is the entire fix. "$DRILL_SELF" is expanded by
+  # the shell sg starts, out of the environment exported above; expanding it in
+  # THIS shell is what the apostrophe defect was.
+  # shellcheck disable=SC2016
+  exec sg incus-admin -c 'bash "$DRILL_SELF" --in-group'
+}
+# <<< group re-exec
 
 # >>> drill verdicts — extracted by test/cli.sh together with the ledger and the
 # summary below, so the run's EXIT PATH can be executed rather than grepped.
@@ -305,10 +349,17 @@ record_sha() {   # <repo> <ref> → the seven-char commit, or 'unresolved'
   # that 404s (a typo'd --repo, a private fork) makes git ask for credentials
   # on the terminal, and an unattended drill would sit at that prompt forever —
   # forty minutes of work waiting on a username nobody is there to type.
+  # An ANNOTATED tag answers with two lines: the tag OBJECT first, then the
+  # commit it points at as `refs/tags/<t>^{}`. Taking line 1 there records a
+  # 40-hex string that is a valid object and not a tree anyone can check out —
+  # and the validator below cannot tell, because it is hex. Prefer the peeled
+  # line when the remote sends one; the first line is right for everything else.
   if command -v git >/dev/null 2>&1; then
     sha="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true timeout -k 5 25 \
              git ls-remote "https://github.com/$repo" "$ref" 2>/dev/null \
-           | awk 'NR == 1 { print substr($1, 1, 7) }')"
+           | awk '$2 ~ /\^\{\}$/ { peeled = substr($1, 1, 7); exit }
+                  NR == 1       { first  = substr($1, 1, 7) }
+                  END           { if (peeled != "") print peeled; else print first }')"
   fi
   if [ -z "$sha" ] && command -v curl >/dev/null 2>&1; then
     sha="$(curl -fsSL -m 20 -H 'Accept: application/vnd.github.sha' \
@@ -612,6 +663,7 @@ EOF
     bash -c "$(curl -fsSL "https://raw.githubusercontent.com/$REPO/$REF/install.sh")" \
     || { echo "install failed"; exit 1; }
   export PATH="$HOME/.local/bin:$PATH"
+KEEP="${KEEP:-0}"
 
   # ASSERT WHAT LANDED — never trust that the install obeyed us.
   # This has bitten twice: once on a lagged CDN tarball, once when a STALE local
@@ -682,16 +734,10 @@ EOF
   # credentials are untouched, so we still have to enter the group ourselves —
   # once, for the remainder of the drill.
   inf "re-entering inside the incus-admin group…"
-  # DRILL_RECORD / DRILL_RUN_ID / DRILL_T0 cross the exec as environment because
-  # --in-group takes no arguments through (the parser breaks on it). The clock
-  # in particular MUST cross: the shell that writes the record is not the shell
-  # that started the run, so a $SECONDS-based duration would report the time
-  # since this line rather than the drill's (#152).
-  exec sg incus-admin -c "IN_GROUP=1 DRILL_OWNS_SETUP='$OWNS' BOX_REPO='$REPO' BOX_REF='$REF' KEEP=$KEEP DRILL_RECORD='$RECORD' DRILL_RUN_ID='$RUN_ID' DRILL_T0='$DRILL_T0' bash '$SELF' --in-group"
+  reexec_in_group
 fi
 
 export PATH="$HOME/.local/bin:$PATH"
-KEEP="${KEEP:-0}"
 
 # PROVE THE INSTALLER'S CONTRACT (#64) — first, before the clean or anything
 # else on this host mutates the stack, and before the drill runs setup-host
