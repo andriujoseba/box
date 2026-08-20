@@ -5154,6 +5154,19 @@ check "multiuser: (p) waits for the lease it disturbed, so (g) measures rather t
   grep -qF 'took its boxnet lease back' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) measures the admin direction too" 0 "" \
   grep -qF "reached no restricted project" "$ROOT/drill/multiuser.sh"
+# ...and measures it on something. Every other mint in that file belongs to a
+# rehearsal user, so without a box of the admin's own root's 'all' enumerates
+# zero and the "reached no restricted project" assertion above passes for a
+# build with no run_fleet() at all — the absence of an action wearing a green
+# tick. These two pin the mint and the positive half that needs it.
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "multiuser: (p) mints a box of the ADMIN's own, so that direction acts on something" 0 "" \
+  grep -qF 'box new --name "$ADMINBOX"' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) asserts the admin's 'all' stopped the admin's own box" 0 "" \
+  grep -qF "stopped the admin's own box" "$ROOT/drill/multiuser.sh"
+# shellcheck disable=SC2016  # ditto
+check "multiuser: (p) cleans that box up rather than leaving it for later phases" 0 "" \
+  grep -qF 'box rm "$ADMINBOX" --force' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) is documented in the criteria list" 0 "" \
   grep -qF 'p. the fleet word' "$ROOT/drill/multiuser.sh"
 
@@ -5161,6 +5174,12 @@ check "multiuser: (p) is documented in the criteria list" 0 "" \
 for v in start down restart; do
   check "box help $v mentions the 'all' form" 0 "all" "$BOX" help "$v"
   check "box help $v shows it in the synopsis" 0 "<box>|all" "$BOX" help "$v"
+  # The mixed-state leniency belongs to the fleet form only — D1 asked for a
+  # passthrough row and that is what 'box restart <box>' is. The paragraph
+  # saying "'restart all' starts a stopped box" sits three lines above, so the
+  # difference is named where it is read rather than left to be discovered.
+  check "box help $v says the single-box restart is not that lenient" 0 "still errors on a box that" \
+    "$BOX" help "$v"
 done
 
 echo "---"
