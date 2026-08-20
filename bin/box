@@ -684,8 +684,12 @@ not exist yet; it never moves one that does. On a host that already has a
 pool, setup-host REFUSES when the variable disagrees with the live source
 (naming both) and re-runs clean when it agrees — moving a pool that already
 carries boxes means moving every box's root device, which is a migration,
-not a re-run. 'box doctor' prints the pool's driver and source, which is
-the answer to "what is filling my root disk".
+not a re-run. Agreement is judged against the source Incus was HANDED: on a
+block device it formats the disk and then records the new filesystem's UUID
+as the pool's source, so '/dev/sdb' re-runs clean rather than refusing at
+its own pool. 'box doctor' prints the pool's driver and source — and, where
+those differ, the device it was built on — which is the answer to "what is
+filling my root disk".
 
 Multi-user hosts: setup-host builds the stack once, for everyone. An admin
 then hands individual users the restricted tier with 'box grant <user>' —

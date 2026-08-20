@@ -178,8 +178,13 @@ variable never moves one that exists. On a host that already has a pool
 setup-host refuses when the variable disagrees with the live source — naming
 both — and re-runs clean when it agrees; moving a pool that already carries
 boxes means moving every box's root device, which is a migration rather than
-a re-run. `box doctor` prints the pool's driver and its source, which is what
-answers "what is filling my root disk" without an Incus lesson.
+a re-run. Agreement is judged against the source Incus was *handed*, not the
+one it reports: on a block device it formats the disk and then records the new
+filesystem's UUID as the pool's source, so `BOX_STORAGE_SOURCE=/dev/sdb`
+re-runs clean forever rather than refusing at its own pool. `box doctor`
+prints the pool's driver and its source — and, where those differ, the device
+it was built on — which is what answers "what is filling my root disk"
+without an Incus lesson.
 
 A host still carrying the pre-0.4.0 stack: `box migrate-host --all-boxes`
 re-homes each legacy box onto `boxnet` (authed state preserved), and
