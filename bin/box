@@ -1502,6 +1502,7 @@ rig_ref() { rig_pin_resolve; printf '%s\n' "$RIG_REF"; }
 render_userdata() {
   local f="$1" repo data ref
   data="$(cat "$f")"
+  data="${data//@BOX_USER@/${T_USER:-}}"
   repo="$(rig_repo)"
   [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
     || die "RIG_REPO must look like owner/repo: $repo"
@@ -1528,6 +1529,7 @@ cmd_templates() {
   echo "TEMPLATES"
   for d in "$root/templates"/*/; do
     t="$(basename "$d")"
+    [ "$t" != tenant ] || continue
     desc="$(grep -m1 '^BOX_DESCRIPTION=' "$d/box.env" 2>/dev/null | cut -d= -f2- | tr -d '"')"
     printf '  %-10s %s\n' "$t" "$desc"
   done
@@ -1926,6 +1928,9 @@ cmd_new() {
   local instance; instance="$(iname_of "$name")"
   if [ -n "$from" ]; then
     [ -z "$template" ] || usage_error "--from clones an existing box; its template rides along (drop --template)"
+    [ -z "$role" ] || usage_error "--from clones an existing box; its tenant role rides along (drop --role)"
+    [ -z "$size" ] || usage_error "--from takes explicit --cpu/--memory/--disk overrides, not --size"
+    [ -z "$user" ] || usage_error "--from clones an existing box; its user rides along (drop --user)"
     local src="${from%%/*}" snap="" srcref
     case "$from" in */*) snap="${from#*/}" ;; esac
     srcref="$(iname_of "$src")"; [ -n "$snap" ] && srcref="$srcref/$snap"
@@ -2077,8 +2082,33 @@ cmd_new() {
       echo "box: will not label the source's state as one. 'box info $name' lists what it did inherit."
     fi
   else
-    local t="${template:-blank}" m extra=()
+    local t m extra=()
+    if [ -n "$template" ]; then
+      case "$template" in
+        blank)
+          usage_error "--template blank is retired — omit --template for a blank box" ;;
+        claude-box|codex-box|grok-box|kimi-box)
+          usage_error "--template $template is retired — use --role $template --size medium" ;;
+      esac
+      [ -z "$role" ] || usage_error "--template and --role choose different mint paths; use one"
+      [ -z "$user" ] || usage_error "--user customizes a runtime --role, not a template"
+      t="$template"
+    elif [ -n "$role" ]; then
+      [[ "$role" =~ ^[a-z][a-z0-9-]*$ ]] \
+        || usage_error "--role must be a plain rig role name (lowercase letters, digits and hyphens): $role"
+      if [ -z "$user" ]; then user="${role%-box}"; fi
+      [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] \
+        || usage_error "--user must be a plain Linux user name (lowercase letters, digits, _ and -): $user"
+      t=tenant
+    else
+      [ -z "$user" ] || usage_error "--user requires --role"
+      t=blank
+    fi
     load_template "$t"
+    if [ -n "$role" ]; then
+      T_USER="$user"
+      T_BOOTSTRAP_ROLE="$role"
+    fi
     m="$(pick_mode)"
     # A server-class template (BOX_REQUIRE_VM, #68) has no weaker mode: the VM
     # is its trust boundary, and its guest runs docker. BOX_NO_CONTAINER_FALLBACK
@@ -2304,7 +2334,7 @@ cmd_new() {
     # idempotent, so a failed or interrupted run is re-runnable as-is.
     if [ -n "$T_BOOTSTRAP_ROLE" ]; then
       echo "box: converging the tenant — rig bootstrap $T_BOOTSTRAP_ROLE (rig's own narration follows)..."
-      if ! incus exec "$instance" -- rig bootstrap "$T_BOOTSTRAP_ROLE" </dev/null; then
+      if ! incus exec "$instance" -- rig bootstrap "$T_BOOTSTRAP_ROLE" --user "$T_USER" </dev/null; then
         echo >&2
         echo "box: rig bootstrap $T_BOOTSTRAP_ROLE FAILED in $name." >&2
         echo "box: the box is up and the seed is intact — the role converges, so re-run it:" >&2
@@ -2314,7 +2344,8 @@ cmd_new() {
         # 'box root' authorizes through the host's Incus socket and needs no
         # sudoers entry in the guest (#176), so it is correct for every
         # template — the two that kept sudo included.
-        echo "  box root $name    # then: rig bootstrap $T_BOOTSTRAP_ROLE" >&2
+        echo "  box root $name    # then: rig bootstrap $T_BOOTSTRAP_ROLE --user $T_USER" >&2
+        echo "  box rm $name      # remove the incomplete mint instead" >&2
         # The mark box cannot take for you (#130), said HERE because here is
         # the only moment the operator is looking. 'bootstrapped' means "box
         # ran the hook and watched it succeed" — a by-hand re-run happens in a
