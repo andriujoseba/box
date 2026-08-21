@@ -409,7 +409,14 @@ if [ "$admin_down_rc" -eq 124 ] || [ "$admin_down_rc" -eq 137 ]; then
   KEEP=1
   exit 1
 elif [ "$admin_down_rc" -ne 0 ]; then
-  no "(p) the admin's 'box down all' failed: $(printf '%s' "$admin_down" | head -1)"
+  no "(p) the admin's 'box down all' failed"
+  printf '%s\n' "$admin_down"
+  # A failed stop can leave the daemon serialising later reads behind the
+  # server-side operation. Preserve the complete reason above and stop here:
+  # probing that damaged state hid Incus's answer behind a second 30-minute
+  # wedge on PR #209's first corrective head.
+  KEEP=1
+  exit 1
 fi
 aa="$(incus --project default list "$ADMINBOX" --format csv --columns s 2>/dev/null | head -n1)"
 a1="$(incus --project "$p1" list mine --format csv --columns s 2>/dev/null | head -n1)"
