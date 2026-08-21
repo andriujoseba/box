@@ -207,8 +207,9 @@ tpl() {
   root="$1" bash -c '
     die() { echo "box: $*" >&2; exit 1; }
     . "$0"; load_template "$1"
-    printf "IMAGE=%s USER=%s REQUIRE_VM=%s AUTOSTART=%s ROLE=%s\n" \
-      "$T_IMAGE" "$T_USER" "$T_REQUIRE_VM" "$T_AUTOSTART" "$T_BOOTSTRAP_ROLE"
+    printf "IMAGE=%s USER=%s REQUIRE_VM=%s NO_FALLBACK=%s AUTOSTART=%s ROLE=%s\n" \
+      "$T_IMAGE" "$T_USER" "$T_REQUIRE_VM" "$T_NO_CONTAINER_FALLBACK" \
+      "$T_AUTOSTART" "$T_BOOTSTRAP_ROLE"
   ' "$TPLFN" "$2"
 }
 
@@ -229,7 +230,14 @@ mkdir -p "$EVILROOT/templates/server"
 printf 'BOX_IMAGE="images:debian/13/cloud"\nBOX_USER="ops"\nBOX_REQUIRE_VM="1"\nBOX_AUTOSTART="1"\n' \
   > "$EVILROOT/templates/server/box.env"
 check "load_template: REQUIRE_VM and AUTOSTART round-trip (accepted + surfaced)" \
-  0 "REQUIRE_VM=1 AUTOSTART=1" tpl "$EVILROOT" server
+  0 "REQUIRE_VM=1 NO_FALLBACK= AUTOSTART=1" tpl "$EVILROOT" server
+# The softer demand is independently parsed. Keeping it a second boolean key
+# means a typo cannot quietly degrade into an unpinned template (#175).
+mkdir -p "$EVILROOT/templates/tenant-vm-default"
+printf 'BOX_IMAGE="images:debian/13/cloud"\nBOX_USER="dev"\nBOX_NO_CONTAINER_FALLBACK="1"\n' \
+  > "$EVILROOT/templates/tenant-vm-default/box.env"
+check "load_template: NO_CONTAINER_FALLBACK round-trips (accepted + surfaced)" \
+  0 "REQUIRE_VM= NO_FALLBACK=1" tpl "$EVILROOT" tenant-vm-default
 # BOX_BOOTSTRAP_ROLE (#81): accepted and surfaced through the real parser —
 # and the value is a rig role NAME, nothing more. It is handed to
 # 'incus exec … rig bootstrap <role>' at mint, so anything shell-shaped in
@@ -392,8 +400,8 @@ for d in "$ROOT"/templates/*/; do
   check "template '$t': box.env sets BOX_USER"  0 "" grep -q '^BOX_USER='  "$d/box.env"
   # #175: every shipped seed defaults to the VM trust boundary. Discovery is
   # deliberate: a new template that forgets the pin must fail this same loop.
-  check "template '$t': refuses silent container fallback (BOX_REQUIRE_VM=1)" \
-    0 "" grep -qx 'BOX_REQUIRE_VM="1"' "$d/box.env"
+  check "template '$t': declares one of the two no-fallback demands (#175)" \
+    0 "" grep -Eq '^BOX_(REQUIRE_VM|NO_CONTAINER_FALLBACK)="1"$' "$d/box.env"
   # cloud-init is passed to Incus verbatim (modulo the two rig pin tokens),
   # so it must exist, declare itself, and be well-formed — a mint is far too
   # late to learn about a typo.
@@ -487,6 +495,13 @@ check "staging-box: demands autostart (BOX_AUTOSTART=1)" 0 "" \
   grep -qx 'BOX_AUTOSTART="1"' "$ROOT/templates/staging-box/box.env"
 check "staging-box: the tenant role is 'staging-box'" 0 "ROLE=staging-box" tpl "$ROOT" staging-box
 check "staging-box: the seed user is rig's default for the role ('ops')" 0 "USER=ops" tpl "$ROOT" staging-box
+# #175's five softer declarations are pinned separately from the discovery
+# guard above: the loop catches a future unpinned seed, while this catches one
+# of today's seeds accidentally inheriting staging-box's stronger policy.
+for t in blank claude-box codex-box grok-box kimi-box; do
+  check "$t: permits only an explicit container override (BOX_NO_CONTAINER_FALLBACK=1)" \
+    0 "" grep -qx 'BOX_NO_CONTAINER_FALLBACK="1"' "$ROOT/templates/$t/box.env"
+done
 # The agent tenants. Two names, not one: the TEMPLATE is named for the rig role
 # it converges — suffix and all, since rig's roles carry a family suffix
 # ('-box' for box tenants, '-server' for fleet machines, rig#76) — while the
@@ -496,7 +511,7 @@ check "staging-box: the seed user is rig's default for the role ('ops')" 0 "USER
 # whose role dies looking for a user that was never created.
 for u in claude codex grok kimi; do
   check "$u-box: role is '$u-box', seed user is '$u' (rig's tenant mapping)" \
-    0 "USER=$u REQUIRE_VM=1 AUTOSTART= ROLE=$u-box" tpl "$ROOT" "$u-box"
+    0 "USER=$u REQUIRE_VM= NO_FALLBACK=1 AUTOSTART= ROLE=$u-box" tpl "$ROOT" "$u-box"
 done
 # blank stays a box with NOBODY home: no rig, no role — same isolation, no
 # tooling, and nothing auto-runs in it.
@@ -507,10 +522,9 @@ check "blank: does not preinstall rig" 1 "" grep -q 'install.sh' "$ROOT/template
 rm -f "$TPLFN"
 
 # The keys' cmd_new half, grepped the way the expose guard is (line order —
-# a daemon-free run cannot mint). The REQUIRE_VM refusal must read the
-# EFFECTIVE mode, i.e. come after pick_mode: refusing on the template key
-# alone would refuse valid VM mints, and a guard deleted in a refactor must
-# not ship green.
+# a daemon-free run cannot mint). Both refusals must read the EFFECTIVE mode,
+# i.e. come after pick_mode: refusing on a template key alone would refuse
+# valid VM mints, and a guard deleted in a refactor must not ship green.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "new: the REQUIRE_VM refusal orders after pick_mode" 0 "" bash -c '
   fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
@@ -520,15 +534,22 @@ check "new: the REQUIRE_VM refusal orders after pick_mode" 0 "" bash -c '
 # Order is necessary, not sufficient: the policy call must receive $m, the
 # effective pick_mode result, rather than the raw requested mode.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "new: the REQUIRE_VM policy receives the effective mode (\$m)" 0 "" bash -c '
+check "new: the template policy receives both demands and effective mode (\$m)" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep "template_mode_allowed" | grep -qF "\"\$T_REQUIRE_VM\" \"\$m\" \"\$mode\""'
+    | grep "template_mode_allowed" \
+    | grep -qF "\"\$T_REQUIRE_VM\" \"\$T_NO_CONTAINER_FALLBACK\" \"\$m\" \"\$mode\""'
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "new: the KVM-less refusal names KVM and the explicit weaker override (#175)" \
+check "new: the soft KVM-less refusal names KVM and the explicit weaker override (#175)" \
   0 "" bash -c '
-  line="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep "no /dev/kvm")"
+  line="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep "defaults to the VM boundary")"
   printf "%s\n" "$line" | grep -q -- "--container" &&
     printf "%s\n" "$line" | grep -q "weaker isolation"'
+# #68 is byte-for-byte behavior, not merely an equivalent refusal. Pin both
+# messages so #175 cannot advertise an override staging-box does not permit.
+check "new: REQUIRE_VM keeps the explicit-container refusal wording (#68)" 0 "" \
+  grep -Fq "usage_error \"template '\$t' requires VM mode — it will not mint as a container (drop --container)\"" "$ROOT/bin/box"
+check "new: REQUIRE_VM keeps the KVM-less refusal wording (#68)" 0 "" \
+  grep -Fq "die \"template '\$t' requires VM mode and this host has no /dev/kvm — mint it on a KVM-capable host (or via --remote)\"" "$ROOT/bin/box"
 check "new: boot.autostart is stamped under the T_AUTOSTART guard" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
     | grep -F "boot.autostart=true" | grep -q "T_AUTOSTART"'
@@ -567,15 +588,56 @@ rm -f "$PICKFN"
 POLICYFN="$(mktemp)"
 sed -n '/^template_mode_allowed() {/,/^}/p' "$ROOT/bin/box" > "$POLICYFN"
 template_mode_case() { bash -c '. "$0"; template_mode_allowed "$@"' "$POLICYFN" "$@"; }
-check "template mode: REQUIRE_VM refuses an automatic container fallback (#175)" \
-  1 "" template_mode_case 1 container auto
+check "template mode: REQUIRE_VM refuses an automatic container fallback (#68)" \
+  1 "" template_mode_case 1 "" container auto
 check "template mode: REQUIRE_VM permits a VM (#175)" \
-  0 "" template_mode_case 1 vm auto
-check "template mode: REQUIRE_VM permits an explicit weaker container (#175)" \
-  0 "" template_mode_case 1 container container
+  0 "" template_mode_case 1 "" vm auto
+check "template mode: REQUIRE_VM refuses explicit --container on either host shape (#68)" \
+  1 "" template_mode_case 1 "" container container
+check "template mode: NO_CONTAINER_FALLBACK refuses an automatic fallback (#175)" \
+  1 "" template_mode_case "" 1 container auto
+check "template mode: NO_CONTAINER_FALLBACK permits a VM (#175)" \
+  0 "" template_mode_case "" 1 vm auto
+check "template mode: NO_CONTAINER_FALLBACK permits explicit --container (#175)" \
+  0 "" template_mode_case "" 1 container container
+check "template mode: REQUIRE_VM wins when both keys are set (#175)" \
+  1 "" template_mode_case 1 1 container container
 check "template mode: an unpinned template keeps the ordinary fallback" \
-  0 "" template_mode_case "" container auto
+  0 "" template_mode_case "" "" container auto
 rm -f "$POLICYFN"
+
+# Compose the real selector and policy for the host/request matrix. The two
+# explicit staging cases look redundant only after the host fact is discarded;
+# keeping both pins criterion 8 to KVM-present and KVM-less hosts separately.
+MATRIXFN="$(mktemp)"
+sed -n '/^pick_mode() {/,/^}/p' "$ROOT/bin/box" > "$MATRIXFN"
+sed -n '/^template_mode_allowed() {/,/^}/p' "$ROOT/bin/box" >> "$MATRIXFN"
+template_request_case() { # require no-fallback requested remote has-kvm
+  bash -c '
+    . "$0"
+    require_vm="$1"; no_fallback="$2"; mode="$3"; remote="$4"
+    if [ "$5" = yes ]; then
+      host_has_kvm() { return 0; }
+    else
+      host_has_kvm() { return 1; }
+    fi
+    effective="$(pick_mode)"
+    template_mode_allowed "$require_vm" "$no_fallback" "$effective" "$mode"
+  ' "$MATRIXFN" "$@"
+}
+check "staging policy: --container is refused on a KVM-capable host (#68, #175)" \
+  1 "" template_request_case 1 "" container "" yes
+check "staging policy: --container is refused on a KVM-less host (#68, #175)" \
+  1 "" template_request_case 1 "" container "" no
+check "staging policy: an automatic KVM-less mint is refused (#68, #175)" \
+  1 "" template_request_case 1 "" auto "" no
+check "agent policy: an automatic KVM-less mint is refused (#175)" \
+  1 "" template_request_case "" 1 auto "" no
+check "agent policy: explicit --container succeeds on a KVM-less host (#175)" \
+  0 "" template_request_case "" 1 container "" no
+check "agent policy: an automatic mint uses a VM when KVM exists (#175)" \
+  0 "" template_request_case "" 1 auto "" yes
+rm -f "$MATRIXFN"
 
 # The auto-run half of #81, grepped the same way (a daemon-free run cannot
 # mint). The seed reaches Incus through render_userdata — the pin point — not

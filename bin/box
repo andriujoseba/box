@@ -296,7 +296,9 @@ holds a key stays operator-run, never auto-run.
   --template <t>         Template to mint from; 'box templates' lists them.
                          A template sets image, user, resources, boot
                          demands (independently: BOX_REQUIRE_VM insists on
-                         VM mode, BOX_AUTOSTART survives host reboots) and
+                         VM mode, BOX_NO_CONTAINER_FALLBACK insists that any
+                         container mode be explicit, BOX_AUTOSTART survives
+                         host reboots) and
                          a creds-free tenant role (BOX_BOOTSTRAP_ROLE) —
                          never the network: every template gets the same
                          isolation.
@@ -309,9 +311,10 @@ holds a key stays operator-run, never auto-run.
                          default wherever /dev/kvm exists; container mode
                          (security.nesting=true) is the fallback for hosts
                          without nested virt — weaker isolation, dev/test only.
-                         A template that requires VM mode refuses the silent
-                         fallback; explicit --container overrides it with
-                         weaker isolation.
+                         BOX_REQUIRE_VM refuses both fallback and an explicit
+                         --container. BOX_NO_CONTAINER_FALLBACK refuses only
+                         fallback; --container remains a deliberate weaker-
+                         isolation override.
 
 Resources resolve most-specific-first: these flags, then BOX_CPU /
 BOX_MEMORY / BOX_DISK environment variables (the scripting form), then the
@@ -1266,8 +1269,10 @@ pick_mode() {
 }
 
 template_mode_allowed() {
-  local require_vm="$1" effective="$2" requested="$3"
-  [ "$require_vm" != 1 ] || [ "$effective" = vm ] || [ "$requested" = container ]
+  local require_vm="$1" no_container_fallback="$2" effective="$3" requested="$4"
+  # The hard demand wins when a future template declares both (#175).
+  if [ "$require_vm" = 1 ]; then [ "$effective" = vm ]; return; fi
+  [ "$no_container_fallback" != 1 ] || [ "$effective" = vm ] || [ "$requested" = container ]
 }
 
 # Five minutes, not three: the first VM launch on a fresh pool unpacks the
@@ -1357,10 +1362,12 @@ reset_identity() {
 # the HOST at mint time. And there is deliberately no key for a network or a
 # security flag — the shared box-net profile is the placement contract, so no
 # template can weaken isolation. 'blank' is a box with nobody home, not a box
-# with the safety off. The two boot demands are for server-class templates
-# (#68): BOX_REQUIRE_VM=1 refuses the container fallback (the VM is the trust
-# boundary, and a server-class guest runs docker), and BOX_AUTOSTART=1 stamps
-# boot.autostart so the box survives a host reboot without an operator.
+# with the safety off. Three boot demands are available: BOX_REQUIRE_VM=1
+# refuses every container mint (the VM is the trust boundary, and a server-
+# class guest runs docker; #68); BOX_NO_CONTAINER_FALLBACK=1 refuses only an
+# automatic fallback while preserving an explicit weaker-isolation override
+# (#175); and BOX_AUTOSTART=1 stamps boot.autostart so the box survives a host
+# reboot without an operator.
 # BOX_BOOTSTRAP_ROLE (#81) names the rig role box auto-runs after mint — the
 # thin-template split: the seed is user + tmux + rig, and what the box BECOMES
 # is 'rig bootstrap <role>'. Only creds-free roles belong here, by contract.
@@ -1370,7 +1377,7 @@ load_template() {
   [ -d "$dir" ] || die "no such template: $t (see 'box templates')"
   [ -f "$dir/box.env" ] || die "template '$t' has no box.env"
   T_DESC=""; T_IMAGE=""; T_USER=""; T_CPU=""; T_MEMORY=""; T_DISK=""
-  T_REQUIRE_VM=""; T_AUTOSTART=""; T_BOOTSTRAP_ROLE=""
+  T_REQUIRE_VM=""; T_NO_CONTAINER_FALLBACK=""; T_AUTOSTART=""; T_BOOTSTRAP_ROLE=""
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|\#*) continue ;; esac
     case "$line" in
@@ -1393,6 +1400,7 @@ load_template() {
       BOX_MEMORY)      T_MEMORY="$val" ;;
       BOX_DISK)        T_DISK="$val" ;;
       BOX_REQUIRE_VM)  T_REQUIRE_VM="$val" ;;
+      BOX_NO_CONTAINER_FALLBACK) T_NO_CONTAINER_FALLBACK="$val" ;;
       BOX_AUTOSTART)   T_AUTOSTART="$val" ;;
       BOX_BOOTSTRAP_ROLE) T_BOOTSTRAP_ROLE="$val" ;;
       *) die "template '$t': unknown key '$key' — a template sets image, user, resources, boot demands and a tenant role, nothing else (there is no key for a network, on purpose)" ;;
@@ -2068,13 +2076,17 @@ cmd_new() {
     local t="${template:-blank}" m extra=()
     load_template "$t"
     m="$(pick_mode)"
-    # A BOX_REQUIRE_VM template defaults to the VM as its trust boundary
-    # (#68, #175). Refuse a silent container fallback, but preserve the
-    # operator's explicit --container escape hatch: weaker isolation remains
-    # available only when somebody asks for it by name. /dev/kvm is a HOST
-    # fact on both tiers, so a grant is never the remedy.
-    if ! template_mode_allowed "$T_REQUIRE_VM" "$m" "$mode"; then
-      die "template '$t' requires VM mode for its untrusted-code boundary, but this host has no /dev/kvm — enable KVM (or pass --container to override with weaker isolation)"
+    # A server-class template (BOX_REQUIRE_VM, #68) has no weaker mode: the VM
+    # is its trust boundary, and its guest runs docker. BOX_NO_CONTAINER_FALLBACK
+    # (#175) makes the weaker mode an explicit operator choice instead. The
+    # stronger requirement wins if a future template declares both. /dev/kvm
+    # is a HOST fact on both tiers, so a grant is never the remedy.
+    if ! template_mode_allowed "$T_REQUIRE_VM" "$T_NO_CONTAINER_FALLBACK" "$m" "$mode"; then
+      if [ "$T_REQUIRE_VM" = 1 ]; then
+        [ "$mode" != container ] || usage_error "template '$t' requires VM mode — it will not mint as a container (drop --container)"
+        die "template '$t' requires VM mode and this host has no /dev/kvm — mint it on a KVM-capable host (or via --remote)"
+      fi
+      die "template '$t' defaults to the VM boundary for untrusted code, but this host has no /dev/kvm — enable KVM, mint via --remote, or pass --container to override with weaker isolation"
     fi
     # shellcheck disable=SC2054 # "root,size=..." is a single incus argument
     # security.secureboot=false: Incus defaults VMs to secureboot ON, and a
