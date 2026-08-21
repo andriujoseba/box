@@ -468,6 +468,78 @@ for d in "$ROOT"/templates/*/; do
     grep -qE '^[[:space:]]*-[[:space:]]+systemctl enable chrony$' "$d/user-data.yaml"
   check "template '$t': starts chrony on clock-owning VM guests (#174)" 0 "" \
     grep -qE '^[[:space:]]*-[[:space:]]+systemd-detect-virt --quiet --container \|\| systemctl start chrony$' "$d/user-data.yaml"
+  # #178: /tmp is RAM and systemd's stock tmp.mount sizes it at 50% of it, so
+  # scratch and the agent's working set compete for the same BOX_MEMORY — and
+  # raising that line raises the scratch ceiling with it, which is why the cap
+  # has to be a fixed figure and not a smaller share. Measured live: a
+  # claude-box at 8GiB carried a 3.9GB /tmp, and heavy-duty/incubator#214 lost
+  # a test suite to ENOSPC on it against scratch left by earlier sessions.
+  # Scoped to the AGENT seeds by the issue's own deliverables, and named
+  # fail-closed in the same shape as the sudo block above: the exceptions are
+  # listed, so a fifth agent seed inherits the requirement without an edit and
+  # a fleet guest that grows a cap goes red until someone lists it deliberately.
+  case "$t" in
+    blank|staging-box)
+      # Self-converging fleet guests. A workload server's /tmp at 1GiB is a
+      # decision #178 did not make, and swap on a guest that is not running
+      # untrusted agent code is a different question; assert the ABSENCE so
+      # the scoping is pinned rather than merely true today.
+      # shellcheck disable=SC2016  # $1 expands in the child shell, by design
+      check "template '$t': no /tmp cap and no swapfile — a fleet guest, outside #178" 1 "" \
+        bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qE "tmp\.mount|swapfile"' _ "$d/user-data.yaml" ;;
+    *)
+      check "template '$t': writes the /tmp size drop-in (#178)" 0 "" \
+        grep -qE '^[[:space:]]*-[[:space:]]+path:[[:space:]]+/etc/systemd/system/tmp\.mount\.d/box-size\.conf$' "$d/user-data.yaml"
+      check "template '$t': caps /tmp at a fixed 1GiB (#178)" 0 "" \
+        grep -qE '^[[:space:]]+Options=.*,size=1G,' "$d/user-data.yaml"
+      # The cap is DECOUPLED from BOX_MEMORY, which is the whole of #178: a
+      # percentage here would restore the coupling while looking like a fix.
+      # shellcheck disable=SC2016  # $1 expands in the child shell, by design
+      check "template '$t': the /tmp cap is a figure, not a share of BOX_MEMORY (#178)" 1 "" \
+        bash -c 'grep -E "^[[:space:]]+Options=" "$1" | grep -q "size=[0-9]*%"' _ "$d/user-data.yaml"
+      # A systemd drop-in REPLACES Options= rather than merging into it, so a
+      # rewrite that forgets a flag silently unhardens /tmp — mode=1777 is what
+      # makes it a shared scratch directory at all, and nosuid/nodev are the
+      # reason a world-writable one is safe. Asserted per flag, so a later size
+      # change touches only the check above.
+      for o in mode=1777 strictatime nosuid nodev nr_inodes=1m; do
+        check "template '$t': the /tmp drop-in keeps stock '$o' (Options= is replaced, #178)" 0 "" \
+          grep -qE "^[[:space:]]+Options=(.*,)?$o(,|\$)" "$d/user-data.yaml"
+      done
+      # The drop-in is read at the next boot; the remount is what makes the cap
+      # true on the mint boot, and it resizes a live tmpfs in place rather than
+      # unmounting /tmp under cloud-init and the rig installer.
+      check "template '$t': applies the /tmp cap on the mint boot too (#178)" 0 "" \
+        grep -qE '^[[:space:]]*-[[:space:]]+test "\$\(findmnt -no FSTYPE /tmp\)" != tmpfs \|\| mount -o remount,size=1G /tmp$' "$d/user-data.yaml"
+      # #178 D2: no swap means every spike is a hard OOM-kill with no grace
+      # period. Four greps, because the four halves fail independently — a
+      # swapfile that is not made, not sized, not activated at boot, or made
+      # in a container that cannot swapon at all.
+      # shellcheck disable=SC2016  # $1 expands in the child shell, by design
+      check "template '$t': provisions a 4GiB swapfile (#178)" 0 "" \
+        bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qF "fallocate -l 4G /swapfile"' _ "$d/user-data.yaml"
+      # shellcheck disable=SC2016
+      check "template '$t': the swapfile is formatted and activated (#178)" 0 "" \
+        bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qF "mkswap /swapfile" &&
+                 grep -v "^[[:space:]]*#" "$1" | grep -qF "swapon /swapfile"' _ "$d/user-data.yaml"
+      # shellcheck disable=SC2016
+      check "template '$t': the swapfile survives a reboot (fstab, #178)" 0 "" \
+        bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qF "/swapfile none swap sw 0 0"' _ "$d/user-data.yaml"
+      # Guarded for chrony's reason, not a different one: a container shares
+      # the host's swap and cannot swapon at all, so an unguarded seed writes
+      # 4GiB of nothing into every container mint — CI's own rehearsal
+      # included — and adds an fstab line that fails at every boot.
+      # shellcheck disable=SC2016
+      check "template '$t': swap provisioning is container-guarded (#174's guard, #178)" 0 "" \
+        bash -c 'grep -v "^[[:space:]]*#" "$1" |
+                 grep -qF "! systemd-detect-virt --quiet --container && [ ! -e /swapfile ]"' _ "$d/user-data.yaml"
+      # #178 D3: the fact belongs next to the line that causes it. box.env
+      # already carries a long explanatory header; this asserts it names both
+      # halves and cites the incident, per CONTRIBUTING's comment rule.
+      # shellcheck disable=SC2016
+      check "template '$t': box.env states the /tmp and swap shape it causes (#178)" 0 "" \
+        bash -c 'grep -qE "^#.*/tmp" "$1" && grep -qE "^#.*swap" "$1" && grep -qF "#178" "$1"' _ "$d/box.env" ;;
+  esac
   # BOX_USER is duplicated into the cloud-init by hand (the file reaches
   # Incus verbatim) — assert the two halves actually agree, per template.
   tuser="$(tpl "$ROOT" "$t" | sed -n 's/.*USER=\([^ ]*\).*/\1/p')"
