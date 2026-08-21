@@ -110,6 +110,37 @@ and box's template suite holds the line with fail-closed absence greps: no
 agent CLI, no docker, no tailscale, no context-file heredocs in any
 template, ever again.
 
+## The agent is unprivileged in its own box (#177)
+
+**The agent is unprivileged inside its own box; the operator enters as root
+from the host.** The four agent seeds create their tenant with no sudoers
+entry, and `box root` — authorized by the host's Incus socket, needing nothing
+from the guest (#176) — is the root path.
+
+The argument is not confidentiality. The agent runs *as* that user, so its
+credentials, its repo and its egress were always reachable without root, and
+the VM is what contains the rest. What root cost is **in-guest mitigation**:
+an egress allowlist enforced in the guest, a read-only mount, `auditd`, a
+required proxy — each is one `sudo` away from being switched off while the
+tenant holds it, so none of them can be added at all, and a box cannot produce
+trustworthy evidence about its own contents when root can rewrite the record.
+The compensation is the seed: it ships what the tenant used to `apt install`
+(measured off a real box's apt history, not guessed), user-local installs
+still work unprivileged, and `box root` covers the rest. A partial sudoers
+allowlist is refused rather than tuned — `apt` alone installs a package that
+owns the box, so it keeps the risk and loses the property.
+
+`blank` and `staging-box` keep sudo, and that is a scoping rather than an
+oversight: they seed guests that converge *themselves* (`sudo rig runner
+install`, `sudo rig bootstrap workload-server`). **Agents lose root;
+self-converging fleet guests keep it.** The contrast with #175's
+`BOX_REQUIRE_VM` is deliberate — the trust boundary is meant to be inherited
+by every future template, sudo is meant not to be, because `blank`'s
+descendants are not all agents. Two traits, two answers. cloud-init is a
+first-boot one-shot, so this reaches **newly minted boxes only**; a running
+agent box keeps the entry it was minted with, and stripping it mid-task is
+the operator's call through `box root`.
+
 ## The box announces itself to the agent
 
 Every coding-agent box gets a global agent-context file

@@ -551,10 +551,12 @@ for u in claude codex grok kimi; do
   # #177 decision 3: sudo left these four seeds, so 'apt install' is no longer
   # the agent's escape hatch and what it reaches for has to ship here or be
   # reachable user-locally. Measured, not guessed — the tenant-initiated
-  # installs in a live claude-box's apt history over three weeks were
-  # shellcheck, a Chromium/Playwright dependency set, and chromium. The
-  # browser stack stays out (task-specific, hundreds of MB per mint, and
-  # 'box root' is its path); shellcheck is small and generic, so it ships.
+  # installs in a live claude-box's apt history over three weeks were a shell
+  # linter, a Chromium/Playwright dependency set, and chromium. The browser
+  # stack stays out (task-specific, hundreds of MB per mint, and 'box root' is
+  # its path); the linter is small and generic, so it ships. NB: a comment
+  # line here must not OPEN with the linter's own name — shellcheck reads
+  # '# shellcheck ...' as a directive and reds the whole file (measured).
   # python3-venv is the second measurement: Debian 13 ships no pip and marks
   # the system environment externally-managed, so 'python3 -m venv' — the
   # user-local Python route the ruling leans on — dies on a bare guest asking

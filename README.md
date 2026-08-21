@@ -306,17 +306,35 @@ template is named for the role it converges,
 [rig#76](https://github.com/heavy-duty/rig/issues/76)). The agent CLI,
 docker, the server posture and the agent-context file all come from that
 role — convergent and idempotent, so the same command re-run later converges
-an *existing* box to a newer spec (`box shell <box>` →
-`sudo rig bootstrap <role>`). The agent-context file carries the
+an *existing* box to a newer spec (`box root <box>` →
+`rig bootstrap <role>`). The agent-context file carries the
 [#80](https://github.com/heavy-duty/box/issues/80) guard — never run
 `box setup-host`, `box teardown-host` or the drill *inside* a box — once,
 from rig's roles, instead of copy-pasted per template.
+
+**The agent is unprivileged inside its own box; the operator enters as root
+from the host** ([#177](https://github.com/heavy-duty/box/issues/177)). The
+four agent seeds create their tenant with no sudoers entry, so `sudo` inside
+a `claude-box` fails — and `box root <box>` still lands as root, authorized by
+the host's Incus socket rather than by anything in the guest
+([#176](https://github.com/heavy-duty/box/issues/176)). Root was never what
+contained the agent; the VM is. What it cost was the ability to add any
+control *inside* a box later — an egress allowlist, a read-only mount, an
+audit trail — each of which is one `sudo` away from being switched off while
+the tenant holds it. The seeds ship the toolchain instead, user-local installs
+(`npm --prefix`, a `venv`, `cargo`, `uv`) still work unprivileged, and
+anything genuinely needing `apt` is one `box root` away. `blank` and
+`staging-box` keep sudo on purpose: they seed guests that converge
+*themselves* (`sudo rig bootstrap workload-server`, `sudo rig runner
+install`). Agents lose root; self-converging fleet guests keep it. This is
+**mint-time only** — cloud-init runs once, so boxes minted before this change
+still have their sudoers entry.
 
 **Anything that joins or admits stays operator-run.** The `staging-box`
 tenant's tailnet workload join holds a pre-auth key, so box only prints it as the
 next step — `box shell <name>`, then `sudo rig bootstrap workload-server` — and
 never sees the key ([#69](https://github.com/heavy-duty/box/issues/69)'s
-split, kept).
+split, kept; that tenant is one of the two that keeps sudo).
 
 **The rig pin point** (`RIG_REPO` / `RIG_REF`). The seeds preinstall rig,
 which inverts the rig→box install edge
