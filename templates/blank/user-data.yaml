@@ -1,6 +1,17 @@
 #cloud-config
 # The whole template: create the user and stop. BOX_USER in box.env must
 # match the name here — the file is passed to Incus verbatim.
+# The 'sudo:' line below is for SELF-CONVERGING FLEET GUESTS and is NOT
+# inherited: a blank box is the seed for a machine whose own first act is
+# 'sudo rig runner install' or 'sudo rig bootstrap <role>' (heavy-duty/infra#34
+# is doing exactly that), so the tenant needs root to converge itself. DROP IT
+# from any agent-family template derived from this one — agents are
+# unprivileged inside their own box, and the operator enters as root from the
+# host with 'box root <box>' (#177, #176). The contrast with #175 is
+# deliberate: BOX_REQUIRE_VM belongs in this seed precisely so every future
+# template inherits a hard trust boundary, while sudo must never be inherited
+# by default, because blank's descendants are not all agents. Two traits, two
+# answers.
 users:
   - name: dev
     shell: /bin/bash
