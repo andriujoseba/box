@@ -32,16 +32,25 @@
 # The summary exists to be piped somewhere; escape codes in a pasted record
 # are noise, and every record before this one was transcribed past them.
 #
-# Four phases:
+# The phases, in the order they PRINT. The letter is the phase's ledger key and
+# the bracketed number is how many verdicts a complete run of it owes (#153):
+#   I. The installer's contract — the stack install.sh left, asserted before
+#      anything else here touches it (#64).                                 [1]
 #   A. Incus semantics — the assumptions box is built on, probed directly.
-#      These were only ever verified against a stub.
-#   B. The box surface — the whole CLI, end to end, including the boundary.
-#   C. Isolation baseline — does the trust boundary actually hold? (#15 section A)
-#   D. Hardening rehearsal — #16's proposed changes, applied live and re-probed
-#      (#15 section B). FAILs here are design vetoes, not code bugs.
+#      These were only ever verified against a stub.                        [8]
+#   B. The box surface — the whole CLI, end to end, including the boundary. [51]
+#   C. Isolation baseline — does the trust boundary actually hold?
+#      (#15 section A)                                                      [9]
+#   E. box expose — a deliberate loopback door, opened and shut (#55).      [7]
+#   D. The isolation contract, STATED — not rehearsed. What it used to apply
+#      live is shipped, so C tests the real stack and a run leaves no
+#      D-phase mutations behind.                                           [0]
+#   M. Migration — the pre-0.4.0 → box transition (host/migrate-host.sh).  [10]
+#   T. Teardown — every box the drill minted is gone, and only those.       [1]
 #
-# Exit 0 = every check passed. The summary ends with a block of audit answers
-# to paste into heavy-duty/claudebox#15.
+# Exit 0 = every check passed AND the run was not short of that floor (#153).
+# The summary ends with the isolation audit answers; --emit-record carries them
+# into the record, which is where they are read now (#154).
 #
 # The file is one long 'probe && ok "..." || no "..."'. ok/no always return 0, so
 # the C-may-run-when-A-is-true trap SC2015 warns about cannot fire here.
@@ -87,11 +96,13 @@ while [ $# -gt 0 ]; do
     --in-group) shift; break ;;                       # internal: see below
     # The help IS the header block above, printed verbatim, so a line added
     # there must move this window with it — 18 → 23 for the five lines the
-    # probe floor added, 23 → 39 for the sixteen the record added. What the
-    # window still cuts off (the phase list is stale and short) is #154's to
-    # fix, not this issue's; test/cli.sh asserts the window still ends on the
-    # phase list rather than mid-sentence, so moving it is checked, not hoped.
-    -h|--help) sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # probe floor added, 23 → 39 for the sixteen the record added, 39 → 53 for
+    # the phase list this window used to cut off in the middle of (#154). It
+    # ended on "C. Isolation baseline" while the list ran to M, which is how a
+    # tool asked directly for its phases answered with four of eight. The whole
+    # list is inside the window now, and test/cli.sh asserts that by driving
+    # --help against the ledger's own keys rather than against a fixed string.
+    -h|--help) sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "drill: unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -157,7 +168,7 @@ no()   { printf '  %sFAIL%s  %s\n' "$C_R" "$C_0" "$*"; fail=$((fail + 1)); findi
 note() { printf '  %sNOTE%s  %s\n' "$C_Y" "$C_0" "$*"; findings+=("NOTE: $*"); }
 inf()  { printf '        %s\n' "$*"; }
 phase(){ PHASE="$1"; shift; printf '\n%s══ %s%s\n' "$C_B" "$*" "$C_0"; }
-aud()  { audit+=("$*"); }                       # an answer for the #15 audit
+aud()  { audit+=("$*"); }                       # a measurement, for the record
 # <<< drill verdicts
 
 # >>> probe ledger (#153) — test/cli.sh extracts this block verbatim; keep it
@@ -511,6 +522,23 @@ record_write() {   # <path> — composes the REC_* set and the ledger into a rec
       printf -- '- %s\n' "${findings[@]}"
     else
       printf -- '- Nothing to report: no FAIL, no NOTE, no declared skip.\n'
+    fi
+    # The audit answers, in the record rather than only on a terminal. They were
+    # printed for a human to paste into an issue that is now closed, in a repo
+    # that has been renamed, while the record they belong in was being written
+    # forty lines away — the same retyping-from-ANSI defect this emitter exists
+    # to close, one field further in (#152, #154).
+    #
+    # Their own section and NOT more findings, for two reasons. They are
+    # measurements, not verdicts: "A4 dns enumeration: LEAKS" is a fact about
+    # the host, and whether it is a failure is what the ok/no beside it already
+    # decided. And folding them into `findings` would mean the list is never
+    # empty on a real run, retiring the "Nothing to report" line that is the
+    # only way a record says a clean run was clean.
+    if [ "${#audit[@]}" -gt 0 ]; then
+      printf '\n## Audit answers\n\n'
+      printf 'What the isolation probes measured, uninterpreted.\n\n'
+      printf -- '- %s\n' "${audit[@]}"
     fi
     printf '\n> **Draft — a generated skeleton, not yet a record.** Every field\n'
     printf '> above is what the harness observed. What each finding MEANS for\n'
@@ -1524,7 +1552,13 @@ fi
 if [ "$KEEP" = 1 ]; then
   phase - "Boxes left up (--keep-boxes)"
   box list
-  inf "note: the D-phase mutations (dns.mode=none, NIC filtering) are still applied"
+  # This line used to warn that "the D-phase mutations (dns.mode=none, NIC
+  # filtering) are still applied". D stopped mutating anything when the
+  # hardening shipped — dns.mode=none is part of the stack setup-host builds,
+  # and the NIC filtering was vetoed and never shipped — so the warning was
+  # spending an operator's caution on a phantom, on a script whose header says
+  # run it on a machine you can format (#154).
+  inf "note: they ride the ordinary shipped stack — the drill leaves no mutations of its own"
   skipped T 1 "--keep-boxes — the boxes stay up on purpose, so teardown is not asserted this run"
 else
   phase T "T. Teardown — every box the drill minted is gone"
@@ -1567,8 +1601,14 @@ if [ "${#findings[@]}" -gt 0 ]; then
   printf '  %s\n' "${findings[@]}"
 fi
 
+# This block was headed "paste this block into heavy-duty/claudebox#15" — an
+# issue that is complete, in a repo that has been renamed. The mechanism outlived
+# its addressee, and it is worth keeping: these are the closest thing the harness
+# has to structured output. So it is retargeted rather than deleted, at the one
+# reader it has left — the record, which --emit-record now carries them into, two
+# lines below (#154).
 if [ "${#audit[@]}" -gt 0 ]; then
-  phase - "#15 audit answers — paste this block into heavy-duty/claudebox#15"
+  phase - "Isolation audit answers — the measurements, as the record carries them"
   printf '  %s\n' "${audit[@]}"
 fi
 
@@ -1597,7 +1637,10 @@ fi
 
 echo
 inf "this host still has Incus, boxnet, the ACL, the profile and the firewall rules"
-inf "(plus, unless re-run: dns.mode=none and NIC filtering from the D phase)."
+# It used to add "(plus, unless re-run: dns.mode=none and NIC filtering from the
+# D phase)" — residue from a rehearsal that no longer runs. dns.mode=none is the
+# shipped stack's, not the drill's, and the NIC filtering was vetoed (#154).
+inf "— the shipped stack, as setup-host.sh leaves it; the drill adds nothing of its own."
 inf "to undo:  box uninstall --purge-host   (or ~/.local/share/box/current/host/teardown-host.sh)"
 [ "$fail" -eq 0 ]
 # <<< ledger summary
