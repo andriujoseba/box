@@ -68,6 +68,32 @@ check "restore without arg2 needs a box first" 2 "usage: box restore" "$BOX" res
 check "unknown flag on list exits 2"           2 "unknown option"   "$BOX" list --nope
 # A flag that needs a value and gets none.
 check "--name with no value exits 2"           2 "--name needs a value" "$BOX" new --name
+# #159's hard cut is resolved before the Incus preflight, so every retired
+# spelling teaches the runtime-role form even on a machine with no daemon.
+check "new: --template blank hard-cuts to the argumentless blank mint (#159)" 2 \
+  "omit --template" "$BOX" new --name work --template blank
+check "new: --template tenant hard-cuts the internal generic seed (#159)" 2 \
+  "omit --template for a blank box, or use --role <role>" \
+  "$BOX" new --name work --template tenant
+for retired in claude-box codex-box grok-box kimi-box; do
+  check "new: --template $retired hard-cuts to --role (#159)" 2 \
+    "--role $retired --size medium" "$BOX" new --name work --template "$retired"
+done
+check "new: malformed runtime roles fail before Incus (#159)" 2 \
+  "--role must be a plain rig role name" "$BOX" new --name work --role 'bad role'
+check "new: --user belongs to a runtime role (#159)" 2 \
+  "--user requires --role" "$BOX" new --name work --user dev
+check "new: --from refuses a fresh runtime role (#159)" 2 \
+  "tenant role rides along" "$BOX" new --name copy --from work --role kimi-box
+check "new: --from keeps named sizes on the fresh-mint side (#159)" 2 \
+  "explicit --cpu/--memory/--disk overrides, not --size" \
+  "$BOX" new --name copy --from work --size medium
+check "new: --template and --role are mutually exclusive (#159)" 2 \
+  "choose different mint paths" "$BOX" new --name work --template staging-box --role kimi-box
+check "new: an unknown named size is refused (#159)" 2 \
+  "--size must be small, medium, or large" "$BOX" new --name work --size huge
+check "help new: publishes the large size row (#159)" 0 "large       8    16GiB  120GiB" \
+  "$BOX" help new
 
 # ---------------------------------------------------------------------------
 # box exec — preserve command argv across the login-environment boundary
@@ -318,9 +344,9 @@ check "the rig pin probe reads the same redirect install.sh does (#83, #150)" 0 
              grep -q "\*/releases/tag/?\*" "$f" || exit 1; done' _ "$ROOT/install.sh" "$RUFN"
 
 SEED="$(mktemp)"
-printf '#cloud-config\nruncmd:\n  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash\n' > "$SEED"
-# A seed that installs no rig — 'blank' is the real one. It carries no token,
-# so it needs no pin, and must therefore need no NETWORK either (#150).
+printf '#cloud-config\nusers:\n  - name: "@BOX_USER@"\nruncmd:\n  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash\n' > "$SEED"
+# A synthetic seed that installs no rig. It carries no token, so it needs no
+# pin and must therefore need no NETWORK either (#150).
 NORIG="$(mktemp)"
 printf '#cloud-config\npackages:\n  - tmux\n' > "$NORIG"
 RIGLOGF="$(mktemp)"
@@ -328,7 +354,7 @@ SEEDFILE="$SEED"   # which fixture rud renders; the no-token case swaps it
 # shellcheck disable=SC2016  # $0/$1 expand in the child shell, by design
 rud() { # rud [VAR=val ...] — render the fixture seed through the real function
   : > "$RIGLOGF"
-  env FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" \
+  env T_USER=fixture FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" \
       FAKE_CURL_LOG="$RIGLOGF" PATH="$RIGSHIM:$PATH" "$@" \
       bash -c 'die() { echo "box: $*" >&2; exit 1; }; . "$0"; render_userdata "$1"' "$RUFN" "$SEEDFILE"
 }
@@ -349,6 +375,8 @@ check "render_userdata: ...and an explicit ref probes nothing (#150)" 1 "" \
   grep -q . "$RIGLOGF"
 check "render_userdata: RIG_REPO/RIG_REF override at mint" 0 "dan-claude-bot/rig/feat/bootstrap-roles/install.sh" \
   rud RIG_REPO=dan-claude-bot/rig RIG_REF=feat/bootstrap-roles
+check "render_userdata: the runtime user reaches cloud-init (#159)" 0 \
+  'name: "custom"' rud T_USER=custom RIG_REF=main
 # The probe follows the repo, so a fork's own releases are what a fork's seeds
 # get — one default, not a hardcoded heavy-duty/rig channel.
 rud RIG_REPO=you/rig >/dev/null 2>&1
@@ -376,19 +404,55 @@ check "render_userdata: a hostile RESOLVED tag dies on the host too (#150)" 1 "R
   rud 'FAKE_REDIRECT=https://github.com/heavy-duty/rig/releases/tag/v1"; rm -rf /; "'
 # shellcheck disable=SC2016  # $0/$1 expand in the child shells, by design
 check "render_userdata: no token survives the render" 1 "" \
-  bash -c 'env FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" PATH="$3:$PATH" bash -c "die() { echo box: \$*; exit 1; }; . \"\$0\"; render_userdata \"\$1\"" "$1" "$2" | grep -q @RIG_' _ "$RUFN" "$SEED" "$RIGSHIM"
+  bash -c 'env T_USER=fixture FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" PATH="$3:$PATH" bash -c "die() { echo box: \$*; exit 1; }; . \"\$0\"; render_userdata \"\$1\"" "$1" "$2" | grep -qE "@(RIG|BOX)_"' _ "$RUFN" "$SEED" "$RIGSHIM"
 check "render_userdata: a shell-shaped RIG_REPO dies on the host" 1 "RIG_REPO" \
   rud 'RIG_REPO=evil"; rm -rf /; "/rig'
 check "render_userdata: a spaced RIG_REF dies on the host" 1 "RIG_REF" \
   rud 'RIG_REF=main plus junk'
 check "render_userdata: a newline-smuggled RIG_REPO dies (whole-string anchor)" 1 "RIG_REPO" \
   rud "RIG_REPO=$(printf 'a/b\nevil')"
+
+# The one generic seed renders into two measured shapes (#159): agent-class
+# when a role is present, and today's blank when it is absent. Drive both
+# through the real renderer, then make every assertion against what cloud-init
+# receives rather than against source-only sentinel blocks.
+ROLESEED="$(mktemp)"; BLANKSEED="$(mktemp)"
+SEEDFILE="$ROOT/templates/tenant/user-data.yaml"
+rud T_USER=claude T_BOOTSTRAP_ROLE=claude-box RIG_REF=main > "$ROLESEED"
+rud T_USER=dev T_BOOTSTRAP_ROLE= RIG_REF=main > "$BLANKSEED"
+check "render_userdata: role sentinels never reach cloud-init (#159)" 1 "" \
+  grep -q '^# box-.*-only-' "$ROLESEED"
+check "render_userdata: blank sentinels never reach cloud-init (#159)" 1 "" \
+  grep -q '^# box-.*-only-' "$BLANKSEED"
+check "render_userdata: source-only comments do not inflate Incus user-data (#159, #209)" 1 "" \
+  sed '1d' "$BLANKSEED" | grep -qE '^[[:space:]]*#'
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "render_userdata: blank payload stays below one 4KiB overflow page (#209)" 0 "" \
+  bash -c '[ "$(wc -c < "$1")" -lt 4096 ]' _ "$BLANKSEED"
+check "generic seed: role tenant has no sudoers entry (#177, #159)" 1 "" \
+  grep -qE '^[[:space:]]*sudo:' "$ROLESEED"
+check "generic seed: blank tenant keeps sudo (#177, #159)" 0 "" \
+  grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$BLANKSEED"
+check "generic seed: blank omits the agent toolchain (#177, #159)" 1 "" \
+  grep -qE '^[[:space:]]*-[[:space:]]+(python3-venv|shellcheck)$' "$BLANKSEED"
+check "generic seed: blank omits the /tmp cap and swap (#178, #159)" 1 "" \
+  grep -qE 'tmp\.mount|swapfile' "$BLANKSEED"
+check "generic seed: blank still preinstalls rig (#159 ruling)" 0 "" \
+  grep -q 'heavy-duty/rig/main/install.sh' "$BLANKSEED"
 rm -f "$RUFN" "$SEED" "$NORIG" "$RIGLOGF"
 
 # YAML well-formedness needs python3 + pyyaml; the CI runner has both. Skip
 # gracefully (never silently) where they are missing.
 HAVE_YAML=0
 command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null && HAVE_YAML=1
+if [ "$HAVE_YAML" = 1 ]; then
+  check "generic seed: rendered role payload is well-formed YAML (#159)" 0 "" \
+    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$ROLESEED"
+  check "generic seed: rendered blank payload is well-formed YAML (#159)" 0 "" \
+    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$BLANKSEED"
+else
+  echo "skip: rendered generic payload YAML well-formedness (no python3+pyyaml here; CI has both)"
+fi
 
 for d in "$ROOT"/templates/*/; do
   t="$(basename "$d")"
@@ -424,13 +488,18 @@ for d in "$ROOT"/templates/*/; do
   # that ships a sudo line goes red in this loop until someone puts it on the
   # list deliberately — the same fail-closed shape as the absence block below.
   case "$t" in
-    blank|staging-box)
+    staging-box)
       # Self-converging fleet guests keep root: their tenant's own first act
       # is 'sudo rig runner install' or 'sudo rig bootstrap workload-server'.
       # Agents lose root, self-converging guests keep it — two traits, two
       # answers, and #175's BOX_REQUIRE_VM is the one meant to be inherited.
       check "template '$t': keeps NOPASSWD sudo — a self-converging seed (#177)" 0 "" \
         grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$d/user-data.yaml" ;;
+    tenant)
+      # The source contains both alternatives; the driven ROLESEED above is
+      # the effective agent shape and is what must be unprivileged.
+      check "template 'tenant': rendered role has NO sudoers entry (#177, #159)" 1 "" \
+        grep -qE '^[[:space:]]*sudo:' "$ROLESEED" ;;
     *)
       # shellcheck disable=SC2016  # $1 expands in the child shell, by design
       check "template '$t': the tenant has NO sudoers entry (#177)" 1 "" \
@@ -540,11 +609,16 @@ for d in "$ROOT"/templates/*/; do
       check "template '$t': box.env states the /tmp and swap shape it causes (#178)" 0 "" \
         bash -c 'grep -qE "^#.*/tmp" "$1" && grep -qE "^#.*swap" "$1" && grep -qF "#178" "$1"' _ "$d/box.env" ;;
   esac
-  # BOX_USER is duplicated into the cloud-init by hand (the file reaches
-  # Incus verbatim) — assert the two halves actually agree, per template.
-  tuser="$(tpl "$ROOT" "$t" | sed -n 's/.*USER=\([^ ]*\).*/\1/p')"
-  check "template '$t': user-data.yaml creates BOX_USER ('$tuser')" 0 "" \
-    grep -qE "^[[:space:]]*-[[:space:]]+name:[[:space:]]+$tuser\$" "$d/user-data.yaml"
+  # Static seeds duplicate BOX_USER into cloud-init. The generic tenant seed
+  # instead carries exactly the token render_userdata replaces at mint.
+  if [ "$t" = tenant ]; then
+    check "template 'tenant': cloud-init carries the runtime user token (#159)" 0 "" \
+      grep -qE '^[[:space:]]*-[[:space:]]+name:[[:space:]]+"@BOX_USER@"$' "$d/user-data.yaml"
+  else
+    tuser="$(tpl "$ROOT" "$t" | sed -n 's/.*USER=\([^ ]*\).*/\1/p')"
+    check "template '$t': user-data.yaml creates BOX_USER ('$tuser')" 0 "" \
+      grep -qE "^[[:space:]]*-[[:space:]]+name:[[:space:]]+$tuser\$" "$d/user-data.yaml"
+  fi
 
   # ------------------------------------------------------------------------
   # The thin-template contract (#81), both halves per template:
@@ -555,7 +629,7 @@ for d in "$ROOT"/templates/*/; do
   # ref's installer and install another ref's tree.
   # ------------------------------------------------------------------------
   trole="$(tpl "$ROOT" "$t" | sed -n 's/.*ROLE=\([^ ]*\).*/\1/p')"
-  if [ -n "$trole" ]; then
+  if [ -n "$trole" ] || [ "$t" = tenant ]; then
     check "template '$t': the seed installs rig (role '$trole')" 0 "" \
       grep -q 'install.sh' "$d/user-data.yaml"
     # shellcheck disable=SC2016  # $1 expands in the child shell, by design
@@ -606,48 +680,22 @@ check "staging-box: the seed user is rig's default for the role ('ops')" 0 "USER
 # #175's five softer declarations are pinned separately from the discovery
 # guard above: the loop catches a future unpinned seed, while this catches one
 # of today's seeds accidentally inheriting staging-box's stronger policy.
-for t in blank claude-box codex-box grok-box kimi-box; do
-  check "$t: permits only an explicit container override (BOX_NO_CONTAINER_FALLBACK=1)" \
-    0 "" grep -qx 'BOX_NO_CONTAINER_FALLBACK="1"' "$ROOT/templates/$t/box.env"
+check "tenant: permits only an explicit container override (BOX_NO_CONTAINER_FALLBACK=1)" \
+  0 "" grep -qx 'BOX_NO_CONTAINER_FALLBACK="1"' "$ROOT/templates/tenant/box.env"
+# The single runtime tenant seed carries the unprivileged agent tool floor;
+# adding another rig role must not add another box directory (#159).
+for p in python3-venv shellcheck; do
+  check "tenant: ships '$p' — an unprivileged role cannot apt-install it (#177)" 0 "" \
+    grep -qE "^[[:space:]]*-[[:space:]]+$p\$" "$ROOT/templates/tenant/user-data.yaml"
 done
-# The agent tenants. Two names, not one: the TEMPLATE is named for the rig role
-# it converges — suffix and all, since rig's roles carry a family suffix
-# ('-box' for box tenants, '-server' for fleet machines, rig#76) — while the
-# seed USER stays the bare agent name, because that is the user rig's role
-# converges and the one 'box shell' lands in. The pairing is the whole point of
-# pinning it here: a rename that moves one and forgets the other mints a box
-# whose role dies looking for a user that was never created.
-for u in claude codex grok kimi; do
-  check "$u-box: role is '$u-box', seed user is '$u' (rig's tenant mapping)" \
-    0 "USER=$u REQUIRE_VM= NO_FALLBACK=1 AUTOSTART= ROLE=$u-box" tpl "$ROOT" "$u-box"
-  # #177 decision 3: sudo left these four seeds, so 'apt install' is no longer
-  # the agent's escape hatch and what it reaches for has to ship here or be
-  # reachable user-locally. Measured, not guessed — the tenant-initiated
-  # installs in a live claude-box's apt history over three weeks were a shell
-  # linter, a Chromium/Playwright dependency set, and chromium. The browser
-  # stack stays out (task-specific, hundreds of MB per mint, and 'box root' is
-  # its path); the linter is small and generic, so it ships. NB: a comment
-  # line here must not OPEN with the linter's own name — shellcheck reads
-  # '# shellcheck ...' as a directive and reds the whole file (measured).
-  # python3-venv is the second measurement: Debian 13 ships no pip and marks
-  # the system environment externally-managed, so 'python3 -m venv' — the
-  # user-local Python route the ruling leans on — dies on a bare guest asking
-  # for root. Without it, losing sudo loses every route to a Python package,
-  # which is the silently-crippled agent this change must not produce.
-  # Pinned to the four AGENT seeds, not to the discovery loop: this is
-  # compensation for the sudo they lost, and blank/staging-box did not lose it.
-  for p in python3-venv shellcheck; do
-    check "$u-box: ships '$p' — the tenant cannot apt-install it now (#177)" 0 "" \
-      grep -qE "^[[:space:]]*-[[:space:]]+$p\$" "$ROOT/templates/$u-box/user-data.yaml"
-  done
+for retired in claude-box codex-box grok-box kimi-box; do
+  check "templates: retired '$retired' seed is deleted (#159)" 1 "" \
+    test -e "$ROOT/templates/$retired"
 done
-# blank stays a box with NOBODY home: no rig, no role — same isolation, no
-# tooling, and nothing auto-runs in it.
-check "blank: names no bootstrap role" 1 "" \
-  grep -q '^BOX_BOOTSTRAP_ROLE=' "$ROOT/templates/blank/box.env"
-check "blank: does not preinstall rig" 1 "" grep -q 'install.sh' "$ROOT/templates/blank/user-data.yaml"
+check "templates: retired 'blank' seed is deleted (#159)" 1 "" \
+  test -e "$ROOT/templates/blank"
 
-rm -f "$TPLFN"
+rm -f "$TPLFN" "$ROLESEED" "$BLANKSEED"
 
 # The keys' cmd_new half, grepped the way the expose guard is (line order —
 # a daemon-free run cannot mint). Both refusals must read the EFFECTIVE mode,
@@ -780,7 +828,7 @@ check "new: cloud-init user-data goes through render_userdata (the rig pin)" 0 "
 check "new: the tenant auto-run orders after the cloud-init wait" 0 "" bash -c '
   fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
   wait="$(printf "%s\n" "$fn" | grep -n "cloud-init status --wait" | head -1 | cut -d: -f1)"
-  run="$(printf "%s\n" "$fn" | grep -n "rig bootstrap" | head -1 | cut -d: -f1)"
+  run="$(printf "%s\n" "$fn" | grep -n "incus exec.*rig bootstrap" | head -1 | cut -d: -f1)"
   [ -n "$wait" ] && [ -n "$run" ] && [ "$wait" -lt "$run" ]'
 check "new: the auto-run sits under the T_BOOTSTRAP_ROLE guard" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
@@ -885,7 +933,7 @@ check "pristine: the mark orders AFTER the cloud-init wait" 0 "" bash -c '
 check "pristine: the mark orders BEFORE the rig bootstrap hook (the moment)" 0 "" bash -c '
   fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
   snap="$(printf "%s\n" "$fn" | grep -n "snapshot_pristine " | head -1 | cut -d: -f1)"
-  run="$(printf "%s\n" "$fn" | grep -n "rig bootstrap \$T_BOOTSTRAP_ROLE" | head -1 | cut -d: -f1)"
+  run="$(printf "%s\n" "$fn" | grep -n "incus exec.*rig bootstrap.*\$T_BOOTSTRAP_ROLE" | head -1 | cut -d: -f1)"
   [ -n "$snap" ] && [ -n "$run" ] && [ "$snap" -lt "$run" ]'
 # NOT under the T_BOOTSTRAP_ROLE guard: a blank box has no rig hook but has
 # the same pristine moment, and "box restore <box> pristine" must mean one
@@ -1054,7 +1102,7 @@ check "bootstrapped: the mark is taken in the fresh-mint branch" 0 "" bash -c '
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "bootstrapped: the mark orders AFTER the rig bootstrap hook" 0 "" bash -c '
   fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
-  run="$(printf "%s\n" "$fn" | grep -Fn "rig bootstrap \"\$T_BOOTSTRAP_ROLE\" </dev/null" | head -1 | cut -d: -f1)"
+  run="$(printf "%s\n" "$fn" | grep -Fn "rig bootstrap \"\$T_BOOTSTRAP_ROLE\" --user \"\$T_USER\"" | head -1 | cut -d: -f1)"
   snap="$(printf "%s\n" "$fn" | grep -n "snapshot_bootstrapped " | head -1 | cut -d: -f1)"
   [ -n "$run" ] && [ -n "$snap" ] && [ "$run" -lt "$snap" ]'
 # GATED on T_BOOTSTRAP_ROLE — the blank-template asymmetry, chosen. A hookless
@@ -1917,6 +1965,11 @@ cat > "$MSHIM/incus" <<'SHIM'
 printf 'incus %s\n' "$*" | tr '\n' ' ' >> "$FAKE_INCUS_LOG"
 printf '\n' >> "$FAKE_INCUS_LOG"
 case "$*" in
+  exec\ *\ --\ rig\ bootstrap\ *)
+    if [ "${FAKE_BOOTSTRAP_FAIL:-0}" = 1 ]; then
+      echo "unknown tenant role: synthetic-box" >&2
+      exit 2
+    fi ;;
   *volatile.base_image) printf '%s\n' "${FAKE_BASE_IMAGE-}" ;;
   # Both 'config get <i> <key>' and its --expanded form (#171 reads what the
   # instance will RUN with, profiles included) — the key is the last word
@@ -1980,7 +2033,7 @@ restamp_has() { grep -F 'config set' "$1" | grep -qE "$2"; }
 # --- the write half: a fresh mint ------------------------------------------
 MLOG="$MWORK/mint.log"
 check "mint: a shimmed 'box new' runs to completion" 0 "ready" \
-  mintbox "$MLOG" new --name w1 --template claude-box --container
+  mintbox "$MLOG" new --name w1 --role claude-box --container
 # Each key on its own check: a single grep for the whole block would go green
 # on a partial stamp, and "which fact was dropped" is the useful failure.
 check "mint: stamps the schema — the stamp's SHAPE, not the box version (#103)" \
@@ -1997,6 +2050,14 @@ check "mint: stamps the mode that was ASKED, not only the outcome (#103)" \
   0 "user.box.mode.asked=container" launchline "$MLOG"
 check "mint: stamps the rig role box will auto-run (#103)" \
   0 "user.box.role=claude-box" launchline "$MLOG"
+check "mint: runtime role defaults to the small cpu row (#159)" 0 "" \
+  launch_has "$MLOG" 'limits\.cpu=2'
+check "mint: runtime role defaults to the small memory row (#159)" 0 "" \
+  launch_has "$MLOG" 'limits\.memory=2GiB'
+check "mint: the role-derived user reaches cloud-init (#159)" 0 "" \
+  launch_has "$MLOG" 'name: "claude"'
+check "mint: the role-derived user reaches rig bootstrap (#159)" 0 "" \
+  grep -qE '^incus exec w1 -- rig bootstrap claude-box --user claude *$' "$MLOG"
 check "mint: stamps which rig converged it — repo (#103)" \
   0 "user.box.rig.repo=heavy-duty/rig" launchline "$MLOG"
 # The ref is the RESOLVED release, not main (#150). The stamp is the only
@@ -2016,6 +2077,84 @@ check "mint: resolves the pin exactly ONCE, in the parent shell (#150)" 0 "1" \
 check "mint: ...and the seed it shipped carries that same resolved ref (#150)" 0 "" \
   launch_has "$MLOG" 'heavy-duty/rig/9\.9\.9/install\.sh'
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+
+# The one surviving dedicated template must keep the values load_template
+# read from its seed. Runtime role/user variables are empty on this path, so
+# this drive catches any later assignment that erases staging's identity and
+# silently skips convergence (#159 review round 1).
+STAGINGLOG="$MWORK/staging-template.log"
+RIG_REF=main mintbox "$STAGINGLOG" new --name staging --template staging-box --vm >/dev/null 2>&1
+check "mint staging: keeps the seed user stamp (#159)" 0 "" \
+  launch_has "$STAGINGLOG" 'user\.box\.user=ops'
+check "mint staging: keeps the seed role stamp (#159)" 0 "" \
+  launch_has "$STAGINGLOG" 'user\.box\.role=staging-box'
+check "mint staging: keeps the server autostart demand (#68, #159)" 0 "" \
+  launch_has "$STAGINGLOG" 'boot\.autostart=true'
+check "mint staging: launches as a VM (#68, #159)" 0 "" \
+  launch_has "$STAGINGLOG" ' --vm '
+check "mint staging: keeps its 60GiB VM root device (#68, #159)" 0 "" \
+  launch_has "$STAGINGLOG" 'root,size=60GiB'
+check "mint staging: disables VM secure boot (#159)" 0 "" \
+  launch_has "$STAGINGLOG" 'security\.secureboot=false'
+staging_bootstrap_once() {
+  [ "$(grep -Ec '^incus exec staging -- rig bootstrap staging-box --user ops *$' "$1")" -eq 1 ]
+}
+check "mint staging: converges its role once as the ops user (#159)" 0 "" \
+  staging_bootstrap_once "$STAGINGLOG"
+
+# The public size table and its two higher precedence rungs, driven through a
+# real shimmed mint. VM mode makes the disk device visible on the launch argv.
+MEDIUMLOG="$MWORK/medium-size.log"
+RIG_REF=main mintbox "$MEDIUMLOG" new --name medium --role claude-box --size medium --vm >/dev/null 2>&1
+check "mint size: medium resolves to 4 cpu (#159)" 0 "" \
+  launch_has "$MEDIUMLOG" 'limits\.cpu=4'
+check "mint size: medium resolves to 8GiB memory (#159)" 0 "" \
+  launch_has "$MEDIUMLOG" 'limits\.memory=8GiB'
+check "mint size: medium resolves to a 60GiB disk (#159)" 0 "" \
+  launch_has "$MEDIUMLOG" 'root,size=60GiB'
+LARGELOG="$MWORK/large-size.log"
+RIG_REF=main mintbox "$LARGELOG" new --name large --role claude-box --size large --vm >/dev/null 2>&1
+check "mint size: large resolves to 8 cpu (#159)" 0 "" \
+  launch_has "$LARGELOG" 'limits\.cpu=8'
+check "mint size: large resolves to 16GiB memory (#159)" 0 "" \
+  launch_has "$LARGELOG" 'limits\.memory=16GiB'
+check "mint size: large resolves to a 120GiB disk (#159)" 0 "" \
+  launch_has "$LARGELOG" 'root,size=120GiB'
+FLAGBEATS="$MWORK/flag-beats-size.log"
+RIG_REF=main mintbox "$FLAGBEATS" new --name flagbeats --role claude-box \
+  --size medium --cpu 2 --container >/dev/null 2>&1
+check "mint size: --cpu beats --size medium (#159)" 0 "" \
+  launch_has "$FLAGBEATS" 'limits\.cpu=2'
+ENVBEATS="$MWORK/env-beats-size.log"
+BOX_CPU=1 RIG_REF=main mintbox "$ENVBEATS" new --name envbeats --role claude-box \
+  --size medium --container >/dev/null 2>&1
+check "mint size: BOX_CPU beats --size medium (#159)" 0 "" \
+  launch_has "$ENVBEATS" 'limits\.cpu=1'
+
+# A role that did not exist when this box tree was built takes the same generic
+# path. The arbitrary name is intentionally absent from bin/box and templates/.
+FUTURELOG="$MWORK/future-role.log"
+RIG_REF=main mintbox "$FUTURELOG" new --name future --role synthetic-box \
+  --user builder --container >/dev/null 2>&1
+check "mint: a post-build rig role needs zero box registry change (#159)" 0 "" \
+  launch_has "$FUTURELOG" 'user\.box\.role=synthetic-box'
+check "mint: --user reaches the instance stamp (#159)" 0 "" \
+  launch_has "$FUTURELOG" 'user\.box\.user=builder'
+check "mint: --user reaches cloud-init (#159)" 0 "" \
+  launch_has "$FUTURELOG" 'name: "builder"'
+check "mint: --user is forwarded to rig bootstrap (#159)" 0 "" \
+  grep -qE '^incus exec future -- rig bootstrap synthetic-box --user builder *$' "$FUTURELOG"
+check "mint: the synthetic role is not hardcoded in box or a seed (#159)" 1 "" \
+  grep -Rqs synthetic-box "$ROOT/bin" "$ROOT/templates"
+
+unknown_role_mint() {
+  FAKE_BOOTSTRAP_FAIL=1 RIG_REF=main \
+    mintbox "$MWORK/unknown-role.log" new --name unknown --role synthetic-box --container
+}
+check "mint: rig's unknown-role refusal is surfaced (#159)" 1 \
+  "unknown tenant role: synthetic-box" unknown_role_mint
+check "mint: an incomplete unknown-role box prints its cleanup (#159)" 1 \
+  "box rm unknown" unknown_role_mint
 
 # --- the identity (#181) ----------------------------------------------------
 # The SHAPE, not merely the presence: a hostname, the box's own name or a
@@ -2040,7 +2179,7 @@ check "mint: ...and box_id() never asks the box for it (#181)" 0 "" \
 # An id every box shares is not an identity. Two mints, two ids.
 MLOG2="$MWORK/mint2.log"
 check "mint: a second mint runs to completion" 0 "ready" \
-  mintbox "$MLOG2" new --name w1b --template claude-box --container
+  mintbox "$MLOG2" new --name w1b --role claude-box --container
 stamped_id() { launchline "$1" | grep -oE 'user\.box\.id=[0-9a-f-]+' | head -1 | cut -d= -f2; }
 mint_ids_differ() {
   local a b; a="$(stamped_id "$1")"; b="$(stamped_id "$2")"
@@ -2055,9 +2194,9 @@ check "mint: two boxes minted on one host get DIFFERENT ids (#181)" 0 "" \
 export SHIM_PREFIX="$NOUUID"
 NOIDLOG="$MWORK/noid.log"
 check "mint: a host with no UUID source still mints (#181)" 0 "ready" \
-  mintbox "$NOIDLOG" new --name w7 --template claude-box --container
+  mintbox "$NOIDLOG" new --name w7 --role claude-box --container
 check "mint: ...and says out loud that this box has no stable id (#181)" 0 "no stable id" \
-  mintbox "$NOIDLOG" new --name w7 --template claude-box --container
+  mintbox "$NOIDLOG" new --name w7 --role claude-box --container
 check "mint: ...stamping no id at all, rather than an empty key (#181)" 1 "" \
   launch_has "$NOIDLOG" 'user\.box\.id'
 unset SHIM_PREFIX
@@ -2069,8 +2208,8 @@ check "mint: stamps the mint time as UTC ISO 8601 (#103)" 0 "" \
 # does not rewrite it, and box_user()/the login hint read two of them.
 check "mint: the pre-existing boundary tag still rides the same line" \
   0 "user.box=1" launchline "$MLOG"
-check "mint: the pre-existing template stamp is untouched" \
-  0 "user.box.template=claude-box" launchline "$MLOG"
+check "mint: stamps the generic tenant seed selected at runtime (#159)" \
+  0 "user.box.template=tenant" launchline "$MLOG"
 check "mint: the pre-existing user stamp is untouched" \
   0 "user.box.user=claude" launchline "$MLOG"
 # Deliberately NOT stamped. limits.* already hold cpu/memory and a duplicate
@@ -2099,23 +2238,24 @@ check "mint: ...and it is a SECOND call, not something the launch could know" 1 
 NOFP="$MWORK/nofp.log"
 FAKE_BASE_IMAGE=""   # exported above; incus does not know what the alias resolved to
 check "mint: an unknowable fingerprint does not fail the mint (#103)" 0 "ready" \
-  mintbox "$NOFP" new --name w4 --template blank --container
+  mintbox "$NOFP" new --name w4 --container
 check "mint: ...and it stamped no empty fingerprint key either (#103)" 1 "" \
   grep -q 'image.fingerprint' "$NOFP"
 FAKE_BASE_IMAGE=deadbeefcafe0123456789
 
-# --- a seed that installs no rig is stamped no rig pin ----------------------
-# 'blank' carries no @RIG_REPO@ token, so there is no rig to name. A stamp
-# that named one anyway would be fiction, which is worse than a missing key.
-check "mint: the 'blank' seed installs no rig, so no rig pin is stamped (#103)" 1 "" \
-  launch_has "$NOFP" 'user\.box\.rig\.'
+# --- blank and role shapes share the generic seed and rig preinstall --------
+# The #159 ruling keeps the rig pin in both shapes; only the role auto-run and
+# agent-class additions are conditional. The stamp therefore records the rig
+# installed into an argumentless blank, while the role key remains absent.
+check "mint: argumentless blank stamps the preinstalled rig repo (#103, #159)" 0 "" \
+  launch_has "$NOFP" 'user\.box\.rig\.repo=heavy-duty/rig'
+check "mint: argumentless blank stamps the resolved rig ref (#103, #159)" 0 "" \
+  launch_has "$NOFP" 'user\.box\.rig\.ref=9.9.9'
 check "mint: ...and no role either — blank names none (#103)" 1 "" \
   launch_has "$NOFP" 'user\.box\.role'
-# ...and it asked the network NOTHING. A pin nobody uses is a pin nobody needs
-# to resolve, so 'blank' still mints on a host that cannot reach github.com —
-# the failure mode #150's default would otherwise have invented (#150).
-check "mint: the 'blank' seed resolves no pin, so it probes nothing (#150)" 1 "" \
-  grep -q . "$NOFP.curl"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "mint: argumentless blank resolves its shared rig pin once (#150, #159)" 0 "1" \
+  bash -c 'grep -c "releases/latest" "$1"' _ "$NOFP.curl"
 
 # --- the rig pin has ONE definition, and both readers get the same answer ---
 # The seed substitutes it and the stamp records it. Two spellings of the same
@@ -2124,7 +2264,7 @@ check "mint: the 'blank' seed resolves no pin, so it probes nothing (#150)" 1 ""
 # override, so the two are compared on a value neither can have hardcoded.
 RIGLOG="$MWORK/rig.log"
 export RIG_REPO=someone/rig RIG_REF=probe-ref
-mintbox "$RIGLOG" new --name w5 --template claude-box --container >/dev/null 2>&1
+mintbox "$RIGLOG" new --name w5 --role claude-box --container >/dev/null 2>&1
 unset RIG_REPO RIG_REF
 check "mint: the rig pin override reaches the STAMP (#103)" 0 "" \
   launch_has "$RIGLOG" 'user\.box\.rig\.repo=someone/rig'
@@ -2144,7 +2284,7 @@ check "mint: ...and a pinned mint resolves nothing, so it probes nothing (#150)"
 NORESOLVE="$MWORK/noresolve.log"
 export FAKE_CURL_RC=6
 check "mint: an unresolvable rig pin FAILS the mint (#150)" 1 "could not resolve rig's latest release" \
-  mintbox "$NORESOLVE" new --name w6 --template claude-box --container
+  mintbox "$NORESOLVE" new --name w6 --role claude-box --container
 unset FAKE_CURL_RC
 check "mint: ...and nothing was launched — the refusal came first (#150)" 1 "" \
   grep -q '^incus launch ' "$NORESOLVE"
@@ -2485,7 +2625,7 @@ check "clone: narrates the resources it actually carries (#171 D6)" \
 SIZEDMINT="$MWORK/sized-mint.log"
 check "mint: narrates them too, from the same helper (#171 D6)" \
   0 "resources, read back from incus: cpu=6 mem=12GiB disk=80GiB" \
-  mintbox "$SIZEDMINT" new --name w14 --template claude-box --container
+  mintbox "$SIZEDMINT" new --name w14 --role claude-box --container
 # One helper, one call site, after the branches rejoin — so the parity is
 # structural and a third way of minting cannot ship silent about its sizing.
 # shellcheck disable=SC2016  # the $-strings are literals inside bash -c
@@ -2519,13 +2659,13 @@ check "clone: an unreadable read-back says so rather than going quiet (#171 D6)"
   mintbox "$MWORK/blind-clone.log" new --name w12 --from work/authed
 check "mint: ...and the mint path degrades the same way (#171 D6)" \
   0 "incus reported no resource figures" \
-  mintbox "$MWORK/blind-mint.log" new --name w15 --template claude-box --container
+  mintbox "$MWORK/blind-mint.log" new --name w15 --role claude-box --container
 
 # D5 — the post-copy handle, where box does print one, carries what incus
 # actually does. 'box new --help' is that place now: the D3 refusal prints no
 # command at all, so the handle lives here and nowhere else.
-check "new --help: says the flags work on --from (#171 D1)" 0 \
-  "The flags work on --from too" "$BOX" help new
+check "new --help: says explicit resource flags work on --from (#171 D1)" 0 \
+  "explicit --cpu/--memory/--disk flags" "$BOX" help new
 check "new --help: ...that they ride the copy rather than resize (#171 D1)" 0 \
   "no resize, no restart" "$BOX" help new
 check "new --help: ...and carries --disk's precondition (#171 D2)" 0 \
@@ -6467,6 +6607,26 @@ check "multiuser: (p) mints a box of the ADMIN's own, so that direction acts on 
   grep -qF 'box new --name "$ADMINBOX"' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) asserts the admin's 'all' stopped the admin's own box" 0 "" \
   grep -qF "stopped the admin's own box" "$ROOT/drill/multiuser.sh"
+# #209 reached this exact call and then left Actions with no verdict for 30
+# minutes, until the job ceiling cancelled every later criterion. The real
+# daemon still decides pass/fail; this bound makes a wedged client a named
+# failure and keeps the cleanup/reporting path reachable.
+check "multiuser: (p) time-boxes the admin fleet stop below the job ceiling" 0 "" \
+  grep -qF 'timeout -k 5 60 box down all' "$ROOT/drill/multiuser.sh"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "multiuser: (p) captures the bounded stop without a descendant-held pipe" 0 "" \
+  grep -qF 'box down all >"$capture" 2>&1' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) records daemon operations when that stop wedges" 0 "" \
+  grep -qF 'incus operation list --format csv' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) records the daemon journal after a prompt stop failure" 0 "" \
+  grep -qF "journalctl -u incus.service --since '-2 minutes'" "$ROOT/drill/multiuser.sh"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "multiuser: (p) force-stops only as post-failure recovery" 0 "" \
+  grep -qF 'incus stop "$b" --force' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) prints the captured wedge evidence before exiting" 0 "" \
+  grep -qF "printf '%s\\n' \"\$admin_down\"" "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) does not re-wedge in cleanup after that evidence" 0 "" \
+  grep -qF 'KEEP=1' "$ROOT/drill/multiuser.sh"
 # shellcheck disable=SC2016  # ditto
 check "multiuser: (p) cleans that box up rather than leaving it for later phases" 0 "" \
   grep -qF 'box rm "$ADMINBOX" --force' "$ROOT/drill/multiuser.sh"

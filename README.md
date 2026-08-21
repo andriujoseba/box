@@ -1,11 +1,11 @@
 # box
 
 **Headless, trust-less, throwaway dev VMs.** One command mints a fresh,
-network-isolated Incus box from a **template**; the coding-agent templates
-hand you a CLI agent on Debian 13 — `claude-box` (Claude Code), `codex-box`
-(OpenAI Codex), `grok-box` (xAI Grok), `kimi-box` (Moonshot Kimi) — **box mints, [rig](https://github.com/heavy-duty/rig)
-converges**: the template is a thin seed, and the agent tooling lands via a
-creds-free `rig bootstrap` role auto-run at mint
+network-isolated Incus box for any runtime tenant role known to
+[rig](https://github.com/heavy-duty/rig). `claude-box`, `codex-box`,
+`grok-box`, and `kimi-box` are role values, not box templates: **box mints,
+rig converges**. Box renders one thin tenant seed and the agent tooling lands
+through a creds-free `rig bootstrap` role auto-run at mint
 ([#81](https://github.com/heavy-duty/box/issues/81)). The box is the product
 — you log in and work; destroying it loses nothing you didn't push.
 
@@ -15,10 +15,11 @@ interactively _inside_ the box. The tool never stores or injects a secret. That
 means there's nothing shared or committed, so it's safe for multiple operators
 out of the box.
 
-**Templates set what's in the box, never what it can reach.** A template is
-image + user + resources + cloud-init; the network and every security flag
-live in a shared profile no template can touch, so `blank` is a box with
-nobody home — not a box with the safety off.
+**Roles say what a tenant becomes; sizes say what it gets.** `--role` is
+runtime data, `--size small|medium|large` is a resource bundle, and explicit
+resource flags win. The network and every security flag live in a shared
+profile neither can touch, so the argumentless blank box has nobody home —
+not a box with the safety off.
 
 **The tool knows nothing about your projects.** You just `git clone` inside a
 box. A repo can ship an optional [`.box/`](docs/box-recipe.md)
@@ -259,14 +260,14 @@ VM boundary itself is proven on real hardware, like the rest of the drill).
 ## Quick start
 
 ```sh
-box new --name work --template claude-box   # a creds-free coding-agent box (~10 min cold)
-box shell work                              # enter as the template's user
+box new --name work --role claude-box --size medium  # creds-free agent (~10 min cold)
+box shell work                                      # enter as the role-derived user
 ```
 
-Pick whichever coding-agent template you like — `claude-box`, `codex-box`,
-`grok-box`, `kimi-box` — or `blank` for none. Inside the box, authenticate as needed. The
-`claude-box` template looks like this; the others follow the same shape with
-their own login step:
+Pick whichever rig tenant role you like — `claude-box`, `codex-box`,
+`grok-box`, `kimi-box`, or one added after this box release. Omit `--role`
+for a blank box. Inside the box, authenticate as needed; a Claude role looks
+like this, and other agents use their own login step:
 
 ```sh
 claude                           # then run /login — copy the URL (press c), open it
@@ -276,34 +277,26 @@ git clone https://github.com/you/project && cd project
 claude                           # if the repo has .box/, the agent reads it and sets up
 ```
 
-## Templates
+## Runtime roles, sizes, and seeds
 
-No coding agent is special — each is one template among several, and adding
-another is just another directory. What ships today:
+Coding agents are runtime roles. Adding one belongs in rig/rig-templates and
+requires zero box changes or box release. The public mint shapes are:
 
-| Template      | What it becomes                                                    |
-| ------------- | ------------------------------------------------------------------ |
-| `blank`       | Bare Debian 13 — same isolation, no tooling. The default.          |
-| `claude-box`  | Claude Code, creds-free — where this project started               |
-| `codex-box`   | OpenAI Codex CLI, creds-free                                       |
-| `grok-box`    | xAI Grok CLI, creds-free                                           |
-| `kimi-box`    | Moonshot Kimi CLI, creds-free                                      |
-| `staging-box` | Server-class: docker + sshd hardening via rig; VM-only, autostarts |
+| Mint shape | Meaning |
+|---|---|
+| no `--role` | Generic blank shape: sudo kept, rig preinstalled, no agent toolchain or auto-run |
+| `--role <role>` | Generic unprivileged tenant seed, then that creds-free rig role |
+| `--template staging-box` | Dedicated server seed: VM-only and autostarting |
 
-**Templates are thin seeds; rig does the becoming**
-([#81](https://github.com/heavy-duty/box/issues/81)). A template is a
-directory under `templates/`: a `box.env` (image, user, resources, boot
-demands, tenant role — parsed against a strict allowlist, never sourced) and
-a `user-data.yaml` (cloud-init, passed to Incus verbatim except the two rig
-pin tokens below). The seed is deliberately small — the tenant user, tmux,
-and [rig](https://github.com/heavy-duty/rig) preinstalled, nothing that
-joins a tailnet or admits credentials — and after cloud-init settles, box
-auto-runs the template's **creds-free** tenant role inside the guest
-(`rig bootstrap claude-box` / `codex-box` / `grok-box` / `kimi-box` / `staging-box`,
-[rig#31](https://github.com/heavy-duty/rig/issues/31); the roles carry a
-family suffix — `-box` for box tenants, `-server` for fleet machines — and a
-template is named for the role it converges,
-[rig#76](https://github.com/heavy-duty/rig/issues/76)). The agent CLI,
+**Seeds are thin; rig does the becoming**
+([#81](https://github.com/heavy-duty/box/issues/81)). The generic tenant seed
+contains the runtime user, tmux, and rig, with nothing that joins a tailnet or
+admits credentials. Box derives the user by stripping a trailing `-box`, or
+uses `--user`, renders that user into cloud-init, and after cloud-init runs
+`rig bootstrap <role> --user <user>` ([rig#31](https://github.com/heavy-duty/rig/issues/31)).
+Box deliberately does not validate rig's role registry: an unknown role dies
+loudly at converge, leaves the incomplete box inspectable, and prints `box rm`
+as the cleanup. The agent CLI,
 docker, the server posture and the agent-context file all come from that
 role — convergent and idempotent, so the same command re-run later converges
 an *existing* box to a newer spec (`box root <box>` →
@@ -312,10 +305,16 @@ an *existing* box to a newer spec (`box root <box>` →
 `box setup-host`, `box teardown-host` or the drill *inside* a box — once,
 from rig's roles, instead of copy-pasted per template.
 
+The seed has exactly one conditional axis. With `--role`, it removes tenant
+sudo, adds `python3-venv` and `shellcheck`, caps `/tmp` at 1GiB, provisions a
+4GiB swapfile in VM mode, and sets the role for box to converge. With no role,
+it keeps sudo and omits those agent-only additions and the auto-run. Both
+shapes install tmux, curl, ca-certificates, chrony, and the pinned rig tree.
+
 **The agent is unprivileged inside its own box; the operator enters as root
 from the host** ([#177](https://github.com/heavy-duty/box/issues/177)). The
-four agent seeds create their tenant with no sudoers entry, so `sudo` inside
-a `claude-box` fails — and `box root <box>` still lands as root, authorized by
+generic tenant seed creates the runtime user with no sudoers entry, so `sudo`
+inside an agent box fails — and `box root <box>` still lands as root, authorized by
 the host's Incus socket rather than by anything in the guest
 ([#176](https://github.com/heavy-duty/box/issues/176)). Root was never what
 contained the agent; the VM is. What it cost was the ability to add any
@@ -346,11 +345,11 @@ carries `@RIG_REPO@`/`@RIG_REF@` tokens that box resolves at mint from the
 environment:
 
 ```sh
-box new --name work --template claude-box              # heavy-duty/rig @ its LATEST RELEASE
-RIG_REF=0.3.0 box new --name pinned --template claude-box   # a rig release you pick
-RIG_REF=main  box new --name tip    --template claude-box   # rig's development tip
+box new --name work --role claude-box                  # heavy-duty/rig @ its LATEST RELEASE
+RIG_REF=0.3.0 box new --name pinned --role claude-box   # a rig release you pick
+RIG_REF=main box new --name tip --role claude-box       # rig's development tip
 RIG_REPO=you/rig RIG_REF=my-branch \
-  box new --name trial --template claude-box           # a rig branch under review
+  box new --name trial --role brand-new-box             # a role branch under review
 ```
 
 **`RIG_REF` unset means rig's latest release**, resolved at mint off
@@ -365,27 +364,42 @@ of [rig#32](https://github.com/heavy-duty/rig/issues/32) /
 
 A mint that cannot resolve the pin **fails, and says so** — falling back to
 `main` is the defect that rule exists to close, and doing it quietly would
-hide it exactly where nobody looks. Pass `RIG_REF` yourself to move on. Only
-a seed that actually installs rig resolves anything: `blank` carries no pin
-token, so it mints on a host that cannot reach github.com at all.
+hide it exactly where nobody looks. Pass `RIG_REF` yourself to move on. The
+generic seed installs rig in both its blank and role shapes, so both resolve
+the pin; a dedicated seed without a pin token performs no such lookup.
 
 The pin covers both the installer fetched and the tree it installs, and the
 values — the resolved tag included, since it arrives off an HTTP header — are
 allowlist-validated on the host before they touch the YAML.
 
 ```sh
-box templates                    # list what this install can mint
-box new --name scratch           # the DEFAULT template is blank: bare Debian,
-                                 #   same isolation, nobody home — no rig, no role
+box templates                    # list dedicated non-agent templates
+box new --name scratch           # the DEFAULT is blank: bare Debian,
+                                 #   same isolation, no role auto-run
 ```
 
-A template **cannot** name a network, a profile, or a `security.*` flag —
+A seed **cannot** name a network, a profile, or a `security.*` flag —
 there is no key for them. Every box launches with the shared `box-net`
 profile (the isolated NIC + root disk), so every template gets the identical
-trust boundary. Resources come from the template's `box.env`, overridable at
-mint time — inline (`--cpu 2 --memory 3GiB --disk 20GiB`) or via
+trust boundary. `--size small|medium|large` selects a resource bundle (small
+is the default), overridable at mint time — inline
+(`--cpu 2 --memory 3GiB --disk 20GiB`) or via
 `BOX_CPU` / `BOX_MEMORY` / `BOX_DISK` environment variables (the scripting
-form; flags win). The template's identity (name, user) is stamped onto the instance,
+form). Resolution is `--cpu/--memory/--disk` > `BOX_*` environment >
+`--size` > seed/default values:
+
+| Size | CPU | Memory | Disk |
+|---|---:|---:|---:|
+| `small` | 2 | 2GiB | 20GiB |
+| `medium` | 4 | 8GiB | 60GiB |
+| `large` | 8 | 16GiB | 120GiB |
+
+The argumentless and runtime-role paths default to `small`. The dedicated
+`staging-box` seed keeps its existing medium resources when no size is given.
+Named sizes apply to fresh mints; `--from` clones keep the explicit
+`--cpu`/`--memory`/`--disk` override surface.
+The selected seed,
+runtime role, and resolved user are stamped onto the instance,
 so `shell`, `exec` and `tmux` land in the right user — and a clone still
 knows, because `incus copy` carries the metadata.
 
@@ -542,11 +556,11 @@ the door is per-port, punched and removable at runtime.
 ## Commands
 
 ```
-box new --name <box> [--template <t>] [--from <src>[/<snap>]] [--cpu <n>] [--memory <size>] [--disk <size>] [--vm|--container]
-box templates                # list the templates this install can mint
+box new --name <box> [--role <role>] [--size small|medium|large] [--user <user>] [--from <src>[/<snap>]] [--cpu <n>] [--memory <size>] [--disk <size>] [--vm|--container]
+box templates                # list dedicated non-agent templates
 box list                     # list your boxes
 box info <box>               # one box: state, IP, exposures, provenance, snapshots
-box shell <box>              # enter as the template's user
+box shell <box>              # enter as the stamped tenant user
 box root <box>               # enter as root through the host's Incus authorization
 box exec <box> -- <cmd...>   # run a command in the box
 box tmux <box> [session]     # attach/create a tmux session — survives disconnects
@@ -601,8 +615,9 @@ as a success: `box down all` reports the ones that were already down and
 the exit status meaningful — non-zero means something went wrong, not that a
 box had nothing to do.
 
-`new` fresh-launches from a template (default: `blank`), or with `--from`
-clones an existing box or snapshot. VM mode (`--vm`, the default where
+`new` fresh-launches a small blank box by default, renders the generic tenant
+seed when given `--role`, or with `--from` clones an existing box or snapshot.
+VM mode (`--vm`, the default where
 `/dev/kvm` exists) is the trust-less target; container mode (auto-fallback,
 `security.nesting=true`) is for hosts without nested virt — weaker isolation,
 dev/test only.

@@ -134,6 +134,32 @@ probe_up() { # probe_up <user> <box> <url>
   echo "$r"
 }
 
+# A wedged graceful stop must be a named rehearsal failure, not the job's last
+# line 30 minutes later. PR #209 bought this bound: the admin half of (p)
+# reached `box down all`, then Incus left that client waiting until Actions
+# cancelled the whole job at its 40-minute ceiling. Keep box's real exit status
+# when it answers; on the timeout, preserve enough state to tell a guest that
+# refused shutdown from a daemon operation that wedged, then force-stop only
+# as recovery so the remaining criteria and cleanup can still report.
+bounded_admin_down() { # bounded_admin_down <box>
+  local b="$1" out rc ops guest capture
+  capture="$(mktemp)"
+  timeout -k 5 60 box down all >"$capture" 2>&1; rc=$?
+  out="$(cat "$capture")"
+  rm -f "$capture"
+  if [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
+    printf '%s\n' "$out"
+    return "$rc"
+  fi
+  ops="$(timeout -k 2 10 incus operation list --format csv 2>&1 || true)"
+  guest="$(timeout -k 2 10 incus exec "$b" -- systemctl list-jobs --no-legend 2>&1 || true)"
+  printf 'box: admin fleet stop exceeded 60s (rc=%s)\n' "$rc" >&2
+  printf 'box: incus operations: %s\n' "${ops:-<no answer>}" >&2
+  printf 'box: guest systemd jobs: %s\n' "${guest:-<no answer>}" >&2
+  timeout -k 5 30 incus stop "$b" --force >/dev/null 2>&1 || true
+  return "$rc"
+}
+
 # The hardened network's gateway and prefix, read off the network — never
 # hardcoded, because BOX_SUBNET moves the whole subnet now (#80).
 boxnet_gw()  { incus network get boxnet ipv4.address 2>/dev/null | cut -d/ -f1; }
@@ -224,7 +250,7 @@ mintlog="$(mktemp)"
 # 1GiB / 2 cpus: a blank Debian needs no more, and the rehearsal runs TWO
 # boxes at once — on a small (or nested) rehearsal host, 2GiB apiece is the
 # difference between measuring isolation and measuring swap.
-if as_u "$U1" box new --name mine --template blank --cpu 2 --memory 1GiB "${MODE[@]}" >"$mintlog" 2>&1; then
+if as_u "$U1" box new --name mine --cpu 2 --memory 1GiB "${MODE[@]}" >"$mintlog" 2>&1; then
   ok "(b) box new mine — minted"
 else
   no "(b) box new failed for $U1 (rc≠0) — its last words:"
@@ -307,7 +333,7 @@ as_u "$U1" box new --name c1 --from mine/s1 >/dev/null 2>&1 && ok "(b) box new -
 aud "b. full lifecycle exercised as $U1 through the real CLI"
 
 phase "d. same name, two users — projects mean no collision"
-as_u "$U2" box new --name mine --template blank --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1 \
+as_u "$U2" box new --name mine --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1 \
   && ok "(d) $U2 minted their own 'mine' beside $U1's" \
   || no "(d) $U2 could not mint 'mine' — names collide across users"
 
@@ -356,7 +382,7 @@ as_u "$U2" box start all >/dev/null 2>&1 \
   || no "(p) 'box start all' failed for $U2 — later phases run on a stopped box"
 # 'all' is reserved precisely because it is a fleet word, and the refusal must
 # hold on a real daemon and not only in the unit drive.
-as_u "$U2" box new --name all --template blank >/dev/null 2>&1 \
+as_u "$U2" box new --name all >/dev/null 2>&1 \
   && no "(p) a box named 'all' was minted — the fleet word is unreachable now" \
   || ok "(p) 'box new --name all' refused on a real daemon"
 # The other direction, and the one an admin gets wrong by having more power
@@ -371,12 +397,32 @@ as_u "$U2" box new --name all --template blank >/dev/null 2>&1 \
 # deleted. It is the ABSENCE of an action, not a scoped one, and the claim this
 # criterion makes is that the action was scoped. So mint one in 'default' and
 # require it to be the box that stopped.
-if box new --name "$ADMINBOX" --template blank --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1; then
+if box new --name "$ADMINBOX" --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1; then
   ok "(p) the admin owns a box in 'default' — the admin direction has something to act ON"
 else
   no "(p) the admin's own box could not be minted — the admin direction would measure nothing"
 fi
-box down all >/dev/null 2>&1 || true
+admin_down="$(bounded_admin_down "$ADMINBOX" 2>&1)"; admin_down_rc=$?
+if [ "$admin_down_rc" -eq 124 ] || [ "$admin_down_rc" -eq 137 ]; then
+  no "(p) the admin's 'box down all' wedged"
+  printf '%s\n' "$admin_down"
+  # The client is gone but the server-side stop operation can keep every
+  # cleanup mutation waiting behind its lock. This runner is disposable; do
+  # not turn a complete diagnostic into the same cancelled signal in cleanup.
+  KEEP=1
+  exit 1
+elif [ "$admin_down_rc" -ne 0 ]; then
+  no "(p) the admin's 'box down all' failed"
+  printf '%s\n' "$admin_down"
+  printf '%s\n' "box: incus service journal after the failed stop:" >&2
+  journalctl -u incus.service --since '-2 minutes' --no-pager -n 200 >&2 || true
+  # A failed stop can leave the daemon serialising later reads behind the
+  # server-side operation. Preserve the complete reason above and stop here:
+  # probing that damaged state hid Incus's answer behind a second 30-minute
+  # wedge on PR #209's first corrective head.
+  KEEP=1
+  exit 1
+fi
 aa="$(incus --project default list "$ADMINBOX" --format csv --columns s 2>/dev/null | head -n1)"
 a1="$(incus --project "$p1" list mine --format csv --columns s 2>/dev/null | head -n1)"
 ac1="$(incus --project "$p1" list c1 --format csv --columns s 2>/dev/null | head -n1)"
