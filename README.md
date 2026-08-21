@@ -322,7 +322,9 @@ contained the agent; the VM is. What it cost was the ability to add any
 control *inside* a box later — an egress allowlist, a read-only mount, an
 audit trail — each of which is one `sudo` away from being switched off while
 the tenant holds it. The seeds ship the toolchain instead, user-local installs
-(`npm --prefix`, a `venv`, `cargo`, `uv`) still work unprivileged, and
+still work unprivileged — `python3 -m venv`, `cargo`, `uv`, and
+`npm install --prefix <dir>` (a *global* `npm -g` writes to `/usr`, so point
+it somewhere the tenant owns once: `npm config set prefix ~/.local`) — and
 anything genuinely needing `apt` is one `box root` away. `blank` and
 `staging-box` keep sudo on purpose: they seed guests that converge
 *themselves* (`sudo rig bootstrap workload-server`, `sudo rig runner
