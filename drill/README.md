@@ -43,8 +43,10 @@ including an operator's own boxes on a shared host.
 | `NO_COLOR` | drop the ANSI, as does any stdout that is not a terminal — a record is pasted at least as often as it is read |
 
 `--help` prints the script's own header block. That block **is** the help text
-(`sed -n '2,39p' "$0"`), so a line added above it moves the window: keep the
-two together, as `test/cli.sh` checks.
+(`sed -n '2,54p' "$0"`), so a line added above it moves the window: keep the
+two together. `test/cli.sh` checks both halves of that — the window still covers
+the whole phase list, and the range quoted here and in `CONTRIBUTING.md` is the
+range the script runs, read out of the script rather than trusted.
 
 On a host with less than 20GiB of RAM the drill exports `BOX_MEMORY=3GiB
 BOX_CPU=2` and says so — the `claude-box` template's own 8GiB/4cpu is then what

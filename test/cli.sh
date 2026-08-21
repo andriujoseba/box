@@ -5192,6 +5192,26 @@ check "drill help: ...and the window reaches the line after the list" 0 \
   "Exit 0 = every check passed" bash "$ROOT/drill/drill.sh" --help
 check "drill: an unknown option is still a usage error" 2 "unknown option" \
   bash "$ROOT/drill/drill.sh" --frobnicate
+# The window is quoted in two docs as a literal range, beside an instruction to
+# keep it in step with the script — so a stale copy is not a stale fact, it is a
+# stale instruction, and the editor who obeys it truncates the help again. The
+# checks above prove the window COVERS the list; this one proves the docs quote
+# the range that produced it. Read out of the '-h|--help' line rather than
+# written here twice, or this check is the third copy that can drift.
+docs_quote_the_help_window() {
+  ( set -u
+    local range doc
+    range="$(sed -n "s/.*-h|--help) *sed -n '\([0-9]*,[0-9]*p\)'.*/\1/p" \
+      "$ROOT/drill/drill.sh")"
+    [ -n "$range" ] \
+      || { echo "could not read the help window range out of drill/drill.sh"; exit 1; }
+    for doc in drill/README.md CONTRIBUTING.md; do
+      grep -qF "sed -n '$range'" "$ROOT/$doc" \
+        || { echo "$doc does not quote the help window the script runs, $range"; exit 1; }
+    done )
+}
+check "drill help: the docs quote the window range the script actually runs" 0 "" \
+  docs_quote_the_help_window
 
 # The drill's own README is documentation of a MEASURED thing, so it is checked
 # against the measurement rather than read. It described four phases while the
@@ -5232,6 +5252,18 @@ check "drill/README: says plainly that a run leaves no D-phase mutations" 0 "" \
   grep -qF 'no D-phase mutations' "$ROOT/drill/README.md"
 check "drill: no line it PRINTS still promises D-phase residue on the host" 1 "" \
   bash -c "grep -vE '^[[:space:]]*#' '$ROOT/drill/drill.sh' | grep -q 'still applied'"
+# Two lines were retired, and 'still applied' only pins one of them. The other
+# was "(plus, unless re-run: dns.mode=none and NIC filtering from the D phase)"
+# on the closing summary, which carries none of that string — so re-introducing
+# THAT half stayed green while the check above read as though it covered both.
+# So: no line the drill PRINTS calls the phase by that name at all. Matched
+# case-sensitively on the "D phase"/"D-phase" shape rather than on "phase D",
+# because the ledger call `phase D "D. The isolation contract, stated"` is a
+# printed line and a correct one; it is the phase's own heading, not a claim
+# about residue. The header states the positive version and is a comment, past
+# this grep for the reason the check above gives.
+check "drill: ...nor the closing line's version of the same promise" 1 "" \
+  bash -c "grep -vE '^[[:space:]]*#' '$ROOT/drill/drill.sh' | grep -qE 'D[- ]phase'"
 
 # The gate reads drills/<version>.md, so the emitter's own documentation lives
 # beside the record format it produces.
