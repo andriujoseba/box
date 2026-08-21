@@ -201,7 +201,10 @@ EOF
 
 OPTIONS
   --name <box>          Name for the new box                  (new, import)
-  --template <t>        Template to mint from (default: blank)        (new)
+  --role <role>         Creds-free rig tenant role to converge        (new)
+  --size <size>         Named resource bundle: small, medium, large   (new)
+  --user <user>         Tenant user override (requires --role)        (new)
+  --template <t>        Dedicated non-agent template                  (new)
   --from <src>[/<snap>] Clone from box <src>, or from its snapshot    (new)
   --vm                  Force VM mode: the trust-less target          (new)
   --container           Force container mode: weaker isolation,       (new)
@@ -218,8 +221,8 @@ OPTIONS
   Options come after the command: 'box list --json', not 'box --json list'.
 
 EXAMPLES
-  # mint a claude box and log in inside it — the tool never handles your token
-  box new --name work --template claude-box
+  # mint a Claude box and log in inside it — the tool never handles your token
+  box new --name work --role claude-box --size medium
   box shell work                    # then: run 'claude', then /login
 
   # operator access uses the host's existing Incus authorization, not guest sudo
@@ -278,25 +281,34 @@ help_cmd() {
   echo
   case "$1" in
     new) cat <<'EOF'
-Mint a box. Without --from, launches a fresh box from a template (default:
-blank — bare Debian 13, nobody home; --template claude-box gets Claude Code
-installed, creds-free, ~10 min cold). With --from, clones an existing box or
+Mint a box. Without --from, launches a fresh small blank box by default, or
+renders one generic tenant seed for --role and lets rig converge that role
+creds-free (~10 min cold). With --from, clones an existing box or
 one of its snapshots — login state, git creds and clones carry over,
 isolation is preserved, and the clone knows its template's user without
 being told.
 
-A tenant template (claude-box, codex-box, grok-box, kimi-box, staging-box) is a THIN seed — the user,
-tmux, rig (#81) — and after cloud-init box auto-runs the creds-free tenant
-role inside it ('rig bootstrap <role>', rig#31): that role installs the
-agent CLI / server posture and the agent-context file. rig is preinstalled
+--role is runtime data, not a box template (#159). Box derives its user by
+stripping a trailing '-box' (overridable with --user), renders the single
+generic unprivileged tenant seed, then auto-runs `rig bootstrap <role> --user
+<user>` after cloud-init. The role installs the agent CLI and agent-context
+file. Box never validates rig's registry: an unknown role fails loudly during
+convergence and the incomplete box is left inspectable with `box rm` printed
+as its cleanup. rig is preinstalled
 from RIG_REPO/RIG_REF in the mint environment — default heavy-duty/rig at
 its LATEST RELEASE, resolved at mint (#150); RIG_REF=<tag> pins another and
 RIG_REF=main tracks the development tip. Anything that joins a tailnet or
 holds a key stays operator-run, never auto-run.
 
   --name <box>           Required. The box's name.
-  --template <t>         Template to mint from; 'box templates' lists them.
-                         A template sets image, user, resources, boot
+  --role <role>          Optional creds-free rig tenant role. Unknown roles
+                         are deliberately left for rig to refuse at converge.
+  --user <user>          Override the role-derived tenant user; forwarded to
+                         both cloud-init and `rig bootstrap`. Requires --role.
+  --size <size>          small, medium, or large. Default: small.
+  --template <t>         Dedicated non-agent seed; 'box templates' lists it.
+                         Agent and blank spellings are hard-cut to --role or
+                         the argumentless default. A template sets boot
                          demands (independently: BOX_REQUIRE_VM insists on
                          VM mode, BOX_NO_CONTAINER_FALLBACK insists that any
                          container mode be explicit, BOX_AUTOSTART survives
@@ -318,10 +330,10 @@ holds a key stays operator-run, never auto-run.
                          fallback; --container remains a deliberate weaker-
                          isolation override.
 
-Resources resolve most-specific-first: these flags, then BOX_CPU /
-BOX_MEMORY / BOX_DISK environment variables (the scripting form), then the
-template's box.env, then defaults. Resources are all a flag can touch: there
-is no flag for a network or a security key, on purpose.
+Resources resolve most-specific-first: --cpu/--memory/--disk, then BOX_CPU /
+BOX_MEMORY / BOX_DISK (the scripting form), then --size, then the selected
+seed's defaults. Resources are all those flags can touch: there is no flag for
+a network or a security key, on purpose.
 
 The flags work on --from too (#171). They ride the copy itself — incus sizes
 the clone's volume as it creates it, so there is no resize, no restart and no
@@ -381,15 +393,17 @@ It names 'box snapshot <box> bootstrapped' at that moment instead. So read
 the label one way only: its PRESENCE means the hook converged untouched;
 its ABSENCE means nothing at all.
 
-  box new --name scratch                     # blank, the default
-  box new --name work --template claude-box
-  box new --name lean --template claude-box --cpu 2 --memory 3GiB
+  box new --name scratch                     # small blank, the default
+  box new --name work --role claude-box --size medium
+  box new --name lean --role claude-box --cpu 2 --memory 3GiB
   box new --name feature --from work/authed
 EOF
 ;;
     templates) cat <<'EOF'
-List the templates this install can mint, with their descriptions. A template
-is a directory under templates/: a box.env (image, user, resources, boot
+List the dedicated templates this install can mint, with their descriptions.
+Runtime tenant roles are not listed here: rig/rig-templates is their registry,
+and `box new --role <role>` renders box's internal generic tenant seed (#159).
+A dedicated template is a directory under templates/: a box.env (image, user, resources, boot
 demands, tenant role — parsed against an allowlist, never sourced) and a
 user-data.yaml (cloud-init, passed to Incus verbatim except the rig pin
 tokens @RIG_REPO@/@RIG_REF@, resolved at mint from the environment — the
@@ -397,12 +411,13 @@ ref defaulting to rig's latest release, #150).
 Templates cannot touch the network or security flags — the shared box-net
 profile is the placement contract, so every template gets the same isolation.
 
-Templates are thin, creds-free seeds (#81): the user, tmux and rig — what a
-box BECOMES lives in rig's bootstrap roles (rig#31), auto-run at mint via
-BOX_BOOTSTRAP_ROLE. box mints; rig converges.
+The argumentless mint is the blank seed. Its retired `--template blank`
+spelling refuses and teaches that form; retired agent template spellings teach
+`--role <agent-box>`.
 
   box templates
-  box new --name scratch --template blank
+  box new --name scratch
+  box new --name work --role claude-box --size medium
 EOF
 ;;
     list) cat <<'EOF'
@@ -703,7 +718,7 @@ The in-box server must listen on 0.0.0.0:<port>, not only its own loopback —
 a VM's forwarder connects to the box over the network. Inside an isolated box
 that is safe: nothing but this proxy can reach the port.
 
-  box new --name web --template claude-box
+  box new --name web --role claude-box --size medium
   box shell web        # inside: run a dev server on 0.0.0.0:3000
   box expose web 3000  # then open http://127.0.0.1:3000 in your browser
 EOF
@@ -1530,12 +1545,13 @@ cmd_templates() {
   echo "TEMPLATES"
   for d in "$root/templates"/*/; do
     t="$(basename "$d")"
-    [ "$t" != tenant ] || continue
+    case "$t" in blank|tenant) continue ;; esac
     desc="$(grep -m1 '^BOX_DESCRIPTION=' "$d/box.env" 2>/dev/null | cut -d= -f2- | tr -d '"')"
     printf '  %-10s %s\n' "$t" "$desc"
   done
   echo
-  echo "mint one:  box new --name <box> --template <template>"
+  echo "runtime role:  box new --name <box> --role <role> [--size <size>]"
+  echo "dedicated seed: box new --name <box> --template <template>"
 }
 
 # When this instance came into being. A timestamp in a CONVERGENT file would be
@@ -2409,9 +2425,9 @@ cmd_new() {
   # it knows the profile it WANTED and not what the source carries — only box,
   # here, knows that).
   narrate_resources "$instance" "$name"
-  # The login hint belongs to the claude-box template — read the EFFECTIVE
-  # template off the instance, so a clone of a claude-box box gets it too and
-  # a blank box is not told to run a binary it doesn't have.
+  # The Claude login hint follows either the runtime role or a legacy template
+  # stamp. Read EFFECTIVE metadata so clones keep it and blank boxes are not
+  # told to run a binary they do not have (#159).
   #
   # Both spellings match, and that is not an alias for the ROLE. The role
   # names are a hard cut (rig#76) — 'rig bootstrap claude' is gone, so the
@@ -2421,9 +2437,11 @@ cmd_new() {
   # and a clone carries it forward. Refusing the old spelling here would not
   # cut anything over, it would only drop the hint on boxes that predate the
   # rename — the same reason user.claudebox is honored everywhere else.
-  local eff; eff="$(incus config get "$instance" user.box.template 2>/dev/null || true)"
+  local eff effrole
+  eff="$(incus config get "$instance" user.box.template 2>/dev/null || true)"
+  effrole="$(incus config get "$instance" user.box.role 2>/dev/null || true)"
   [ -z "$eff" ] && [ "$(incus config get "$instance" user.claudebox 2>/dev/null || true)" = 1 ] && eff=claude-box
-  if [ "$eff" = claude-box ] || [ "$eff" = claude ]; then
+  if [ "$effrole" = claude-box ] || [ "$eff" = claude-box ] || [ "$eff" = claude ]; then
     echo "box: ready — 'box shell $name'. Log into Claude inside: run 'claude' then /login."
   elif [ "$eff" = staging-box ] || [ "$eff" = staging ]; then
     echo "box: ready — 'box shell $name'. The tailnet join stays operator-run (it holds a key box must never see):"

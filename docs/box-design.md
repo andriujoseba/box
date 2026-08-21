@@ -1,8 +1,8 @@
 # box design
 
-`box` is a CLI that mints and manages **trust-less, network-isolated VMs
-with a coding agent installed** (`claude-box`, `codex-box`, `grok-box`,
-`kimi-box`, or `blank` for none). It is infrastructure, not a project provisioner.
+`box` is a CLI that mints and manages **trust-less, network-isolated VMs**.
+An optional runtime rig role installs the coding agent; omitting it produces a
+blank box. It is infrastructure, not a project provisioner.
 
 See issue #3 for the full reframe and rationale. This doc captures the durable
 design decisions.
@@ -88,16 +88,16 @@ rides along deliberately — and because scrubbing a disk image is a promise
 tarball surgery cannot keep, export shouts that the file is a credential
 instead of pretending to sanitize it.
 
-## Thin templates: box mints, rig converges (#81)
+## Runtime roles: box mints, rig converges (#81, #159)
 
-A template is a **thin, creds-free seed** — base image, the tenant user,
-tmux, and [rig](https://github.com/heavy-duty/rig) preinstalled — and what
-the box *becomes* lives in rig's bootstrap roles (rig#31): box auto-runs the
-template's creds-free tenant role after cloud-init (`rig bootstrap claude-box`
-/ `codex-box` / `grok-box` / `kimi-box` / `staging-box` — the roles carry a family suffix,
-`-box` for box tenants and `-server` for fleet machines, and the templates are
-named for the roles they converge, rig#76), which installs the agent CLI or
-server posture. The split is deliberate: cloud-init is a first-boot one-shot —
+A runtime tenant uses one **thin, creds-free seed** — base image, the derived
+or overridden tenant user, tmux, and [rig](https://github.com/heavy-duty/rig)
+preinstalled. What the box *becomes* lives in rig's bootstrap roles (rig#31):
+box renders the seed and auto-runs `rig bootstrap <role> --user <user>` after
+cloud-init. Box validates role syntax, not rig's registry; an unknown role is
+rig's loud converge-time refusal. This makes a role added after a box release
+immediately mintable with that released box. The split is deliberate:
+cloud-init is a first-boot one-shot —
 not convergent, not re-runnable, only parse-and-grep testable — while a rig
 role is an idempotent script with effective-state asserts that can also
 converge an *existing* box to a newer spec. Anything that joins a tailnet or
@@ -106,14 +106,14 @@ through `box shell`; box prints it as a next step and never sees the key. The
 seed's rig install is pinned by `RIG_REPO`/`RIG_REF` at mint (default
 `heavy-duty/rig` at its latest release, resolved at mint — box#150 closed the
 unpinned `main` edge rig#32's releases had been waiting on),
-and box's template suite holds the line with fail-closed absence greps: no
-agent CLI, no docker, no tailscale, no context-file heredocs in any
-template, ever again.
+and box's seed suite holds the line with fail-closed absence greps: no agent
+CLI, no docker, no tailscale, no context-file heredocs in the generic tenant
+seed.
 
 ## The agent is unprivileged in its own box (#177)
 
 **The agent is unprivileged inside its own box; the operator enters as root
-from the host.** The four agent seeds create their tenant with no sudoers
+from the host.** The generic tenant seed creates its runtime user with no sudoers
 entry, and `box root` — authorized by the host's Incus socket, needing nothing
 from the guest (#176) — is the root path.
 
