@@ -1916,6 +1916,7 @@ restamp_has() { grep -F 'config set' "$1" | grep -qE "$2"; }
 MLOG="$MWORK/mint.log"
 check "mint: a shimmed 'box new' runs to completion" 0 "ready" \
   mintbox "$MLOG" new --name w1 --role claude-box --container
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design.
 check "mint: a role-bearing fresh mint creates exactly one snapshot (#213)" 0 "1" \
   bash -c 'grep -c "^incus snapshot create " "$1"' _ "$MLOG"
 check "mint: that sole automatic snapshot is pristine (#213)" 0 "" \
@@ -1930,6 +1931,7 @@ check "mint: BOX_SNAPSHOT_PRISTINE=0 still suppresses the sole mark (#213)" 1 ""
 RETIRED_KNOB_LOG="$MWORK/retired-knob.log"
 BOX_SNAPSHOT_BOOTSTRAPPED=0 RIG_REF=main \
   mintbox "$RETIRED_KNOB_LOG" new --name retired-knob --role claude-box --container >/dev/null 2>&1
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design.
 check "mint: the retired knob cannot change the one-pristine result (#213)" 0 "1" \
   bash -c 'grep -c "^incus snapshot create .* pristine *$" "$1"' _ "$RETIRED_KNOB_LOG"
 
