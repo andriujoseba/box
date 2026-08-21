@@ -154,7 +154,7 @@ bounded_admin_down() { # bounded_admin_down <box>
   printf 'box: incus operations: %s\n' "${ops:-<no answer>}" >&2
   printf 'box: guest systemd jobs: %s\n' "${guest:-<no answer>}" >&2
   timeout -k 5 30 incus stop "$b" --force >/dev/null 2>&1 || true
-  return 1
+  return "$rc"
 }
 
 # The hardened network's gateway and prefix, read off the network — never
@@ -400,8 +400,17 @@ else
   no "(p) the admin's own box could not be minted — the admin direction would measure nothing"
 fi
 admin_down="$(bounded_admin_down "$ADMINBOX" 2>&1)"; admin_down_rc=$?
-[ "$admin_down_rc" -eq 0 ] \
-  || no "(p) the admin's 'box down all' failed or wedged: $(printf '%s' "$admin_down" | head -1)"
+if [ "$admin_down_rc" -eq 124 ] || [ "$admin_down_rc" -eq 137 ]; then
+  no "(p) the admin's 'box down all' wedged"
+  printf '%s\n' "$admin_down"
+  # The client is gone but the server-side stop operation can keep every
+  # cleanup mutation waiting behind its lock. This runner is disposable; do
+  # not turn a complete diagnostic into the same cancelled signal in cleanup.
+  KEEP=1
+  exit 1
+elif [ "$admin_down_rc" -ne 0 ]; then
+  no "(p) the admin's 'box down all' failed: $(printf '%s' "$admin_down" | head -1)"
+fi
 aa="$(incus --project default list "$ADMINBOX" --format csv --columns s 2>/dev/null | head -n1)"
 a1="$(incus --project "$p1" list mine --format csv --columns s 2>/dev/null | head -n1)"
 ac1="$(incus --project "$p1" list c1 --format csv --columns s 2>/dev/null | head -n1)"
