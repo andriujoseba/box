@@ -72,6 +72,9 @@ check "--name with no value exits 2"           2 "--name needs a value" "$BOX" n
 # spelling teaches the runtime-role form even on a machine with no daemon.
 check "new: --template blank hard-cuts to the argumentless blank mint (#159)" 2 \
   "omit --template" "$BOX" new --name work --template blank
+check "new: --template tenant hard-cuts the internal generic seed (#159)" 2 \
+  "omit --template for a blank box, or use --role <role>" \
+  "$BOX" new --name work --template tenant
 for retired in claude-box codex-box grok-box kimi-box; do
   check "new: --template $retired hard-cuts to --role (#159)" 2 \
     "--role $retired --size medium" "$BOX" new --name work --template "$retired"

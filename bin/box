@@ -1544,7 +1544,10 @@ render_userdata() {
   # twice its old size. Ubuntu's Incus 6.0.0 then hit cowsql's obsolete
   # SQLITE_DIRECT_OVERFLOW_READ assertion while stopping the third mint on
   # PR #209. Comments belong in this source; dead bytes do not belong in every
-  # instance's database row. There is still one file and one renderer.
+  # instance's database row. Seed files therefore may not carry a #-leading
+  # content line inside a YAML block scalar: awk cannot distinguish that
+  # payload from source commentary. Teach this renderer YAML context before
+  # adding one. There is still one file and one renderer.
   data="$(awk -v role="${T_BOOTSTRAP_ROLE:+1}" '
     BEGIN { keep = 1 }
     /^# box-role-only-begin$/  { keep = role; next }
@@ -1581,7 +1584,7 @@ cmd_templates() {
   echo "TEMPLATES"
   for d in "$root/templates"/*/; do
     t="$(basename "$d")"
-    case "$t" in blank|tenant) continue ;; esac
+    case "$t" in tenant) continue ;; esac
     desc="$(grep -m1 '^BOX_DESCRIPTION=' "$d/box.env" 2>/dev/null | cut -d= -f2- | tr -d '"')"
     printf '  %-10s %s\n' "$t" "$desc"
   done
@@ -1982,6 +1985,8 @@ resolve_fresh_intent() {
   case "$size" in ""|small|medium|large) ;; *) usage_error "--size must be small, medium, or large: $size" ;; esac
   if [ -n "$template" ]; then
     case "$template" in
+      tenant)
+        usage_error "--template tenant is box's internal generic seed — omit --template for a blank box, or use --role <role>" ;;
       blank)
         usage_error "--template blank is retired — omit --template for a blank box" ;;
       claude-box|codex-box|grok-box|kimi-box)
