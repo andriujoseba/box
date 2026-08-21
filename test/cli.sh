@@ -1917,6 +1917,11 @@ cat > "$MSHIM/incus" <<'SHIM'
 printf 'incus %s\n' "$*" | tr '\n' ' ' >> "$FAKE_INCUS_LOG"
 printf '\n' >> "$FAKE_INCUS_LOG"
 case "$*" in
+  exec\ *\ --\ rig\ bootstrap\ *)
+    if [ "${FAKE_BOOTSTRAP_FAIL:-0}" = 1 ]; then
+      echo "unknown tenant role: synthetic-box" >&2
+      exit 2
+    fi ;;
   *volatile.base_image) printf '%s\n' "${FAKE_BASE_IMAGE-}" ;;
   # Both 'config get <i> <key>' and its --expanded form (#171 reads what the
   # instance will RUN with, profiles included) — the key is the last word
@@ -1997,6 +2002,10 @@ check "mint: stamps the mode that was ASKED, not only the outcome (#103)" \
   0 "user.box.mode.asked=container" launchline "$MLOG"
 check "mint: stamps the rig role box will auto-run (#103)" \
   0 "user.box.role=claude-box" launchline "$MLOG"
+check "mint: the role-derived user reaches cloud-init (#159)" 0 "" \
+  launch_has "$MLOG" 'name: "claude"'
+check "mint: the role-derived user reaches rig bootstrap (#159)" 0 "" \
+  grep -qE '^incus exec w1 -- rig bootstrap claude-box --user claude *$' "$MLOG"
 check "mint: stamps which rig converged it — repo (#103)" \
   0 "user.box.rig.repo=heavy-duty/rig" launchline "$MLOG"
 # The ref is the RESOLVED release, not main (#150). The stamp is the only
@@ -2016,6 +2025,31 @@ check "mint: resolves the pin exactly ONCE, in the parent shell (#150)" 0 "1" \
 check "mint: ...and the seed it shipped carries that same resolved ref (#150)" 0 "" \
   launch_has "$MLOG" 'heavy-duty/rig/9\.9\.9/install\.sh'
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+
+# A role that did not exist when this box tree was built takes the same generic
+# path. The arbitrary name is intentionally absent from bin/box and templates/.
+FUTURELOG="$MWORK/future-role.log"
+RIG_REF=main mintbox "$FUTURELOG" new --name future --role synthetic-box \
+  --user builder --container >/dev/null 2>&1
+check "mint: a post-build rig role needs zero box registry change (#159)" 0 "" \
+  launch_has "$FUTURELOG" 'user\.box\.role=synthetic-box'
+check "mint: --user reaches the instance stamp (#159)" 0 "" \
+  launch_has "$FUTURELOG" 'user\.box\.user=builder'
+check "mint: --user reaches cloud-init (#159)" 0 "" \
+  launch_has "$FUTURELOG" 'name: "builder"'
+check "mint: --user is forwarded to rig bootstrap (#159)" 0 "" \
+  grep -qE '^incus exec future -- rig bootstrap synthetic-box --user builder *$' "$FUTURELOG"
+check "mint: the synthetic role is not hardcoded in box or a seed (#159)" 1 "" \
+  grep -Rqs synthetic-box "$ROOT/bin" "$ROOT/templates"
+
+unknown_role_mint() {
+  FAKE_BOOTSTRAP_FAIL=1 RIG_REF=main \
+    mintbox "$MWORK/unknown-role.log" new --name unknown --role synthetic-box --container
+}
+check "mint: rig's unknown-role refusal is surfaced (#159)" 1 \
+  "unknown tenant role: synthetic-box" unknown_role_mint
+check "mint: an incomplete unknown-role box prints its cleanup (#159)" 1 \
+  "box rm unknown" unknown_role_mint
 
 # --- the identity (#181) ----------------------------------------------------
 # The SHAPE, not merely the presence: a hostname, the box's own name or a
