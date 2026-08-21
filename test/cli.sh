@@ -6575,6 +6575,8 @@ check "multiuser: (p) time-boxes the admin fleet stop below the job ceiling" 0 "
   grep -qF 'timeout -k 5 60 box down all' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) records daemon operations when that stop wedges" 0 "" \
   grep -qF 'incus operation list --format csv' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) records the daemon journal after a prompt stop failure" 0 "" \
+  grep -qF "journalctl -u incus.service --since '-2 minutes'" "$ROOT/drill/multiuser.sh"
 # shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "multiuser: (p) force-stops only as post-failure recovery" 0 "" \
   grep -qF 'incus stop "$b" --force' "$ROOT/drill/multiuser.sh"

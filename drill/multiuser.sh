@@ -411,6 +411,8 @@ if [ "$admin_down_rc" -eq 124 ] || [ "$admin_down_rc" -eq 137 ]; then
 elif [ "$admin_down_rc" -ne 0 ]; then
   no "(p) the admin's 'box down all' failed"
   printf '%s\n' "$admin_down"
+  printf '%s\n' "box: incus service journal after the failed stop:" >&2
+  journalctl -u incus.service --since '-2 minutes' --no-pager -n 200 >&2 || true
   # A failed stop can leave the daemon serialising later reads behind the
   # server-side operation. Preserve the complete reason above and stop here:
   # probing that damaged state hid Incus's answer behind a second 30-minute
