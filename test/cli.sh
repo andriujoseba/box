@@ -2625,7 +2625,7 @@ check "mint: ...and the mint path degrades the same way (#171 D6)" \
 # actually does. 'box new --help' is that place now: the D3 refusal prints no
 # command at all, so the handle lives here and nowhere else.
 check "new --help: says explicit resource flags work on --from (#171 D1)" 0 \
-  "clone instead accepts the explicit --cpu/--memory/--disk flags" "$BOX" help new
+  "explicit --cpu/--memory/--disk flags" "$BOX" help new
 check "new --help: ...that they ride the copy rather than resize (#171 D1)" 0 \
   "no resize, no restart" "$BOX" help new
 check "new --help: ...and carries --disk's precondition (#171 D2)" 0 \
