@@ -390,6 +390,10 @@ for d in "$ROOT"/templates/*/; do
   check "template '$t': box.env parses against the real allowlist" 0 "USER=" tpl "$ROOT" "$t"
   check "template '$t': box.env sets BOX_IMAGE" 0 "" grep -q '^BOX_IMAGE=' "$d/box.env"
   check "template '$t': box.env sets BOX_USER"  0 "" grep -q '^BOX_USER='  "$d/box.env"
+  # #175: every shipped seed defaults to the VM trust boundary. Discovery is
+  # deliberate: a new template that forgets the pin must fail this same loop.
+  check "template '$t': refuses silent container fallback (BOX_REQUIRE_VM=1)" \
+    0 "" grep -qx 'BOX_REQUIRE_VM="1"' "$d/box.env"
   # cloud-init is passed to Incus verbatim (modulo the two rig pin tokens),
   # so it must exist, declare itself, and be well-formed — a mint is far too
   # late to learn about a typo.
@@ -490,9 +494,9 @@ check "staging-box: the seed user is rig's default for the role ('ops')" 0 "USER
 # converges and the one 'box shell' lands in. The pairing is the whole point of
 # pinning it here: a rename that moves one and forgets the other mints a box
 # whose role dies looking for a user that was never created.
-for u in claude codex grok; do
+for u in claude codex grok kimi; do
   check "$u-box: role is '$u-box', seed user is '$u' (rig's tenant mapping)" \
-    0 "USER=$u REQUIRE_VM= AUTOSTART= ROLE=$u-box" tpl "$ROOT" "$u-box"
+    0 "USER=$u REQUIRE_VM=1 AUTOSTART= ROLE=$u-box" tpl "$ROOT" "$u-box"
 done
 # blank stays a box with NOBODY home: no rig, no role — same isolation, no
 # tooling, and nothing auto-runs in it.
