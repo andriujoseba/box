@@ -525,9 +525,46 @@ check "new: the REQUIRE_VM refusal orders after pick_mode" 0 "" bash -c '
 check "new: the REQUIRE_VM guard compares the effective mode (\$m)" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
     | grep "T_REQUIRE_VM" | grep -qF "\"\$m\" != vm"'
+check "new: an explicit --container overrides REQUIRE_VM with weaker isolation (#175)" \
+  0 "" bash -c '
+  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
+    | grep "T_REQUIRE_VM" | grep -qF "\"\$mode\" != container"'
+check "new: the KVM-less refusal names KVM and the explicit weaker override (#175)" \
+  0 "" bash -c '
+  line="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep "no /dev/kvm")"
+  printf "%s\n" "$line" | grep -q -- "--container" &&
+    printf "%s\n" "$line" | grep -q "weaker isolation"'
 check "new: boot.autostart is stamped under the T_AUTOSTART guard" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
     | grep -F "boot.autostart=true" | grep -q "T_AUTOSTART"'
+
+# Drive mode selection with a stubbed host predicate: the suite must cover
+# both KVM answers regardless of the machine it happens to run on (#175).
+PICKFN="$(mktemp)"
+sed -n '/^pick_mode() {/,/^}/p' "$ROOT/bin/box" > "$PICKFN"
+pick_mode_case() {
+  bash -c '
+    . "$0"
+    mode="$1"; remote="$2"
+    if [ "$3" = yes ]; then
+      host_has_kvm() { return 0; }
+    else
+      host_has_kvm() { return 1; }
+    fi
+    pick_mode
+  ' "$PICKFN" "$@"
+}
+check "pick_mode: automatic mode chooses VM when KVM is present (#175)" \
+  0 "vm" pick_mode_case auto "" yes
+check "pick_mode: automatic mode falls back when KVM is absent (#175)" \
+  0 "container" pick_mode_case auto "" no
+check "pick_mode: explicit --container survives a KVM-less host (#175)" \
+  0 "container" pick_mode_case container "" no
+check "pick_mode: explicit --vm survives a KVM-less host (#175)" \
+  0 "vm" pick_mode_case vm "" no
+check "pick_mode: a remote mint remains VM mode without local KVM (#175)" \
+  0 "vm" pick_mode_case auto "remote:" no
+rm -f "$PICKFN"
 
 # The auto-run half of #81, grepped the same way (a daemon-free run cannot
 # mint). The seed reaches Incus through render_userdata — the pin point — not

@@ -309,8 +309,9 @@ holds a key stays operator-run, never auto-run.
                          default wherever /dev/kvm exists; container mode
                          (security.nesting=true) is the fallback for hosts
                          without nested virt — weaker isolation, dev/test only.
-                         A template that requires VM mode refuses both the
-                         fallback and --container.
+                         A template that requires VM mode refuses the silent
+                         fallback; explicit --container overrides it with
+                         weaker isolation.
 
 Resources resolve most-specific-first: these flags, then BOX_CPU /
 BOX_MEMORY / BOX_DISK environment variables (the scripting form), then the
@@ -1254,9 +1255,11 @@ confirm() {   # $1 = prompt. --force, or a TTY to ask on, or we refuse.
 
 # --- commands with real work -----------------------------------------------
 
+host_has_kvm() { [ -e /dev/kvm ]; }
+
 pick_mode() {
   if [ "$mode" != auto ]; then echo "$mode"; return; fi
-  if [ -n "$remote" ] || [ -e /dev/kvm ]; then echo vm; else
+  if [ -n "$remote" ] || host_has_kvm; then echo vm; else
     echo "box: no /dev/kvm — using container mode (weaker isolation, dev/test only)" >&2
     echo container
   fi
@@ -2060,16 +2063,13 @@ cmd_new() {
     local t="${template:-blank}" m extra=()
     load_template "$t"
     m="$(pick_mode)"
-    # A server-class template (BOX_REQUIRE_VM, #68) has no weaker mode: the VM
-    # is its trust boundary, and its guest runs docker. Refuse the container
-    # fallback AND an explicit --container — never silently mint something
-    # lesser than what the template promises. The message holds for both
-    # tiers: /dev/kvm is a fact about the HOST, and an admin's default-project
-    # mint and a restricted user's incus-user mint go through the same daemon,
-    # so the fix is the same for both — a KVM-capable host, not a grant.
-    if [ "$T_REQUIRE_VM" = 1 ] && [ "$m" != vm ]; then
-      [ "$mode" != container ] || usage_error "template '$t' requires VM mode — it will not mint as a container (drop --container)"
-      die "template '$t' requires VM mode and this host has no /dev/kvm — mint it on a KVM-capable host (or via --remote)"
+    # A BOX_REQUIRE_VM template defaults to the VM as its trust boundary
+    # (#68, #175). Refuse a silent container fallback, but preserve the
+    # operator's explicit --container escape hatch: weaker isolation remains
+    # available only when somebody asks for it by name. /dev/kvm is a HOST
+    # fact on both tiers, so a grant is never the remedy.
+    if [ "$T_REQUIRE_VM" = 1 ] && [ "$m" != vm ] && [ "$mode" != container ]; then
+      die "template '$t' requires VM mode for its untrusted-code boundary, but this host has no /dev/kvm — enable KVM (or pass --container to override with weaker isolation)"
     fi
     # shellcheck disable=SC2054 # "root,size=..." is a single incus argument
     # security.secureboot=false: Incus defaults VMs to secureboot ON, and a
