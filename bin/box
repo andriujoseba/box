@@ -343,10 +343,12 @@ a network or a security key, on purpose.
 The argumentless and --role paths default to small. The dedicated
 staging-box seed keeps its existing medium resources when --size is omitted.
 
-The flags work on --from too (#171). They ride the copy itself — incus sizes
-the clone's volume as it creates it, so there is no resize, no restart and no
-step inside the guest. Every box says what it came up with when it comes up,
-clone or fresh mint, so sizing is never something to go and ask 'box info' for.
+Named sizes select fresh-mint bundles. A --from clone instead accepts the
+explicit --cpu/--memory/--disk flags (#171). They ride the copy itself — incus
+sizes the clone's volume as it creates it, so there is no resize, no restart
+and no step inside the guest. Every box says what it came up with when it comes
+up, clone or fresh mint, so sizing is never something to go and ask 'box info'
+for.
 
 --disk is the one with a precondition: it can only ride a copy whose source has
 a root device of its own. A container's root rides the storage pool (no size to

@@ -82,6 +82,9 @@ check "new: --user belongs to a runtime role (#159)" 2 \
   "--user requires --role" "$BOX" new --name work --user dev
 check "new: --from refuses a fresh runtime role (#159)" 2 \
   "tenant role rides along" "$BOX" new --name copy --from work --role kimi-box
+check "new: --from keeps named sizes on the fresh-mint side (#159)" 2 \
+  "explicit --cpu/--memory/--disk overrides, not --size" \
+  "$BOX" new --name copy --from work --size medium
 check "new: --template and --role are mutually exclusive (#159)" 2 \
   "choose different mint paths" "$BOX" new --name work --template staging-box --role kimi-box
 check "new: an unknown named size is refused (#159)" 2 \
@@ -2621,8 +2624,8 @@ check "mint: ...and the mint path degrades the same way (#171 D6)" \
 # D5 — the post-copy handle, where box does print one, carries what incus
 # actually does. 'box new --help' is that place now: the D3 refusal prints no
 # command at all, so the handle lives here and nowhere else.
-check "new --help: says the flags work on --from (#171 D1)" 0 \
-  "The flags work on --from too" "$BOX" help new
+check "new --help: says explicit resource flags work on --from (#171 D1)" 0 \
+  "clone instead accepts the explicit --cpu/--memory/--disk flags" "$BOX" help new
 check "new --help: ...that they ride the copy rather than resize (#171 D1)" 0 \
   "no resize, no restart" "$BOX" help new
 check "new --help: ...and carries --disk's precondition (#171 D2)" 0 \

@@ -396,6 +396,8 @@ form). Resolution is `--cpu/--memory/--disk` > `BOX_*` environment >
 
 The argumentless and runtime-role paths default to `small`. The dedicated
 `staging-box` seed keeps its existing medium resources when no size is given.
+Named sizes apply to fresh mints; `--from` clones keep the explicit
+`--cpu`/`--memory`/`--disk` override surface.
 The selected seed,
 runtime role, and resolved user are stamped onto the instance,
 so `shell`, `exec` and `tmux` land in the right user — and a clone still
