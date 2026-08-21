@@ -11,5 +11,18 @@ package_update: false
 # INSIDE the box, and a bare Debian image ships no tmux — without this it fails
 # with "tmux: command not found" (#65). cloud-init refreshes the apt lists on its
 # own whenever 'packages' is non-empty, so package_update stays false here.
+# chrony: keep resumed guests on real UTC; the drop-in permits stepping after
+# Debian's first-three-update window so multi-hour suspend drift closes (#174).
+write_files:
+  - path: /etc/chrony/conf.d/box-makestep.conf
+    permissions: "0644"
+    content: |
+      makestep 1.0 -1
 packages:
   - tmux
+  - chrony
+runcmd:
+  - systemctl enable chrony
+  # Containers share the host clock and cannot run a clock-setting daemon;
+  # VMs own their clock and must start chrony after cloud-init installs it.
+  - systemd-detect-virt --quiet --container || systemctl start chrony

@@ -15,11 +15,21 @@ package_update: true
 # tmux: 'box tmux' runs 'tmux new-session' INSIDE the box (#65).
 # curl + ca-certificates: the rig installer below rides them, and a bare
 # cloud image is not guaranteed to ship either.
+# chrony: step resumed guests back to real UTC even after startup (#174).
+write_files:
+  - path: /etc/chrony/conf.d/box-makestep.conf
+    permissions: "0644"
+    content: |
+      makestep 1.0 -1
 packages:
   - tmux
   - curl
   - ca-certificates
+  - chrony
 runcmd:
+  - systemctl enable chrony
+  # Containers share the host clock; VM guests must start chrony (#174).
+  - systemd-detect-virt --quiet --container || systemctl start chrony
   # Preinstall rig so the box can converge — and re-converge — via
   # 'rig bootstrap grok-box'. @RIG_REPO@/@RIG_REF@ are the pin point (#81):
   # box substitutes them at mint from the RIG_REPO/RIG_REF environment
