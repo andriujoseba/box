@@ -3,14 +3,25 @@
 # is wrong? Users reach it as 'box doctor'; the drill runs it directly.
 #
 #   bash drill/doctor.sh          # report
-#   bash drill/doctor.sh --fix    # report, then revert what the drill left behind
+#   bash drill/doctor.sh --fix    # report, then restore what is missing, delete leftovers
 #
-# The drill MUTATES the host in phase D (dns.mode, NIC filtering, ACL rules) to
-# rehearse the #16 hardening. If a run aborts before it reverts them, those
-# mutations outlive it — and the next run mints boxes on a broken network. That
-# is not a hypothetical: it is how a box came up with no DNS at all
-# ("Temporary failure resolving deb.debian.org" in cloud-init), and how a false
-# design veto against #16 got posted from a poisoned baseline.
+# --fix has two halves because a host goes wrong in two ways.
+#
+#   · A RUN LEFT THINGS BEHIND. An aborted drill leaves its boxes (drill,
+#     clone, archive, peer, payroll, cbprobe, cbcopy, cbnotours), and an
+#     interrupted multiuser.sh leaves its rehearsal users and their projects.
+#     --fix deletes the boxes and names the users' own cleanup.
+#   · THE HOST IS MISSING SHIPPED STACK PIECES. dns.mode=none, the box-isolate
+#     ACL and a gateway carve-out that tracks the live bridge,
+#     security.port_isolation on the NIC, a dnsmasq actually serving boxnet.
+#     Their ABSENCE is the fault, never their presence, and --fix puts them
+#     back.
+#
+# Either way the host mints boxes on a broken network, and that is not a
+# hypothetical: it is how a box came up with no DNS at all ("Temporary failure
+# resolving deb.debian.org" in cloud-init), and how a false design veto
+# against #16 got posted from a poisoned baseline. A verdict measured on a
+# broken baseline is not a verdict, which is the whole reason this file exists.
 #
 # This script is the answer to "what state is the host actually in?" — the
 # question that kept getting answered by hand.
@@ -407,12 +418,17 @@ if [ -n "$PROFILES" ]; then
       inf "segment, so their frames are switched, never routed past the ACL."
       inf "fix:  re-run:  box setup-host"
     fi
+    # NEITHER filter is in the shipped stack, so any value here is a fault —
+    # and the fault is that it is set, not how it got set. setup-host sets
+    # neither, and security.ipv4_filtering was MEASURED to break the box's
+    # networking outright (dockerd comes up but cannot pull or run a
+    # container); drill.sh's isolation-contract record carries it as VETOED.
     for k in security.mac_filtering security.ipv4_filtering; do
       v="$(incus profile device get "$p" eth0 "$k" 2>/dev/null)"
       if [ -z "$v" ]; then
         ok "$p: $k unset (as shipped)"
       else
-        no "$p: $k = $v  ← phase D left this behind. A box can fail to get on the network at all."
+        no "$p: $k = $v  ← NOT SHIPPED — ipv4_filtering is recorded VETOED, it breaks the box's networking. A box can fail to get on the network at all."
         [ "$FIX" = 1 ] && { incus profile device unset "$p" eth0 "$k" && inf "reverted: $k unset"; }
       fi
     done
@@ -455,8 +471,12 @@ if incus network acl show box-isolate >/dev/null 2>&1; then
   n="$(incus network acl show box-isolate | grep -c 'action:' || true)"
   inf "$n rules"
   incus network acl show box-isolate | grep -E 'action:|destination:' | sed 's/^/        /'
+  # @internal is REJECTED as an ACL destination on a bridge network
+  # ("Unsupported nftables subject"), so a rule carrying it enforces nothing —
+  # which is why the sibling drop is an nft bridge-family rule instead. Such a
+  # rule is dead weight that reads like a boundary; --fix removes it.
   if incus network acl show box-isolate | grep -q '@internal'; then
-    no "an @internal rule survived phase D"
+    no "an @internal rule — unsupported on a bridge network's ACL ('Unsupported nftables subject'), so it enforces nothing"
     [ "$FIX" = 1 ] && { incus network acl rule remove box-isolate egress action=drop destination=@internal && inf "reverted: @internal rule removed"; }
   fi
   # The gateway carve-out must track the BRIDGE. #80's escape hatch moves
