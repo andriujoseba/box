@@ -15,7 +15,6 @@ The review panel is:
 
 - `claude-bot-andresmgsl`
 - `codex-bot-andresmgsl`
-- `grok-bot-andresmgsl`
 - `kimi-bot-andresmgsl`
 
 Every PR needs a current-head verdict from the whole panel minus its author.
