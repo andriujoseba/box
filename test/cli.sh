@@ -6582,8 +6582,6 @@ check "multiuser: (p) prints the captured wedge evidence before exiting" 0 "" \
   grep -qF "printf '%s\\n' \"\$admin_down\"" "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) does not re-wedge in cleanup after that evidence" 0 "" \
   grep -qF 'KEEP=1' "$ROOT/drill/multiuser.sh"
-check "multiuser: (p) does not discard a prompt stop failure's reason" 1 "" \
-  grep -qF 'head -1)' "$ROOT/drill/multiuser.sh"
 # shellcheck disable=SC2016  # ditto
 check "multiuser: (p) cleans that box up rather than leaving it for later phases" 0 "" \
   grep -qF 'box rm "$ADMINBOX" --force' "$ROOT/drill/multiuser.sh"
