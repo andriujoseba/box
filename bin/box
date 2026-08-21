@@ -1538,14 +1538,20 @@ render_userdata() {
   # The generic seed has one conditional axis (#159): a runtime role selects
   # the agent-class blocks; an argumentless mint selects the blank blocks.
   # Exact comment sentinels keep the source valid YAML and are stripped from
-  # what reaches cloud-init. There is still one file and one renderer.
+  # what reaches cloud-init. Source commentary is stripped too, except for the
+  # content-type header: Incus stores user.user-data in its global database,
+  # and the generic source's role-only explanation made the blank payload over
+  # twice its old size. Ubuntu's Incus 6.0.0 then hit cowsql's obsolete
+  # SQLITE_DIRECT_OVERFLOW_READ assertion while stopping the third mint on
+  # PR #209. Comments belong in this source; dead bytes do not belong in every
+  # instance's database row. There is still one file and one renderer.
   data="$(awk -v role="${T_BOOTSTRAP_ROLE:+1}" '
     BEGIN { keep = 1 }
     /^# box-role-only-begin$/  { keep = role; next }
     /^# box-role-only-end$/    { keep = 1; next }
     /^# box-blank-only-begin$/ { keep = !role; next }
     /^# box-blank-only-end$/   { keep = 1; next }
-    keep { print }
+    keep && (NR == 1 || $0 !~ /^[[:space:]]*#/) { print }
   ' "$f")"
   data="${data//@BOX_USER@/${T_USER:-}}"
   repo="$(rig_repo)"

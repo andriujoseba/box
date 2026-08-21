@@ -421,6 +421,11 @@ check "render_userdata: role sentinels never reach cloud-init (#159)" 1 "" \
   grep -q '^# box-.*-only-' "$ROLESEED"
 check "render_userdata: blank sentinels never reach cloud-init (#159)" 1 "" \
   grep -q '^# box-.*-only-' "$BLANKSEED"
+check "render_userdata: source-only comments do not inflate Incus user-data (#159, #209)" 1 "" \
+  sed '1d' "$BLANKSEED" | grep -qE '^[[:space:]]*#'
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "render_userdata: blank payload stays below one 4KiB overflow page (#209)" 0 "" \
+  bash -c '[ "$(wc -c < "$1")" -lt 4096 ]' _ "$BLANKSEED"
 check "generic seed: role tenant has no sudoers entry (#177, #159)" 1 "" \
   grep -qE '^[[:space:]]*sudo:' "$ROLESEED"
 check "generic seed: blank tenant keeps sudo (#177, #159)" 0 "" \
