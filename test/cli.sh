@@ -6232,6 +6232,129 @@ for v in start down restart; do
     "$BOX" help "$v"
 done
 
+# ---------------------------------------------------------------------------
+# The two files that name the review panel name one panel (#198). The roster
+# dropped a fourth account on 2026-08-19 in .github/labels.conf — the file the
+# state machine reads — and CONTRIBUTING.md, the file a contributor reads to
+# learn what a handoff owes, kept it. Nothing broke at runtime and nothing here
+# noticed, because nothing here compared the two. That is what this block is:
+# the correction alone buys one correct day.
+#
+# Driven through file arguments and not against the repo's own copies alone,
+# because "they agree today" is exactly what the stale pair also looked like
+# from one side. The fixtures below break the agreement in each direction and
+# require a red, and two more require a red for an extraction that reads
+# nothing — a comparison of two empty sets passes, and would pass for a
+# renamed heading or a deleted panel= line.
+# ---------------------------------------------------------------------------
+PANELWORK="$(mktemp -d)"
+
+# Both extractors emit one account per line, in file order. Order is preserved
+# rather than sorted here so the same two functions serve the set comparison
+# and the order check below.
+conf_panel() {   # conf_panel <labels.conf>
+  sed -n 's/^panel=//p' "$1" | tr ' ' '\n' | sed '/^$/d'
+}
+# The doc's roster is the bulleted list under '## Review panel', bounded at the
+# next heading. Both bounds carry weight. The bullet form is what keeps prose
+# out: 'dan-claude-bot' is backticked INSIDE this section and is explicitly not
+# a member, so an extractor reading every backtick reads triage onto the panel.
+# The heading bound is what keeps the rest of the file out.
+doc_panel() {   # doc_panel <CONTRIBUTING.md>
+  # shellcheck disable=SC2016  # the backticks are markdown in the file being read
+  sed -n '/^## Review panel$/,/^## /p' "$1" \
+    | sed -n 's/^- `\([A-Za-z0-9._-]*\)`$/\1/p'
+}
+# panel_rosters_agree [<labels.conf> [<CONTRIBUTING.md>]] — the repo's own by
+# default. Names the symmetric difference in both directions, so the message
+# says which file is missing whom rather than that a comparison failed.
+panel_rosters_agree() {
+  ( set -u
+    conf="${1:-$ROOT/.github/labels.conf}"; doc="${2:-$ROOT/CONTRIBUTING.md}"
+    in_conf="$(conf_panel "$conf" | sort -u)"
+    in_doc="$(doc_panel "$doc" | sort -u)"
+    [ -n "$in_conf" ] || { echo "no panel= names read out of $conf"; exit 1; }
+    [ -n "$in_doc" ] || { echo "no panel bullets read out of $doc's ## Review panel"; exit 1; }
+    only_doc="$(comm -13 <(printf '%s\n' "$in_conf") <(printf '%s\n' "$in_doc") | tr '\n' ' ')"
+    only_conf="$(comm -23 <(printf '%s\n' "$in_conf") <(printf '%s\n' "$in_doc") | tr '\n' ' ')"
+    if [ -n "${only_doc% }" ] || [ -n "${only_conf% }" ]; then
+      echo "the two rosters disagree:"
+      [ -n "${only_doc% }" ] && echo "  listed in $doc, absent from $conf: ${only_doc% }"
+      [ -n "${only_conf% }" ] && echo "  listed in $conf, absent from $doc: ${only_conf% }"
+      exit 1
+    fi
+    exit 0 )
+}
+check "panel: the two rosters name the same set of accounts" 0 "" panel_rosters_agree
+# ...and in one order, which is the other half of what the doc promises a
+# reader: a list matching as a set but shuffled still reads as a different
+# panel to the person comparing it against a review request.
+panel_rosters_share_an_order() {
+  ( set -u
+    conf="$(conf_panel "$ROOT/.github/labels.conf" | tr '\n' ' ')"
+    doc="$(doc_panel "$ROOT/CONTRIBUTING.md" | tr '\n' ' ')"
+    [ "$conf" = "$doc" ] \
+      || { echo "labels.conf lists [${conf% }]; CONTRIBUTING.md lists [${doc% }]"; exit 1; } )
+}
+check "panel: ...in the same order labels.conf uses" 0 "" panel_rosters_share_an_order
+
+# --- the extraction is bounded ---------------------------------------------
+# The case most likely to be got wrong, asserted directly rather than left to
+# be implied by the sets happening to match: dan-claude-bot is triage, is named
+# in this very section, and is never a reviewer.
+doc_panel_omits_triage() {
+  ( set -u
+    doc_panel "$ROOT/CONTRIBUTING.md" | grep -qx 'dan-claude-bot' \
+      && { echo "dan-claude-bot was read as a panel member; it is prose in the section, not a bullet"; exit 1; }
+    exit 0 )
+}
+check "panel: dan-claude-bot is in the section and is NOT read as a member" 0 "" \
+  doc_panel_omits_triage
+# The heading bound, proven the same way: a bullet of the same shape in a later
+# section is not the panel, so adding one must not move the roster.
+awk '{ print } END { print ""; print "## Later"; print ""; print "- `grok-bot-andresmgsl`" }' \
+  "$ROOT/CONTRIBUTING.md" > "$PANELWORK/later.md"
+check "panel: a same-shaped bullet in a LATER section is not read as a member" 0 "" \
+  panel_rosters_agree "$ROOT/.github/labels.conf" "$PANELWORK/later.md"
+
+# --- and it fails, in both directions --------------------------------------
+# The fix reverted: CONTRIBUTING.md as it stood at 362ec8d, four names against
+# labels.conf's three.
+awk '{ print } /^- `codex-bot-andresmgsl`$/ { print "- `grok-bot-andresmgsl`" }' \
+  "$ROOT/CONTRIBUTING.md" > "$PANELWORK/reverted.md"
+check "panel: the fix reverted in CONTRIBUTING.md reds" 1 "grok-bot-andresmgsl" \
+  panel_rosters_agree "$ROOT/.github/labels.conf" "$PANELWORK/reverted.md"
+check "panel: ...saying which file the extra name is absent from" 1 "absent from $ROOT/.github/labels.conf" \
+  panel_rosters_agree "$ROOT/.github/labels.conf" "$PANELWORK/reverted.md"
+# The same break made on the other file. Worth naming what this does and does
+# not prove: a name removed from labels.conf lands in the SAME direction as the
+# revert above — the doc holds a name the conf does not — and only shows the
+# comparison is not pinned to one hard-coded file. The genuine other direction
+# is the case below it.
+sed 's/ kimi-bot-andresmgsl//' "$ROOT/.github/labels.conf" > "$PANELWORK/short.conf"
+check "panel: a name dropped from labels.conf reds too" 1 "kimi-bot-andresmgsl" \
+  panel_rosters_agree "$PANELWORK/short.conf" "$ROOT/CONTRIBUTING.md"
+# The other direction: labels.conf names somebody CONTRIBUTING.md does not, so
+# a contributor reads a shorter panel than the one their PR will be handed to.
+# Without this the guard could be one-way and still pass everything above.
+# shellcheck disable=SC2016  # ditto — a markdown bullet, not a command substitution
+grep -v '^- `kimi-bot-andresmgsl`$' "$ROOT/CONTRIBUTING.md" > "$PANELWORK/thin.md"
+check "panel: a name missing from CONTRIBUTING.md reds — the other direction" 1 "kimi-bot-andresmgsl" \
+  panel_rosters_agree "$ROOT/.github/labels.conf" "$PANELWORK/thin.md"
+check "panel: ...saying which file that one is absent from" 1 "absent from $PANELWORK/thin.md" \
+  panel_rosters_agree "$ROOT/.github/labels.conf" "$PANELWORK/thin.md"
+
+# --- an extraction that reads nothing is a failure, not an agreement --------
+# Two empty sets are equal. So the heading a reader could rename in good faith,
+# and the line a labels edit could drop, each have to be a red of their own.
+sed 's/^## Review panel$/## Who reviews/' "$ROOT/CONTRIBUTING.md" > "$PANELWORK/noheading.md"
+check "panel: a renamed section is a red, not two empty sets agreeing" 1 "no panel bullets" \
+  panel_rosters_agree "$ROOT/.github/labels.conf" "$PANELWORK/noheading.md"
+grep -v '^panel=' "$ROOT/.github/labels.conf" > "$PANELWORK/nopanel.conf"
+check "panel: a labels.conf with no panel= line is a red as well" 1 "no panel= names" \
+  panel_rosters_agree "$PANELWORK/nopanel.conf" "$ROOT/CONTRIBUTING.md"
+rm -rf "$PANELWORK"
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 rm -rf "$SHIMDIR" "$WORK"
