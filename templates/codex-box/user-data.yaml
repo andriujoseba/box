@@ -104,6 +104,12 @@ runcmd:
       chmod 600 /swapfile
       mkswap /swapfile
       swapon /swapfile
+      # Close the line first if fstab has no trailing newline: appending onto
+      # a half-line would fuse the swap entry to the ROOT entry, and a box
+      # whose / is unparseable does not boot. The test reads the last byte —
+      # command substitution eats a trailing newline, so an empty result IS
+      # the newline and nothing is added.
+      [ -s /etc/fstab ] && [ -n "$(tail -c1 /etc/fstab)" ] && printf '\n' >> /etc/fstab
       printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab
     fi
   # Preinstall rig so the box can converge — and re-converge — via
