@@ -4140,6 +4140,40 @@ check "doctor: the ACL carve-out is checked against the live gateway" 0 "" \
   grep -qF "does NOT match boxnet's gateway" "$ROOT/drill/doctor.sh"
 
 # ---------------------------------------------------------------------------
+# The phase-D phantom, retired from the third file that carried it (#197).
+# Phase D stopped rehearsing the #16 hardening when the hardening shipped —
+# drill.sh's phase D is a block of `inf` lines with no `incus` call of any
+# kind — so doctor's header and two of its findings were blaming a mechanism
+# that does not exist, in the file bin/box points five other failure paths at.
+# These two cases pin the false claims OUT.
+check "doctor: the header does not claim the drill mutates the host" 1 "" \
+  grep -qF 'MUTATES the host in phase D' "$ROOT/drill/doctor.sh"
+check "doctor: no finding blames phase D for a mutation" 1 "" \
+  grep -qE 'phase D left this behind|survived phase D' "$ROOT/drill/doctor.sh"
+# ...and these pin the BEHAVIOUR in. #197 moves prose only, so every one of
+# them passes BEFORE the rewrite as well as after — which is what makes the two
+# cases above safe to write, a rewrite that quietly dropped a --fix branch
+# reddening here. Nothing asserts the header's new wording: a text match on a
+# comment the same change writes proves only that the change agrees with
+# itself, and the reader needs the two claims out and these five in.
+check "doctor: --fix still restores dns.mode=none" 0 "" \
+  grep -qF 'incus network set boxnet dns.mode=none' "$ROOT/drill/doctor.sh"
+check "doctor: --fix still removes an @internal ACL rule" 0 "" \
+  grep -qF 'incus network acl rule remove box-isolate' "$ROOT/drill/doctor.sh"
+check "doctor: --fix still deletes all eight leftover drill boxes" 0 "" \
+  grep -qF 'for b in drill clone archive peer payroll cbprobe cbcopy cbnotours; do' \
+    "$ROOT/drill/doctor.sh"
+# The #16 incident is the file's best argument for running it at all, and D2
+# re-attributes it to the fault rather than deleting it with the phase. Carried
+# prose, not new, so this case passes on both sides of the rewrite too.
+check "doctor: the #16 incident survives the re-attribution" 0 "" \
+  grep -qF 'Temporary failure resolving deb.debian.org' "$ROOT/drill/doctor.sh"
+# D6: doctor has no --help and gained none. A bad argument is still one line
+# and exit 2, resolved before any daemon call — so this runs anywhere.
+check "doctor: a bad argument still exits 2 with the one-line usage" 2 "usage: doctor.sh" \
+  bash "$ROOT/drill/doctor.sh" --nonsense
+
+# ---------------------------------------------------------------------------
 # box-firewall's UFW converge and the fail-closed boot window (#86 review,
 # items 1–2). The whole script is DRIVEN under shims (the setup-host seam):
 # a fake ufw serves canned `ufw status` tables and logs every mutation, fake
