@@ -69,6 +69,14 @@ bash drill/drill.sh --ref release/0.10.0 --emit-record drills/0.10.0.md
   `78/78`. A phase that did not run is recorded as a shortfall, and a phase
   *declared* skipped is recorded as a `SKIP` line that lowers the floor by
   exactly its probes (#153). Passing and skipped never look alike.
+- **The isolation audit answers come with it**, as their own `## Audit
+  answers` section: what phases A, C and E *measured* — sibling reachability,
+  the DNS enumeration leak, IPv6, inbound, `incus copy`'s treatment of
+  `user.*`. They are measurements and not verdicts, which is why they sit
+  apart from the findings: whether `A4 dns enumeration: LEAKS` is a failure is
+  what the probe beside it already decided. The drill printed them for a human
+  to paste into an issue that has since closed; the record is where they are
+  read now (#154).
 - **`NO_COLOR=1`, or piping anywhere, drops the ANSI** from the drill, the
   doctor and the multi-user rehearsal.
 - **The emitted file is refused if one already exists there.** A record is
@@ -114,4 +122,16 @@ residue. Then `drill/multiuser.sh` for the two-user grant matrix.
   boundary itself.
 - The VM boundary probes (the 87-probe isolation contract) passed clean,
   which is the assertion this repo's drill exists to make.
+
+## Audit answers
+
+What the isolation probes measured, uninterpreted.
+
+- A1/A5 egress + public DNS: PASS
+- A2 box→host: dropped
+- A3 sibling: BLOCKED — tcp dropped + no icmp reply (security.port_isolation)
+- A4 dns enumeration: blocked (dns.mode=none)
+- A6 ipv6: none, as contract requires
+- A7 inbound host→box: dropped
+- B2 copy preserves user.*: YES — #17's metadata-stamp design holds
 ```

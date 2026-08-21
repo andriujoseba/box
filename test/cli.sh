@@ -4886,6 +4886,26 @@ check "drill record: failures land in it verbatim, uncoloured" 0 "- FAIL: the bo
 check "drill record: a clean run says so rather than leaving a bare heading" 0 \
   "Nothing to report" emit "$CLEAN"
 
+# The audit answers, in the record rather than only on a terminal (#154). They
+# were printed under a header telling a human to paste them into an issue that
+# has since closed, in a repo that has been renamed — the last field still being
+# retyped out of coloured output, which is the defect this emitter exists to end.
+check "drill record: the audit answers land in it, not only on the terminal" 0 \
+  "- A3 sibling: BLOCKED — tcp dropped" \
+  emit "$CLEAN; aud 'A3 sibling: BLOCKED — tcp dropped'"
+check "drill record: ...under their own heading, because they are measurements" 0 \
+  "## Audit answers" emit "$CLEAN; aud 'A6 ipv6: none, as contract requires'"
+# The reason they are not folded into `findings`: a real run always has audit
+# answers, so folding them would retire the clean-run line entirely — a record
+# could never again say plainly that nothing was wrong.
+check "drill record: ...and a clean run with answers still reports nothing wrong" 0 \
+  "Nothing to report" emit "$CLEAN; aud 'A6 ipv6: none, as contract requires'"
+# A run with no answers grows no empty heading. Emitted here rather than read
+# from a check above, so the assertion owns the file it grades.
+emit "$CLEAN" >/dev/null
+check "drill record: a run with no audit answers grows no empty section" 1 "" \
+  grep -q '## Audit answers' "$RECOUT"
+
 # --- the emitter on the real exit path --------------------------------------
 # Everything above drives record_write directly. None of it proves the DRILL
 # emits, or that emitting cannot disturb the exit status #153 made load-bearing.
@@ -4906,6 +4926,13 @@ check "drill emit: ...pinned to the run ID the drill announced at install time" 
   "drill-9.9.9-20260721-01" cat "$RECOUT"
 check "drill emit: ...and the operator is told it is a skeleton to edit" 0 \
   "it is a SKELETON" run_emit "$CLEAN"
+# The terminal block is retargeted at the same reader, so the two agree about
+# where an audit answer goes. What it must never do again is send an operator to
+# heavy-duty/claudebox#15: complete, and in a repo that has been renamed (#154).
+check "drill emit: the terminal audit block is headed for the record" 0 \
+  "Isolation audit answers" run_emit "$CLEAN; aud 'A6 ipv6: none, as contract requires'"
+check "drill: ...and no phase header sends the operator to the closed audit" 1 "" \
+  grep -qF 'phase - "#15 audit answers' "$ROOT/drill/drill.sh"
 
 # The record is written AFTER the shortfall verdict, so it carries it. Emitting
 # before that `no` fires would put a clean sweep in the record on a short run,
@@ -5139,17 +5166,110 @@ fi
 check "drill help: names --emit-record" 0 "--emit-record" bash "$ROOT/drill/drill.sh" --help
 check "drill help: names the run ID" 0 "--run-id" bash "$ROOT/drill/drill.sh" --help
 check "drill help: names NO_COLOR" 0 "NO_COLOR" bash "$ROOT/drill/drill.sh" --help
-# ...and still ends where it used to, on the phase list rather than mid-sentence.
-# What that list SAYS is stale is #154's to fix; that the window ends there is
-# this file's to keep true.
-check "drill help: the window still ends on the phase list" 0 "C. Isolation baseline" \
-  bash "$ROOT/drill/drill.sh" --help
+# ...and still covers the phase list rather than ending mid-sentence — the WHOLE
+# list now. It used to stop on "C. Isolation baseline" while the block ran to M,
+# so a tool asked directly for its phases answered with a truncated list of a
+# list that was itself wrong (#154). Driven against the LEDGER's keys and not a
+# fixed string: the two drifted apart for two releases because nothing compared
+# them, and a phase added without a header line reds here now.
+help_names_every_phase() {
+  ( set -u
+    # shellcheck disable=SC2034  # skipped() appends to it; the block assumes it
+    findings=()
+    # shellcheck disable=SC1090  # the extracted ledger, written above
+    . "$LEDGERFN"
+    local out k
+    out="$(bash "$ROOT/drill/drill.sh" --help)" || { echo "--help failed"; exit 1; }
+    for k in "${PHASE_ORDER[@]}"; do
+      printf '%s\n' "$out" | grep -qE "^ *$k\. " \
+        || { echo "--help does not name ledgered phase $k"; exit 1; }
+    done )
+}
+check "drill help: it names every phase the ledger declares" 0 "" help_names_every_phase
+check "drill help: ...including the last one, so the window is not short again" 0 \
+  "T. Teardown" bash "$ROOT/drill/drill.sh" --help
+check "drill help: ...and the window reaches the line after the list" 0 \
+  "Exit 0 = every check passed" bash "$ROOT/drill/drill.sh" --help
 check "drill: an unknown option is still a usage error" 2 "unknown option" \
   bash "$ROOT/drill/drill.sh" --frobnicate
+# The window is quoted in two docs as a literal range, beside an instruction to
+# keep it in step with the script — so a stale copy is not a stale fact, it is a
+# stale instruction, and the editor who obeys it truncates the help again. The
+# checks above prove the window COVERS the list; this one proves the docs quote
+# the range that produced it. Read out of the '-h|--help' line rather than
+# written here twice, or this check is the third copy that can drift.
+docs_quote_the_help_window() {
+  ( set -u
+    local range doc
+    range="$(sed -n "s/.*-h|--help) *sed -n '\([0-9]*,[0-9]*p\)'.*/\1/p" \
+      "$ROOT/drill/drill.sh")"
+    [ -n "$range" ] \
+      || { echo "could not read the help window range out of drill/drill.sh"; exit 1; }
+    for doc in drill/README.md CONTRIBUTING.md; do
+      grep -qF "sed -n '$range'" "$ROOT/$doc" \
+        || { echo "$doc does not quote the help window the script runs, $range"; exit 1; }
+    done )
+}
+check "drill help: the docs quote the window range the script actually runs" 0 "" \
+  docs_quote_the_help_window
+
+# The drill's own README is documentation of a MEASURED thing, so it is checked
+# against the measurement rather than read. It described four phases while the
+# script printed eight for two releases, and E and M — some 200 lines of expose
+# and migration probes — went undocumented the whole time, because nothing here
+# compared the file to the ledger (#154).
+readme_names_every_phase() {
+  ( set -u
+    # shellcheck disable=SC2034  # skipped() appends to it; the block assumes it
+    findings=()
+    # shellcheck disable=SC1090  # the extracted ledger, written above
+    . "$LEDGERFN"
+    local k
+    for k in "${PHASE_ORDER[@]}"; do
+      grep -qE "^\| \*\*$k\*\* \|" "$ROOT/drill/README.md" \
+        || { echo "drill/README.md does not document ledgered phase $k"; exit 1; }
+      # ...and with the phase's own probe count, which is the number an operator
+      # reads a shortfall against. Two places to update is the point: a phase
+      # that gains a probe moves the table, the README and CONTRIBUTING's total.
+      grep -qE "^\| \*\*$k\*\* \|.*\| ${PHASE_EXPECT[$k]} \|" "$ROOT/drill/README.md" \
+        || { echo "drill/README.md gives phase $k a count other than ${PHASE_EXPECT[$k]}"; exit 1; }
+    done
+    grep -qF "$(ledger_declared) probes" "$ROOT/drill/README.md" \
+      || { echo "drill/README.md does not quote the table's own total, $(ledger_declared)"; exit 1; } )
+}
+check "drill/README: documents every ledgered phase, with its probe count" 0 "" \
+  readme_names_every_phase
+# The repo was renamed; the clone line and the issue links were not.
+check "drill/README: no longer points at the pre-rename repo" 1 "" \
+  grep -q 'heavy-duty/claudebox' "$ROOT/drill/README.md"
+# The warning that cost the most to leave standing: on a script whose header
+# says run it on a machine you can format, it spent an operator's caution on
+# mutations phase D stopped making when the hardening shipped. Both halves are
+# checked — the README says so plainly, and no line the drill PRINTS says
+# otherwise. Grepped past the comments on purpose: the ones preserving this
+# incident quote the old warning, and a comment is not an answer to anybody.
+check "drill/README: says plainly that a run leaves no D-phase mutations" 0 "" \
+  grep -qF 'no D-phase mutations' "$ROOT/drill/README.md"
+check "drill: no line it PRINTS still promises D-phase residue on the host" 1 "" \
+  bash -c "grep -vE '^[[:space:]]*#' '$ROOT/drill/drill.sh' | grep -q 'still applied'"
+# Two lines were retired, and 'still applied' only pins one of them. The other
+# was "(plus, unless re-run: dns.mode=none and NIC filtering from the D phase)"
+# on the closing summary, which carries none of that string — so re-introducing
+# THAT half stayed green while the check above read as though it covered both.
+# So: no line the drill PRINTS calls the phase by that name at all. Matched
+# case-sensitively on the "D phase"/"D-phase" shape rather than on "phase D",
+# because the ledger call `phase D "D. The isolation contract, stated"` is a
+# printed line and a correct one; it is the phase's own heading, not a claim
+# about residue. The header states the positive version and is a comment, past
+# this grep for the reason the check above gives.
+check "drill: ...nor the closing line's version of the same promise" 1 "" \
+  bash -c "grep -vE '^[[:space:]]*#' '$ROOT/drill/drill.sh' | grep -qE 'D[- ]phase'"
 
 # The gate reads drills/<version>.md, so the emitter's own documentation lives
 # beside the record format it produces.
 check "drills/README documents the emitter" 0 "" grep -qF -- '--emit-record' "$ROOT/drills/README.md"
+check "drills/README documents the audit-answers section the emitter writes" 0 "" \
+  grep -qF '## Audit answers' "$ROOT/drills/README.md"
 check "drills/README says the emitted record is a starting point" 0 "" \
   grep -qiF 'skeleton' "$ROOT/drills/README.md"
 check "drills/README says where the shared run ID comes from" 0 "" \
