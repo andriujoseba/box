@@ -6,16 +6,48 @@
 # mint; the agent-context file — including the #80 guard (never run
 # 'box setup-host' or the drill inside a box) — is rendered by that role,
 # once, instead of being copy-pasted per template.
+# The tenant is UNPRIVILEGED, and the ABSENCE of a 'sudo:' line here is the
+# whole of it (#177, ruled by danmt on #176). Root was never a confidentiality
+# boundary — the agent already runs AS this user, so its credentials, the repo
+# and the egress are reachable without it, and the VM contains the rest. What
+# root cost is in-guest mitigation: an egress allowlist enforced in the guest,
+# a read-only mount, auditd, a required proxy are each one 'sudo' away from
+# being switched off, and a box whose tenant is root cannot produce
+# trustworthy evidence about its own contents, because root rewrites the logs
+# that would say otherwise. The operator's path is 'box root <box>', which
+# authorizes through the host's Incus socket and needs no sudoers entry in the
+# guest (#176). 'blank' and 'staging-box' keep theirs on purpose: agents lose
+# root, self-converging fleet guests keep it — two traits, two answers.
+# NOT a partial allowlist ('NOPASSWD: /usr/bin/apt-get' and friends, #177
+# decision 6): apt alone installs a package that owns the box, so it keeps
+# most of the risk while feeling safer. Either the agent is unprivileged or
+# it is not.
 users:
   - name: codex
     shell: /bin/bash
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
     lock_passwd: true
 package_update: true
 # tmux: 'box tmux' runs 'tmux new-session' INSIDE the box (#65).
 # curl + ca-certificates: the rig installer below rides them, and a bare
 # cloud image is not guaranteed to ship either.
 # chrony: step resumed guests back to real UTC even after startup (#174).
+# The unprivileged toolchain (#177 decision 3). With no sudo, 'apt install' is
+# no longer the agent's escape hatch, so what it reaches for ships here or is
+# reachable user-locally. Measured, not guessed: over three weeks of duty in a
+# live claude-box, the tenant-initiated installs recorded in
+# /var/log/apt/history.log ('Requested-By: claude (1000)') were shellcheck,
+# then a Chromium/Playwright dependency set, then chromium. The browser stack
+# stays OUT — task-specific, hundreds of megabytes on every mint, and 'box
+# root' is the path for it; a shell linter is small and generic, so it is in.
+# Everything else an agent used came from rig's role (git, gh, ripgrep, jq,
+# build-essential, node), which is where the toolchain belongs; re-listing it
+# here would only thicken the seed (#81).
+# python3-venv: Debian 13 ships no pip and marks the system environment
+# externally-managed, so 'python3 -m venv' — the user-local Python route the
+# ruling leans on — dies on a bare guest with "install the python3-venv
+# package". Measured in the same box. Without it, losing sudo means losing
+# every route to a Python package, which is the silently-crippled agent this
+# change must not produce.
 write_files:
   - path: /etc/chrony/conf.d/box-makestep.conf
     permissions: "0644"
@@ -26,6 +58,8 @@ packages:
   - curl
   - ca-certificates
   - chrony
+  - python3-venv
+  - shellcheck
 runcmd:
   - systemctl enable chrony
   # Containers share the host clock; VM guests must start chrony (#174).

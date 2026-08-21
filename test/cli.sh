@@ -415,6 +415,42 @@ for d in "$ROOT"/templates/*/; do
   else
     echo "skip: template '$t' YAML well-formedness (no python3+pyyaml here; CI has both)"
   fi
+  # #177: the tenant is UNPRIVILEGED, and the default is no sudoers entry at
+  # all. Root was never the confidentiality boundary — the agent runs AS the
+  # tenant — but it forecloses every in-guest control one might later add and
+  # lets a box rewrite the evidence of its own contents; the operator path is
+  # 'box root', which authorizes host-side and needs no sudoers entry (#176).
+  # The two exceptions are NAMED here rather than inferred, so a new template
+  # that ships a sudo line goes red in this loop until someone puts it on the
+  # list deliberately — the same fail-closed shape as the absence block below.
+  case "$t" in
+    blank|staging-box)
+      # Self-converging fleet guests keep root: their tenant's own first act
+      # is 'sudo rig runner install' or 'sudo rig bootstrap workload-server'.
+      # Agents lose root, self-converging guests keep it — two traits, two
+      # answers, and #175's BOX_REQUIRE_VM is the one meant to be inherited.
+      check "template '$t': keeps NOPASSWD sudo — a self-converging seed (#177)" 0 "" \
+        grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$d/user-data.yaml" ;;
+    *)
+      # shellcheck disable=SC2016  # $1 expands in the child shell, by design
+      check "template '$t': the tenant has NO sudoers entry (#177)" 1 "" \
+        bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qE "^[[:space:]]*sudo:"' _ "$d/user-data.yaml" ;;
+  esac
+  # #177 decision 6: where a seed keeps sudo it is ALL or nothing. A partial
+  # allowlist ('NOPASSWD: /usr/bin/apt-get') reintroduces most of the risk —
+  # apt alone installs a package that owns the box — while feeling safer,
+  # which is the worst combination. So the only permitted value is the full
+  # one, in any template, and the grep runs over EFFECTIVE lines because the
+  # comments above it name the shape they refuse.
+  # shellcheck disable=SC2016  # $1 expands in the child shell, by design
+  check "template '$t': a sudoers entry is ALL or nothing (#177)" 1 "" \
+    bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -E "^[[:space:]]*sudo:" \
+               | grep -qvE "^[[:space:]]*sudo: \"ALL=\(ALL\) NOPASSWD:ALL\"$"' _ "$d/user-data.yaml"
+  # The half of the seed's user block that #177 did NOT change: no password
+  # login, in every template. Dropping sudo while leaving the account
+  # unlocked would trade one door for another.
+  check "template '$t': the tenant password stays locked (#177)" 0 "" \
+    grep -qE '^[[:space:]]*lock_passwd: true$' "$d/user-data.yaml"
   # #65: 'box tmux' runs 'tmux new-session' INSIDE the box, so every
   # template's package list must carry tmux or the verb dies inside.
   check "template '$t': installs tmux (#65)" 0 "" \
@@ -512,6 +548,26 @@ done
 for u in claude codex grok kimi; do
   check "$u-box: role is '$u-box', seed user is '$u' (rig's tenant mapping)" \
     0 "USER=$u REQUIRE_VM= NO_FALLBACK=1 AUTOSTART= ROLE=$u-box" tpl "$ROOT" "$u-box"
+  # #177 decision 3: sudo left these four seeds, so 'apt install' is no longer
+  # the agent's escape hatch and what it reaches for has to ship here or be
+  # reachable user-locally. Measured, not guessed — the tenant-initiated
+  # installs in a live claude-box's apt history over three weeks were a shell
+  # linter, a Chromium/Playwright dependency set, and chromium. The browser
+  # stack stays out (task-specific, hundreds of MB per mint, and 'box root' is
+  # its path); the linter is small and generic, so it ships. NB: a comment
+  # line here must not OPEN with the linter's own name — shellcheck reads
+  # '# shellcheck ...' as a directive and reds the whole file (measured).
+  # python3-venv is the second measurement: Debian 13 ships no pip and marks
+  # the system environment externally-managed, so 'python3 -m venv' — the
+  # user-local Python route the ruling leans on — dies on a bare guest asking
+  # for root. Without it, losing sudo loses every route to a Python package,
+  # which is the silently-crippled agent this change must not produce.
+  # Pinned to the four AGENT seeds, not to the discovery loop: this is
+  # compensation for the sudo they lost, and blank/staging-box did not lose it.
+  for p in python3-venv shellcheck; do
+    check "$u-box: ships '$p' — the tenant cannot apt-install it now (#177)" 0 "" \
+      grep -qE "^[[:space:]]*-[[:space:]]+$p\$" "$ROOT/templates/$u-box/user-data.yaml"
+  done
 done
 # blank stays a box with NOBODY home: no rig, no role — same isolation, no
 # tooling, and nothing auto-runs in it.
@@ -659,7 +715,18 @@ check "new: the auto-run sits under the T_BOOTSTRAP_ROLE guard" 0 "" bash -c '
     | grep -B2 "incus exec .* rig bootstrap" | grep -q "T_BOOTSTRAP_ROLE"'
 check "new: a failed tenant role names the re-run (the role converges)" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -q "sudo rig bootstrap"'
+    | grep -q "box root .*rig bootstrap"'
+# ...and names it through the ROOT path. Since #177 the agent tenants have no
+# sudoers entry, so a hint of the old shape ('box shell' then 'sudo rig
+# bootstrap <role>') was a recovery path that died on exactly the boxes it was
+# printed for. 'box root' needs no sudoers entry (#176) and is right for all
+# six templates. Pinned per-token so the staging tailnet-join hint below —
+# 'sudo rig bootstrap workload-server', a tenant that KEPT sudo — is untouched
+# by this assertion.
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "new: the re-run hint does not assume tenant sudo (#177)" 1 "" bash -c '
+  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
+    | grep -q "sudo rig bootstrap \$T_BOOTSTRAP_ROLE"'
 
 # The launch phase, narrated and time-boxed (#93) — grepped the way the other
 # mint-path guards are (a daemon-free run cannot mint). Twice in the
