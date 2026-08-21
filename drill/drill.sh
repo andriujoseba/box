@@ -21,7 +21,8 @@
 # --emit-record <path> writes drills/README.md's six-item record with every
 # field the harness already knows filled in (#152): the run ID, the host, the
 # candidate refs and the SHAs they resolve to, the numbers against #153's
-# floor, the wall clock, and the findings uncoloured. It is a SKELETON — what
+# floor, the wall clock, the findings and the isolation audit answers, all
+# uncoloured (#154). It is a SKELETON — what
 # a failure means for the release is a judgement a script must not fabricate,
 # so the file says it is a draft until you edit that line out. --run-id (or
 # DRILL_RUN_ID) pins the ID this release set's three records share; unset, it
@@ -96,13 +97,13 @@ while [ $# -gt 0 ]; do
     --in-group) shift; break ;;                       # internal: see below
     # The help IS the header block above, printed verbatim, so a line added
     # there must move this window with it — 18 → 23 for the five lines the
-    # probe floor added, 23 → 39 for the sixteen the record added, 39 → 53 for
+    # probe floor added, 23 → 39 for the sixteen the record added, 39 → 54 for
     # the phase list this window used to cut off in the middle of (#154). It
     # ended on "C. Isolation baseline" while the list ran to M, which is how a
     # tool asked directly for its phases answered with four of eight. The whole
     # list is inside the window now, and test/cli.sh asserts that by driving
     # --help against the ledger's own keys rather than against a fixed string.
-    -h|--help) sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "drill: unknown option: $1" >&2; exit 2 ;;
   esac
 done
