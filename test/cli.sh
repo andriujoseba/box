@@ -1636,17 +1636,33 @@ cat > "$MSHIM/incus" <<'SHIM'
 #                    empty = incus does not know it (the degraded mint)
 #   FAKE_CFG         a file of "<key> <value>" lines answering 'config get'
 #   FAKE_ROW         the csv row 'list --columns nstS' returns
+#   FAKE_TYPE        what 'list --columns t' returns — the instance type the
+#                    #171 disk refusal branches on; empty = incus did not say
+#   FAKE_SHOW        what 'config show <ref>' returns — the source's devices,
+#                    which decide whether --disk can ride the copy (#171)
+#   FAKE_SHOW_RC     the STATUS 'config show' exits with, default 0. Separate
+#                    from FAKE_SHOW because the pair that matters is stdout
+#                    that looks fine and a status that does not: a read box
+#                    must not believe (#171 D2, review round 1)
+#   FAKE_ROOT_SIZE   what 'config device get <i> root size' returns; empty =
+#                    no per-instance root override (the container answer)
 # The launch carries a whole cloud-init seed, so the call is logged with its
 # newlines flattened — an assertion about "the launch line" must see one line.
 printf 'incus %s\n' "$*" | tr '\n' ' ' >> "$FAKE_INCUS_LOG"
 printf '\n' >> "$FAKE_INCUS_LOG"
 case "$*" in
   *volatile.base_image) printf '%s\n' "${FAKE_BASE_IMAGE-}" ;;
+  # Both 'config get <i> <key>' and its --expanded form (#171 reads what the
+  # instance will RUN with, profiles included) — the key is the last word
+  # either way, so one arm answers both.
   "config get "*)
     [ -n "${FAKE_CFG:-}" ] || exit 0
     key="$*"; key="${key##* }"
     awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_CFG" ;;
+  "config device get "*) printf '%s\n' "${FAKE_ROOT_SIZE-}" ;;
+  "config show "*)       printf '%s\n' "${FAKE_SHOW-}"; exit "${FAKE_SHOW_RC:-0}" ;;
   *"--columns nstS") printf '%s\n' "${FAKE_ROW-}" ;;
+  *"--columns t")    printf '%s\n' "${FAKE_TYPE-}" ;;
   *"--columns 4")    echo '10.1.2.3 (enp5s0)' ;;
 esac
 exit 0
@@ -1978,6 +1994,321 @@ unset SHIM_PREFIX
 # landing after the set would leave the clone with no identity at all.
 check "clone: an ordinary clone never unsets the id it just re-stamped (#181)" 1 "" \
   grep -qE 'config unset .* user\.box\.id' "$CLONELOG"
+
+# --- a clone's SIZING: the flags that ride the copy, and the silent case ----
+# Two halves of one defect (#171). The flags were refused on --from on #57's
+# premise that honouring them meant a post-hoc resize; they do not — 'incus
+# copy' takes -c/-d and the root override is applied before the volume is
+# created, so nothing is ever resized. And the refusal only ever fired if the
+# flags were PASSED: drop them and the box came up sized by its source or its
+# template with nothing saying what that size was — true of the fresh mint as
+# much as the clone, which is why D6 narrates both.
+#
+# What box prints is DRIVEN, never matched. The issue's own proposed message
+# read 'box incus <box> -- config set limits.cpu 2', which cmd_incus turns
+# into 'incus config set limits.cpu 2 <inst>' — the instance in the value's
+# place, because it is appended when no {} appears. A text assertion would
+# have shipped that verbatim.
+#
+# A source with its own root device, which is what box's VM mints produce.
+LOCALROOT="$MWORK/localroot.yaml"
+cat > "$LOCALROOT" <<'YAML'
+architecture: x86_64
+config:
+  limits.cpu: "4"
+  limits.memory: 8GiB
+devices:
+  root:
+    path: /
+    pool: default
+    size: 60GiB
+    type: disk
+name: work
+YAML
+# ...and one whose root comes from the profile: the case copy.go cannot serve.
+PROFROOT="$MWORK/profroot.yaml"
+cat > "$PROFROOT" <<'YAML'
+architecture: x86_64
+config:
+  limits.cpu: "4"
+devices:
+  eth0:
+    name: eth0
+    type: nic
+name: work
+YAML
+
+copyline() { grep -m1 '^incus copy ' "$1"; }
+SIZELOG="$MWORK/size.log"
+FAKE_SHOW="$(cat "$LOCALROOT")"; export FAKE_SHOW
+check "clone sizing: --from WITH the size flags now mints (#171 D1)" 0 "cloned" \
+  mintbox "$SIZELOG" new --name w9 --from work --cpu 2 --memory 4GiB --disk 20GiB
+# The whole mechanism on one line: the override rides the copy, so the volume
+# is created at the size asked for. A second call fixing it up afterwards would
+# be the post-hoc resize #57 ruled out, and is not this.
+check "clone sizing: the cpu override rides the copy (#171 D1)" 0 "-c limits.cpu=2" \
+  copyline "$SIZELOG"
+check "clone sizing: the memory override rides the copy (#171 D1)" 0 "-c limits.memory=4GiB" \
+  copyline "$SIZELOG"
+check "clone sizing: the root size rides it as a DEVICE override (#171 D1)" \
+  0 "-d root,size=20GiB" copyline "$SIZELOG"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: ...in ONE copy call, not a copy and a fix-up (#171 D1)" 0 "1" \
+  bash -c 'grep -c "^incus copy " "$1"' _ "$SIZELOG"
+check "clone sizing: ...and nothing resizes it afterwards (#57, #171 D1)" 1 "" \
+  restamp_has "$SIZELOG" 'limits\.'
+# -s beside -d root,size= silently DROPS the sizing: applyStoragePool's
+# fallback rebuilds the root device as {type, path, pool} and discards the
+# size. box passes no pool flag today and this is what stops one arriving.
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: the copy argv never carries -s/--storage (#171 D2)" 1 "" \
+  bash -c 'grep -m1 "^incus copy " "$1" | grep -qE " (-s|--storage) "' _ "$SIZELOG"
+# Only a flag actually passed contributes an argument.
+SIZELOG2="$MWORK/size-cpu.log"
+check "clone sizing: one flag, one override (#171 D1)" 0 "cloned" \
+  mintbox "$SIZELOG2" new --name w9 --from work --cpu 2
+check "clone sizing: ...the cpu override is there (#171 D1)" 0 "-c limits.cpu=2" \
+  copyline "$SIZELOG2"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: ...and no memory the caller never asked for (#171 D1)" 1 "" \
+  bash -c 'grep -m1 "^incus copy " "$1" | grep -qF "limits.memory"' _ "$SIZELOG2"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: ...and no root device the caller never asked for (#171 D1)" 1 "" \
+  bash -c 'grep -m1 "^incus copy " "$1" | grep -qF "root,size"' _ "$SIZELOG2"
+# A plain clone is untouched by all of it: no flags, no overrides.
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: a flagless clone passes no overrides at all (#171 D1)" 1 "" \
+  bash -c 'grep -m1 "^incus copy " "$1" | grep -qE " -[cd] "' _ "$CLONELOG"
+
+# The pre-flight (D2). incus's copy.go does not merge a -d override onto a
+# profile-inherited device the way create.go does — it installs the override AS
+# the device, so a profile-rooted source would be copied with a root of 'size'
+# and nothing else: no type, no path, not a root disk at all.
+check "clone sizing: box reads the source's OWN devices (#171 D2)" 0 "" \
+  grep -qE '^incus config show work *$' "$SIZELOG"
+check "clone sizing: ...never --expanded, which folds the profile back in (#171 D2)" 1 "" \
+  grep -qF 'config show --expanded' "$SIZELOG"
+# D3: die BEFORE the copy. Not a warning-and-proceed — the caller asked for a
+# 20GiB clone, and handing them the source's size with a note beside it is the
+# silent wrong-sizing this issue opened on.
+SIZELOG3="$MWORK/size-profroot.log"
+FAKE_SHOW="$(cat "$PROFROOT")"; export FAKE_SHOW
+check "clone sizing: a profile-rooted VM source DIES, exit 1 (#171 D3)" \
+  1 "no root device of its own" \
+  mintbox "$SIZELOG3" new --name w9 --from work --cpu 2 --disk 20GiB
+# Asserted on the shim's record, not on the message: a message that says
+# nothing was created, while the copy ran, is the failure mode #160 named.
+check "clone sizing: ...and NO copy ran at all (#171 D3)" 1 "" \
+  grep -q '^incus copy ' "$SIZELOG3"
+check "clone sizing: ...it says nothing was created (#171 D3)" \
+  0 "NOTHING WAS CREATED" cat "$SIZELOG3.out"
+check "clone sizing: ...and that --cpu/--memory went nowhere either (#171 D3)" \
+  0 "were not applied" cat "$SIZELOG3.out"
+check "clone sizing: ...names the condition it refused on (#171 D3)" \
+  0 "comes from a profile" cat "$SIZELOG3.out"
+check "clone sizing: ...and offers the two measured routes (#171 D3)" \
+  0 "drop --disk" cat "$SIZELOG3.out"
+check "clone sizing: ...the second being a fresh mint (#171 D3)" \
+  0 "mint fresh with --disk" cat "$SIZELOG3.out"
+# The house rule, asserted the way #160's wall asserts it: ANCHORED. A line
+# that begins 'incus ' or 'box ' reads as a command to run, and the verb that
+# would fix the source is triage's inference off the copy.go divergence — a
+# route nobody here has watched work. Naming a mechanism mid-sentence is fine;
+# the anchor is exactly what draws that line.
+no_command_lines() {   # no_command_lines <output-file>
+  ! sed 's/^box: *//' "$1" | grep -qE '^(incus|box) '
+}
+check "clone sizing: the refusal prints NO runnable line, anchored (#171 D3)" 0 "" \
+  no_command_lines "$SIZELOG3.out"
+# ...and specifically not the override verb, which is the one it must not hand
+# out however it is phrased.
+check "clone sizing: ...and never the unwatched override verb (#171 D3)" 1 "" \
+  grep -qF 'config device override' "$SIZELOG3.out"
+# Not forceable, unlike #160's wall: --force cannot buy a device that is not a
+# root disk, so there is no door through this one.
+SIZELOG4="$MWORK/size-forced.log"
+check "clone sizing: --force does NOT buy past it (#171 D3)" \
+  1 "no root device of its own" \
+  mintbox "$SIZELOG4" new --name w9 --from work --disk 20GiB --force
+check "clone sizing: ...and forced or not, no copy ran (#171 D3)" 1 "" \
+  grep -q '^incus copy ' "$SIZELOG4"
+# D4: container mode keeps the answer it has had since #57 — note, no -d, and
+# the copy PROCEEDS. The difference from D3 is principled: here the flag is
+# categorically inapplicable, there it is merely unservable for this source.
+SIZELOG5="$MWORK/size-ct.log"
+export FAKE_TYPE=CONTAINER
+check "clone sizing: a container source fires the note and CLONES (#171 D4)" \
+  0 "--disk applies to VM mode only" \
+  mintbox "$SIZELOG5" new --name w9 --from work --cpu 2 --disk 20GiB
+check "clone sizing: ...the copy really ran (#171 D4)" 0 "" \
+  grep -q '^incus copy ' "$SIZELOG5"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone sizing: ...carrying no -d, because there is no size to set (#171 D4)" 1 "" \
+  bash -c 'grep -m1 "^incus copy " "$1" | grep -qF "root,size"' _ "$SIZELOG5"
+check "clone sizing: ...while --cpu still rides it (#171 D4)" 0 "-c limits.cpu=2" \
+  copyline "$SIZELOG5"
+unset FAKE_TYPE
+# Fail CLOSED on an unreadable source: no answer is not a yes. A false negative
+# costs a refusal and a rerun; a false positive writes a non-root-disk device
+# onto a fresh clone.
+SIZELOG6="$MWORK/size-blind.log"
+export FAKE_SHOW=""
+check "clone sizing: an unreadable source refuses rather than guessing (#171 D2)" \
+  1 "could not be read" \
+  mintbox "$SIZELOG6" new --name w9 --from work --disk 20GiB
+check "clone sizing: ...and no copy ran on the blind read either (#171 D2)" 1 "" \
+  grep -q '^incus copy ' "$SIZELOG6"
+# The one the pre-flight is FOR, and the one an earlier cut of this branch got
+# wrong: stdout that parses as a local root device, and a STATUS that says the
+# read failed. 'config show || true' discards the status and then believes the
+# bytes — which attaches -d root,size= to a copy from a source box never
+# actually read, the exact false positive D2 exists to prevent. The stanza here
+# is the GOOD one, so nothing but the status can be what refuses it.
+SIZELOG8="$MWORK/size-readfail.log"
+FAKE_SHOW="$(cat "$LOCALROOT")"; export FAKE_SHOW
+export FAKE_SHOW_RC=1
+check "clone sizing: a FAILED read refuses, however good its stdout looked (#171 D2)" \
+  1 "could not be read" \
+  mintbox "$SIZELOG8" new --name w9 --from work --cpu 2 --disk 20GiB
+check "clone sizing: ...and NO copy ran at all (#171 D2)" 1 "" \
+  grep -q '^incus copy ' "$SIZELOG8"
+# Belt and braces on the thing that actually breaks: the argv, not the prose.
+# A helper that failed open would put this on the copy line.
+check "clone sizing: ...so no -d rode a copy box never read (#171 D2)" 1 "" \
+  grep -qF 'root,size=20GiB' "$SIZELOG8"
+unset FAKE_SHOW_RC
+# The cause line is the ONE thing that varies between the two refusals, and it
+# varies because box knows the difference. A profile is what box saw; it is not
+# what box says when it saw nothing.
+check "clone sizing: an unread source is not blamed on a profile (#171 D3)" 1 "" \
+  grep -qF 'comes from a profile' "$SIZELOG8.out"
+check "clone sizing: ...and the profile-rooted source still is (#171 D3)" 0 \
+  "comes from a profile" cat "$SIZELOG3.out"
+# Everything else D3 was ruled to carry is identical on both arms — the
+# situation is identical, only the cause differs.
+check "clone sizing: ...the unread arm still says nothing was created (#171 D3)" \
+  0 "NOTHING WAS CREATED" cat "$SIZELOG8.out"
+check "clone sizing: ...still offers the two measured routes (#171 D3)" \
+  0 "drop --disk" cat "$SIZELOG8.out"
+check "clone sizing: ...and still prints no runnable line, anchored (#171 D3)" 0 "" \
+  no_command_lines "$SIZELOG8.out"
+export FAKE_SHOW=""
+# ...while the flags with no precondition are untouched by any of it.
+SIZELOG7="$MWORK/size-nodisk.log"
+mintbox "$SIZELOG7" new --name w9 --from work --cpu 2 >/dev/null 2>&1 || true
+check "clone sizing: ...and -c needs no pre-flight to ride the copy (#171 D2)" \
+  0 "-c limits.cpu=2" copyline "$SIZELOG7"
+unset FAKE_SHOW
+
+# D6 — BOTH branches narrate, from the same helper, read off the daemon. The
+# issue argued the clone was silent where the mint spoke; the mint speaks no
+# more than the clone does, so ruling the clone alone would have left the same
+# asymmetry pointing the other way.
+SIZECFG="$MWORK/clone-sized.cfg"
+cat > "$SIZECFG" <<'CFG'
+user.box 1
+limits.cpu 6
+limits.memory 12GiB
+CFG
+SIZEDCLONE="$MWORK/sized-clone.log"
+export FAKE_CFG="$SIZECFG" FAKE_ROOT_SIZE=80GiB
+check "clone: narrates the resources it actually carries (#171 D6)" \
+  0 "resources, read back from incus: cpu=6 mem=12GiB disk=80GiB" \
+  mintbox "$SIZEDCLONE" new --name w10 --from work/authed
+# The mint half of D6, which is the part the issue's false comparison hid.
+SIZEDMINT="$MWORK/sized-mint.log"
+check "mint: narrates them too, from the same helper (#171 D6)" \
+  0 "resources, read back from incus: cpu=6 mem=12GiB disk=80GiB" \
+  mintbox "$SIZEDMINT" new --name w14 --template claude-box --container
+# One helper, one call site, after the branches rejoin — so the parity is
+# structural and a third way of minting cannot ship silent about its sizing.
+# shellcheck disable=SC2016  # the $-strings are literals inside bash -c
+check "mint: the narration is ONE call, after the branches rejoin (#171 D6)" 0 "" bash -c '
+  fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
+  [ "$(printf "%s\n" "$fn" | grep -c "narrate_resources ")" -eq 1 ]'
+# --expanded, because the question is what the instance will RUN with: a
+# profile added by hand is as real as box's own per-instance stamp, and a bare
+# 'config get' would report only the override.
+check "clone: reads the limits with --expanded, not just the override (#171 D6)" 0 "" \
+  grep -qF 'incus config get --expanded w10 limits.cpu' "$SIZEDCLONE"
+# The root size is a DEVICE key, not a config one — its absence is how the
+# container case answers, so it must never be read off limits.*.
+check "clone: reads the root size as a device key (#171 D6)" 0 "" \
+  grep -qE '^incus config device get w10 root size *$' "$SIZEDCLONE"
+unset FAKE_ROOT_SIZE
+# No per-instance root override — the container answer — prints no disk figure
+# rather than inventing one from the pool or from a template it never loaded.
+CTCLONE="$MWORK/ct-clone.log"
+check "clone: no root override → the figures it HAS, and no disk guess (#171 D6)" \
+  0 "resources, read back from incus: cpu=6 mem=12GiB" \
+  mintbox "$CTCLONE" new --name w11 --from work/authed
+check "clone: ...and says nothing at all about a disk (#171 D6)" 1 "" \
+  grep -qF 'disk=' "$CTCLONE.out"
+unset FAKE_CFG
+# The fully degraded read: incus answers none of the three. Silence here is
+# indistinguishable from the bug this line exists to fix, so it says so and
+# names the verb that has the whole config.
+check "clone: an unreadable read-back says so rather than going quiet (#171 D6)" \
+  0 "incus reported no resource figures" \
+  mintbox "$MWORK/blind-clone.log" new --name w12 --from work/authed
+check "mint: ...and the mint path degrades the same way (#171 D6)" \
+  0 "incus reported no resource figures" \
+  mintbox "$MWORK/blind-mint.log" new --name w15 --template claude-box --container
+
+# D5 — the post-copy handle, where box does print one, carries what incus
+# actually does. 'box new --help' is that place now: the D3 refusal prints no
+# command at all, so the handle lives here and nowhere else.
+check "new --help: says the flags work on --from (#171 D1)" 0 \
+  "The flags work on --from too" "$BOX" help new
+check "new --help: ...that they ride the copy rather than resize (#171 D1)" 0 \
+  "no resize, no restart" "$BOX" help new
+check "new --help: ...and carries --disk's precondition (#171 D2)" 0 \
+  "a root device of its own" "$BOX" help new
+check "new --help: the disk handle demands a stopped box (#171 D5)" 0 \
+  "STOP THE BOX" "$BOX" help new
+check "new --help: ...and names the pools that defer the quota (#171 D5)" 0 \
+  "'dir' or 'btrfs'" "$BOX" help new
+check "new --help: ...and that no local driver shrinks a root (#171 D7)" 0 \
+  "will shrink one" "$BOX" help new
+# Every 'box incus' line box prints, RUN back through cmd_incus — the help's
+# three handles and the narration's one. This is the assertion the issue's own
+# proposal fails, and it fails the day cmd_incus's substitution changes.
+HINTCFG="$MWORK/hints.cfg"; printf 'user.box 1\n' > "$HINTCFG"
+HINTLOG="$MWORK/hints.log"
+run_printed_hints() {  # run_printed_hints <output-file> <incus-log>
+  local line
+  : > "$2"
+  # Capture first, THEN read (#124's class) — and it is box's own printed
+  # words being word-split here, never anything a caller supplied.
+  grep -oE 'box incus .*' "$1" > "$MWORK/hints.txt" || true
+  while IFS= read -r line; do
+    local words; read -r -a words <<<"$line"
+    env FAKE_INCUS_LOG="$2" FAKE_CFG="$HINTCFG" \
+        PATH="$MSHIM:$RIGSHIM:$PATH" "$BOX" "${words[@]:1}" </dev/null >/dev/null 2>&1
+  done < "$MWORK/hints.txt"
+}
+"$BOX" help new > "$MWORK/help-new.out" 2>&1
+run_printed_hints "$MWORK/help-new.out" "$HINTLOG"
+# Position, not presence: 'config set <inst> limits.cpu 4' is the contract, and
+# 'config set limits.cpu 4 <inst>' is the bug the issue's message would have
+# shipped. '<box>' is the help's own placeholder and resolves like any name.
+check "new --help: the printed cpu handle RUNS, instance first (#171 D5)" 0 "" \
+  grep -qE '^incus config set <box> limits\.cpu 4 *$' "$HINTLOG"
+check "new --help: the memory handle lands the same way (#171 D5)" 0 "" \
+  grep -qE '^incus config set <box> limits\.memory 8GiB *$' "$HINTLOG"
+check "new --help: and the root device handle too (#171 D5)" 0 "" \
+  grep -qE '^incus config device set <box> root size=60GiB *$' "$HINTLOG"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "new --help: ...those three and no fourth (#171 D5)" 0 "3" \
+  bash -c 'grep -cE "^incus config (set|device set) " "$1"' _ "$HINTLOG"
+# The narration's own handle, driven the same way.
+NARRHINT="$MWORK/narr-hints.log"
+export FAKE_CFG="$SIZECFG"
+mintbox "$MWORK/hint-clone.log" new --name w16 --from work/authed >/dev/null 2>&1 || true
+unset FAKE_CFG
+run_printed_hints "$MWORK/hint-clone.log.out" "$NARRHINT"
+check "clone: the narration's own handle RUNS, instance first (#171 D5)" 0 "" \
+  grep -qE '^incus config set w16 limits\.cpu <n> *$' "$NARRHINT"
 
 # --- the read half: 'box info' surfaces it ---------------------------------
 # A stamp nothing can read is not done. cmd_info printed NAME/STATE/TYPE/IPV4
@@ -4056,26 +4387,26 @@ check "probe ledger: the extracted block is valid bash" 0 "" bash -n "$LEDGERFN"
 # script around it, so the harness supplies it, exactly as the drill does.
 led() { bash -c "set -u; findings=(); . '$LEDGERFN'; $1"; }
 # A complete run: every phase emits what it declared.
-FULL='PHASE_RAN=([I]=1 [A]=8 [B]=49 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)'
+FULL='PHASE_RAN=([I]=1 [A]=8 [B]=51 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)'
 
 # shellcheck disable=SC2016  # the snippet is evaluated by led(), not here
-check "probe ledger: the declared total is 85" 0 "[85]" led 'printf "[%s]" "$(ledger_declared)"'
+check "probe ledger: the declared total is 87" 0 "[87]" led 'printf "[%s]" "$(ledger_declared)"'
 # The number CONTRIBUTING and drills/README.md have quoted all along with
 # nothing checking it. If a phase gains probes, both move together or this reds.
 check "probe ledger: ...which is the contract CONTRIBUTING states" 0 "" \
-  grep -qF '85-probe' "$ROOT/CONTRIBUTING.md"
+  grep -qF '87-probe' "$ROOT/CONTRIBUTING.md"
 
 check "probe ledger: a complete run is short in nothing" 0 "[]" \
   led "$FULL; printf '[%s]' \"\$(ledger_short)\""
-check "probe ledger: a complete run's floor is the declared total" 0 "[85]" \
+check "probe ledger: a complete run's floor is the declared total" 0 "[87]" \
   led "$FULL; printf '[%s]' \"\$(ledger_expected)\""
 
 # THE regression. A phase that never executed used to be invisible: the pass
 # count simply ended lower and exit 0 vouched for it.
 check "probe ledger: a phase that never ran is named, not silently dropped" 0 "C(0/9)" \
   led "$FULL; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_short)\""
-check "probe ledger: ...and one missing probe inside a phase is named too" 0 "B(48/49)" \
-  led "$FULL; PHASE_RAN[B]=48; printf '[%s]' \"\$(ledger_short)\""
+check "probe ledger: ...and one missing probe inside a phase is named too" 0 "B(50/51)" \
+  led "$FULL; PHASE_RAN[B]=50; printf '[%s]' \"\$(ledger_short)\""
 
 # A floor, not an equality: adding a probe must not red the commit that adds it.
 check "probe ledger: overshooting a phase is not a shortfall" 0 "[]" \
@@ -4083,7 +4414,7 @@ check "probe ledger: overshooting a phase is not a shortfall" 0 "[]" \
 
 # A declared skip is honest — it lowers the expectation by exactly its probes
 # and says so. The whole point is that the floor is never tuned down silently.
-check "probe ledger: a declared skip lowers the floor by its probes" 0 "[76]" \
+check "probe ledger: a declared skip lowers the floor by its probes" 0 "[78]" \
   led "$FULL; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_expected)\""
 check "probe ledger: ...so a declared skip is not a shortfall" 0 "[]" \
   led "$FULL; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_short)\""
@@ -4105,7 +4436,7 @@ check "probe ledger: tally returns 0 so ok/no still do" 0 "[0][0]" \
 # A verdict emitted outside any ledgered phase means the table has drifted.
 check "probe ledger: an unattributed verdict is surfaced, not swallowed" 0 "unattributed" \
   led "PHASE=-; tally; ledger_line"
-check "probe ledger: the per-phase line is what a single total cannot say" 0 "B 49/49" \
+check "probe ledger: the per-phase line is what a single total cannot say" 0 "B 51/51" \
   led "$FULL; ledger_line"
 
 # The wiring, so the ledger cannot be left correct-but-unused.
@@ -4197,39 +4528,39 @@ summary_lacks() {   # 0 when the composed run does NOT say $1
   local needle="$1"; shift
   ! run_summary "$1" 2>&1 | grep -qF -e "$needle"
 }
-COMPLETE="$FULL; pass=85; fail=0"
+COMPLETE="$FULL; pass=87; fail=0"
 
-check "drill summary: a complete run reports 85/85 and EXITS 0" 0 "85/85 passed, 0 failed" \
+check "drill summary: a complete run reports 87/87 and EXITS 0" 0 "87/87 passed, 0 failed" \
   run_summary "$COMPLETE"
 
-# THE regression, end to end. Phase C never executed: 76 verdicts, none of them
-# failing, and the drill used to leave here 0 with "76 passed, 0 failed" on the
+# THE regression, end to end. Phase C never executed: 78 verdicts, none of them
+# failing, and the drill used to leave here 0 with "78 passed, 0 failed" on the
 # line an operator transcribes into drills/<version>.md as proof.
 check "drill summary: a phase that never ran EXITS NON-ZERO" 1 "the drill ran SHORT:" \
-  run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=76"
+  run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
 check "drill summary: ...naming the short phase, against the full denominator" 1 \
-  "short in: C(0/9)" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=76"
-check "drill summary: ...and the record carries 76/85, not a clean 76" 1 \
-  "76/85 passed, 1 failed" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=76"
+  "short in: C(0/9)" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
+check "drill summary: ...and the record carries 78/87, not a clean 78" 1 \
+  "78/87 passed, 1 failed" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
 # The verdict names both roads to a short phase, not just the commoner one.
 check "drill summary: ...and does not diagnose 'never ran' as the only cause" 1 \
-  "or failed before emitting the rest" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=76"
+  "or failed before emitting the rest" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
 
-# A DECLARED skip is the line between honest and tuned-down: same 76 verdicts,
+# A DECLARED skip is the line between honest and tuned-down: same 78 verdicts,
 # but the run said which nine it was not going to emit, and why.
 check "drill summary: a declared skip lowers the floor and EXITS 0" 0 \
-  "76/76 passed, 0 failed" \
-  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=76"
+  "78/78 passed, 0 failed" \
+  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=78"
 check "drill summary: ...and the SKIP survives into the findings block" 0 \
   "SKIP: no isolation stack" \
-  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=76"
+  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=78"
 
 # The other road to non-zero: nothing short, one thing genuinely failed. Both
 # roads have to work, and the second must not be reported as the first.
 check "drill summary: a complete run with one real FAIL EXITS NON-ZERO" 1 \
-  "84/85 passed, 1 failed" run_summary "$COMPLETE; pass=84; fail=1"
+  "86/87 passed, 1 failed" run_summary "$COMPLETE; pass=86; fail=1"
 check "drill summary: ...and is not mislabelled as a short run" 0 "" \
-  summary_lacks "the drill ran SHORT:" "$COMPLETE; pass=84; fail=1"
+  summary_lacks "the drill ran SHORT:" "$COMPLETE; pass=86; fail=1"
 
 # ---------------------------------------------------------------------------
 # The record emitter (#152). drills/README.md asks a record for six things and
@@ -4472,7 +4803,7 @@ check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--k
 # --- the record itself ------------------------------------------------------
 # A finished drill, pinned so every field is assertable. record_collect fills
 # only what is not already set, which is what lets a test pin the world away.
-RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=49 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
+RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=51 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
 REC_VERSION=9.9.9; REC_DATE=2026-07-21; REC_HOST='bare Debian 13, Incus 6.0.2'
 REC_RUN_ID=drill-9.9.9-20260721-01; REC_BOX_SHA=abc1234; REC_RIG_SHA=def5678
 REC_RIG_REF=0.3.1
@@ -4482,7 +4813,7 @@ emit() {   # emit <state> → the record that state produces, on stdout
   rec "$RECSTATE; $1; record_write '$RECOUT'" >/dev/null 2>&1
   cat "$RECOUT" 2>/dev/null
 }
-CLEAN='pass=85; fail=0'
+CLEAN='pass=87; fail=0'
 
 # drills/README.md:34-42 asks for six things. One check each, because a record
 # missing one of them is the hand-transcription this replaces, reintroduced.
@@ -4506,15 +4837,15 @@ check "drill record: ...and rig's, which is the other half of the combination" 0
 check "drill record: says what ran, as a command that reproduces it" 0 \
   'RIG_REF=0.3.1 bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
 check "drill record: gives the numbers and the wall clock" 0 \
-  "**85/85 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
+  "**87/87 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
 check "drill record: carries the per-phase ledger a single total cannot say" 0 \
-  "B 49/49" emit "$CLEAN"
+  "B 51/51" emit "$CLEAN"
 check "drill record: states the floor and the table's total as two facts" 0 \
-  "Probe floor: 85 expected this run; the table declares 85." emit "$CLEAN"
+  "Probe floor: 87 expected this run; the table declares 87." emit "$CLEAN"
 # DRILL_EXPECT can raise the floor above the table, and the record must not read
 # that as an error — the operator is deliberately demanding more than the table.
 check "drill record: ...which stays readable when DRILL_EXPECT raises the floor" 0 \
-  "Probe floor: 90 expected this run; the table declares 85." \
+  "Probe floor: 90 expected this run; the table declares 87." \
   emit "DRILL_EXPECT=90; $CLEAN"
 # The record is pasted into a file and read months later. Escape codes in it are
 # the peculiar thing this issue found: every script emitted ANSI unconditionally.
@@ -4534,24 +4865,24 @@ check "drill record: ...and says the judgement is the operator's to write" 0 \
   "a judgement it must not fabricate" emit "$CLEAN"
 
 # THE #153 regression, in the artifact #153 exists to protect. A run that emitted
-# 76 of 85 and failed none is not "76/76 passed" — and the record is precisely
+# 78 of 87 and failed none is not "78/78 passed" — and the record is precisely
 # where that fraction used to get written down as proof a release was drilled.
 check "drill record: a short run's denominator is the FLOOR, not what ran" 0 \
-  "**76/85 passed" emit "pass=76; fail=0; PHASE_RAN[C]=0"
+  "**78/87 passed" emit "pass=78; fail=0; PHASE_RAN[C]=0"
 check "drill record: ...and the short phase is named in it" 0 "C 0/9" \
-  emit "pass=76; fail=0; PHASE_RAN[C]=0"
+  emit "pass=78; fail=0; PHASE_RAN[C]=0"
 # A DECLARED skip is the honest half: the floor moves, and the record says which
 # probes were not expected and why — recorded as skipped, never as passing.
 check "drill record: a declared skip lowers the record's denominator" 0 \
-  "**76/76 passed" emit "pass=76; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  "**78/78 passed" emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: ...and the skip is recorded AS a skip, beside the failures" 0 \
   "- SKIP: no isolation stack" \
-  emit "pass=76; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: ...and the waived probes are visible in the ledger line" 0 \
   "9 waived by declared skips" \
-  emit "pass=76; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: failures land in it verbatim, uncoloured" 0 "- FAIL: the boundary held open" \
-  emit "pass=84; fail=1; no 'the boundary held open' >/dev/null"
+  emit "pass=86; fail=1; no 'the boundary held open' >/dev/null"
 check "drill record: a clean run says so rather than leaving a bare heading" 0 \
   "Nothing to report" emit "$CLEAN"
 
@@ -4569,7 +4900,7 @@ run_emit() {   # run_emit <state> — EXIT STATUS is the drill's own
 }
 check "drill emit: a clean run writes the record and still EXITS 0" 0 \
   "record written:" run_emit "$CLEAN"
-check "drill emit: ...and the file on disk is the record" 0 "**85/85 passed, 0 failed.**" \
+check "drill emit: ...and the file on disk is the record" 0 "**87/87 passed, 0 failed.**" \
   cat "$RECOUT"
 check "drill emit: ...pinned to the run ID the drill announced at install time" 0 \
   "drill-9.9.9-20260721-01" cat "$RECOUT"
@@ -4580,10 +4911,10 @@ check "drill emit: ...and the operator is told it is a skeleton to edit" 0 \
 # before that `no` fires would put a clean sweep in the record on a short run,
 # which is the defect #153 closed.
 check "drill emit: a short run EXITS NON-ZERO with a record written" 1 \
-  "record written:" run_emit "pass=76; fail=0; PHASE_RAN[C]=0"
+  "record written:" run_emit "pass=78; fail=0; PHASE_RAN[C]=0"
 check "drill emit: ...and the record it wrote carries the shortfall, not a sweep" 0 \
   "FAIL: the drill ran SHORT:" cat "$RECOUT"
-check "drill emit: ...against the full denominator, 76/85" 0 "**76/85 passed" cat "$RECOUT"
+check "drill emit: ...against the full denominator, 78/87" 0 "**78/87 passed" cat "$RECOUT"
 
 # A record that cannot be written must not be able to turn a clean drill red:
 # the exit status is the floor's verdict on the DRILL, and a full disk has no
