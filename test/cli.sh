@@ -6567,6 +6567,17 @@ check "multiuser: (p) mints a box of the ADMIN's own, so that direction acts on 
   grep -qF 'box new --name "$ADMINBOX"' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) asserts the admin's 'all' stopped the admin's own box" 0 "" \
   grep -qF "stopped the admin's own box" "$ROOT/drill/multiuser.sh"
+# #209 reached this exact call and then left Actions with no verdict for 30
+# minutes, until the job ceiling cancelled every later criterion. The real
+# daemon still decides pass/fail; this bound makes a wedged client a named
+# failure and keeps the cleanup/reporting path reachable.
+check "multiuser: (p) time-boxes the admin fleet stop below the job ceiling" 0 "" \
+  grep -qF 'timeout -k 5 60 box down all' "$ROOT/drill/multiuser.sh"
+check "multiuser: (p) records daemon operations when that stop wedges" 0 "" \
+  grep -qF 'incus operation list --format csv' "$ROOT/drill/multiuser.sh"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "multiuser: (p) force-stops only as post-failure recovery" 0 "" \
+  grep -qF 'incus stop "$b" --force' "$ROOT/drill/multiuser.sh"
 # shellcheck disable=SC2016  # ditto
 check "multiuser: (p) cleans that box up rather than leaving it for later phases" 0 "" \
   grep -qF 'box rm "$ADMINBOX" --force' "$ROOT/drill/multiuser.sh"

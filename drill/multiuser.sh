@@ -134,6 +134,29 @@ probe_up() { # probe_up <user> <box> <url>
   echo "$r"
 }
 
+# A wedged graceful stop must be a named rehearsal failure, not the job's last
+# line 30 minutes later. PR #209 bought this bound: the admin half of (p)
+# reached `box down all`, then Incus left that client waiting until Actions
+# cancelled the whole job at its 40-minute ceiling. Keep box's real exit status
+# when it answers; on the timeout, preserve enough state to tell a guest that
+# refused shutdown from a daemon operation that wedged, then force-stop only
+# as recovery so the remaining criteria and cleanup can still report.
+bounded_admin_down() { # bounded_admin_down <box>
+  local b="$1" out rc ops guest
+  out="$(timeout -k 5 60 box down all 2>&1)"; rc=$?
+  if [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
+    printf '%s\n' "$out"
+    return "$rc"
+  fi
+  ops="$(timeout -k 2 10 incus operation list --format csv 2>&1 || true)"
+  guest="$(timeout -k 2 10 incus exec "$b" -- systemctl list-jobs --no-legend 2>&1 || true)"
+  printf 'box: admin fleet stop exceeded 60s (rc=%s)\n' "$rc" >&2
+  printf 'box: incus operations: %s\n' "${ops:-<no answer>}" >&2
+  printf 'box: guest systemd jobs: %s\n' "${guest:-<no answer>}" >&2
+  timeout -k 5 30 incus stop "$b" --force >/dev/null 2>&1 || true
+  return 1
+}
+
 # The hardened network's gateway and prefix, read off the network — never
 # hardcoded, because BOX_SUBNET moves the whole subnet now (#80).
 boxnet_gw()  { incus network get boxnet ipv4.address 2>/dev/null | cut -d/ -f1; }
@@ -376,7 +399,9 @@ if box new --name "$ADMINBOX" --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1
 else
   no "(p) the admin's own box could not be minted — the admin direction would measure nothing"
 fi
-box down all >/dev/null 2>&1 || true
+admin_down="$(bounded_admin_down "$ADMINBOX" 2>&1)"; admin_down_rc=$?
+[ "$admin_down_rc" -eq 0 ] \
+  || no "(p) the admin's 'box down all' failed or wedged: $(printf '%s' "$admin_down" | head -1)"
 aa="$(incus --project default list "$ADMINBOX" --format csv --columns s 2>/dev/null | head -n1)"
 a1="$(incus --project "$p1" list mine --format csv --columns s 2>/dev/null | head -n1)"
 ac1="$(incus --project "$p1" list c1 --format csv --columns s 2>/dev/null | head -n1)"
