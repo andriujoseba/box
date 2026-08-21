@@ -199,7 +199,7 @@ PHASE_ORDER=(I A B C E D M T)
 declare -A PHASE_EXPECT=(
   [I]=1     # install.sh left a complete host stack (#64)
   [A]=8     # A1–A6, A8, A9 — Incus semantics (A7 prints, it does not judge)
-  [B]=51    # the box surface: 6 templates/version + blank 10 + the #171 clone 3
+  [B]=51    # the box surface: dedicated seed/version + blank 10 + runtime roles + #171 clone 3
             # + codex/grok 3×2 + the drill box, its clone and the CLI contract 27
   [C]=9     # C1–C7, plus archive-is-up and the peer clone
   [E]=7     # box expose: add, list, info, the door, per-port, remove, shut
@@ -892,17 +892,17 @@ if ! timeout -k 10 300 ~/.local/share/box/current/host/setup-host.sh; then
 fi
 inf "host setup complete"
 
-# A real server has room for the claude-box template's resources (8GiB/4cpu), and
+# A real server has room for the medium role resources (8GiB/4cpu), and
 # drilling the real numbers is worth more than drilling shrunken ones. Only
 # shrink if we must. Since 0.4.0 resources are per-box, stamped from the
-# template at mint — a profile edit no longer reaches them; the supported
+# seed at mint — a profile edit no longer reaches them; the supported
 # override is the BOX_* environment, which every 'box new' below inherits.
 ram="$(awk '/MemTotal/{print int($2/1024/1024)}' /proc/meminfo)"
 if [ "$ram" -lt 20 ]; then
   export BOX_MEMORY=3GiB BOX_CPU=2
-  note "host has ${ram}GiB RAM — minting at 3GiB/2cpu via BOX_MEMORY/BOX_CPU (the claude-box template's 8GiB/4cpu is what was NOT drilled)"
+  note "host has ${ram}GiB RAM — minting at 3GiB/2cpu via BOX_MEMORY/BOX_CPU (the medium role's 8GiB/4cpu is what was NOT drilled)"
 else
-  inf "host has ${ram}GiB RAM — drilling the claude-box template's resources (8GiB/4cpu) unchanged"
+  inf "host has ${ram}GiB RAM — drilling the medium role resources (8GiB/4cpu) unchanged"
 fi
 
 KVM=0; [ -e /dev/kvm ] && KVM=1
@@ -1007,10 +1007,8 @@ fi
 
 # --- templates: the mint surface is itself a surface to test ----------------
 tpl_missing=""
-for t in blank claude-box codex-box grok-box kimi-box; do
-  box templates 2>/dev/null | grep -q "^  $t" || tpl_missing="$tpl_missing $t"
-done
-[ -z "$tpl_missing" ] && ok "templates: lists blank, claude-box, codex-box, grok-box, kimi-box" \
+box templates 2>/dev/null | grep -q '^  staging-box' || tpl_missing=" staging-box"
+[ -z "$tpl_missing" ] && ok "templates: lists the dedicated staging-box seed" \
                       || no "templates listing is missing:$tpl_missing"
 box new --name tpl --template nosuch 2>&1 | grep -q 'no such template' \
   && ok "unknown template refused, points at 'box templates'" || no "an unknown template was not refused"
@@ -1027,7 +1025,7 @@ rm -rf "$badt"
 # Inline resource flags: honored on a mint, and — since #171 — on a clone too.
 # The mint proof rides the blank box below, and because this drill exports
 # BOX_CPU/BOX_MEMORY on small hosts, it is also the precedence proof
-# (flag > env > template > default). The CLONE proof rides that same box a few
+# (flag > env > size > seed/default). The CLONE proof rides that same box a few
 # lines later, once there is a real source to copy: it needs one, which is why
 # it is not here.
 #
@@ -1039,7 +1037,7 @@ rm -rf "$badt"
 # touched incus, which made '--from nowhere' a usable source; nothing about
 # that trick survives the ruling, so this is a re-point and not a string swap.
 
-printf '\n  minting a blank box (the DEFAULT template — no tooling, fast)…\n'
+printf '\n  minting a blank box (the generic seed, no role auto-run)…\n'
 t0=$SECONDS
 if mint_box /tmp/mint-tpl.log --name tpl --cpu 1 --memory 1GiB; then
   ok "box new --name tpl, no --template  ($((SECONDS - t0))s)"
@@ -1117,18 +1115,18 @@ else
 fi
 
 # The generic mechanic (metadata, placement, user, isolation parity) is proven
-# once by blank+claude-box and needs no per-template repeat. What a NEW template
-# still has to prove is its own payload: the CLI installs, lands on the
+# once by blank+claude-box and needs no per-role repeat. What another runtime
+# role still has to prove is its own payload: the CLI installs, lands on the
 # non-interactive exec PATH, and answers --version. One mint each.
 # The box NAME stays the bare agent name — it is what the pre-flight banner
-# announces and what teardown deletes — while the TEMPLATE carries rig#76's
-# family suffix. They are two different namespaces and only one of them moved.
+# announces and what teardown deletes — while the ROLE carries rig#76's family
+# suffix. They are two different namespaces and only one of them moved.
 for t in codex grok; do
   case "$t" in codex) bin=codex; user=codex ;; grok) bin=grok; user=grok ;; esac
-  printf '\n  minting a %s box (cold — validates the template install)…\n' "$t"
+  printf '\n  minting a %s box (cold — validates the runtime role)…\n' "$t"
   if mint_box "/tmp/mint-$t.log" --name "$t" --role "$t-box" --size medium; then
     [ "$(incus config get "$t" user.box.user 2>/dev/null)" = "$user" ] \
-      && ok "$t: template user stamped ($user)" || no "$t: user.box.user not $user"
+      && ok "$t: role-derived user stamped ($user)" || no "$t: user.box.user not $user"
     if timeout -k 5 30 box exec "$t" -- "$bin" --version </dev/null >/dev/null 2>&1; then
       ok "$t: '$bin --version' answers via box exec — installed and on the non-interactive PATH"
     else

@@ -335,6 +335,14 @@ BOX_MEMORY / BOX_DISK (the scripting form), then --size, then the selected
 seed's defaults. Resources are all those flags can touch: there is no flag for
 a network or a security key, on purpose.
 
+  size      cpu   memory   disk
+  small       2     2GiB   20GiB
+  medium      4     8GiB   60GiB
+  large       8    16GiB  120GiB
+
+The argumentless and --role paths default to small. The dedicated
+staging-box seed keeps its existing medium resources when --size is omitted.
+
 The flags work on --from too (#171). They ride the copy itself — incus sizes
 the clone's volume as it creates it, so there is no resize, no restart and no
 step inside the guest. Every box says what it came up with when it comes up,

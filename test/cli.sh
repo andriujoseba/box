@@ -86,6 +86,8 @@ check "new: --template and --role are mutually exclusive (#159)" 2 \
   "choose different mint paths" "$BOX" new --name work --template staging-box --role kimi-box
 check "new: an unknown named size is refused (#159)" 2 \
   "--size must be small, medium, or large" "$BOX" new --name work --size huge
+check "help new: publishes the large size row (#159)" 0 "large       8    16GiB  120GiB" \
+  "$BOX" help new
 
 # ---------------------------------------------------------------------------
 # box exec — preserve command argv across the login-environment boundary

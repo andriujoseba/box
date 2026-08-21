@@ -99,7 +99,7 @@ runcmd:
   # is left alone instead of dying on a remount that means nothing there.
   - systemctl daemon-reload
   - test "$(findmnt -no FSTYPE /tmp)" != tmpfs || mount -o remount,size=1G /tmp
-  # 4GiB of swap against the 60GiB disk, so a memory spike degrades instead of
+  # 4GiB of swap on the selected disk, so a memory spike degrades instead of
   # OOM-killing with no grace period and no warning — swap-in is observable,
   # where a kill is a process that was there and then was not (#178).
   # Container-guarded for chrony's reason one line up, not a different one: a
