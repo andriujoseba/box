@@ -284,7 +284,7 @@ requires zero box changes or box release. The public mint shapes are:
 
 | Mint shape | Meaning |
 |---|---|
-| no `--role` | Bare Debian 13 — same isolation, no agent tooling |
+| no `--role` | Generic blank shape: sudo kept, rig preinstalled, no agent toolchain or auto-run |
 | `--role <role>` | Generic unprivileged tenant seed, then that creds-free rig role |
 | `--template staging-box` | Dedicated server seed: VM-only and autostarting |
 
@@ -304,6 +304,12 @@ an *existing* box to a newer spec (`box root <box>` →
 [#80](https://github.com/heavy-duty/box/issues/80) guard — never run
 `box setup-host`, `box teardown-host` or the drill *inside* a box — once,
 from rig's roles, instead of copy-pasted per template.
+
+The seed has exactly one conditional axis. With `--role`, it removes tenant
+sudo, adds `python3-venv` and `shellcheck`, caps `/tmp` at 1GiB, provisions a
+4GiB swapfile in VM mode, and sets the role for box to converge. With no role,
+it keeps sudo and omits those agent-only additions and the auto-run. Both
+shapes install tmux, curl, ca-certificates, chrony, and the pinned rig tree.
 
 **The agent is unprivileged inside its own box; the operator enters as root
 from the host** ([#177](https://github.com/heavy-duty/box/issues/177)). The
@@ -358,9 +364,9 @@ of [rig#32](https://github.com/heavy-duty/rig/issues/32) /
 
 A mint that cannot resolve the pin **fails, and says so** — falling back to
 `main` is the defect that rule exists to close, and doing it quietly would
-hide it exactly where nobody looks. Pass `RIG_REF` yourself to move on. Only
-a seed that actually installs rig resolves anything: `blank` carries no pin
-token, so it mints on a host that cannot reach github.com at all.
+hide it exactly where nobody looks. Pass `RIG_REF` yourself to move on. The
+generic seed installs rig in both its blank and role shapes, so both resolve
+the pin; a dedicated seed without a pin token performs no such lookup.
 
 The pin covers both the installer fetched and the tree it installs, and the
 values — the resolved tag included, since it arrives off an HTTP header — are
@@ -369,7 +375,7 @@ allowlist-validated on the host before they touch the YAML.
 ```sh
 box templates                    # list dedicated non-agent templates
 box new --name scratch           # the DEFAULT is blank: bare Debian,
-                                 #   same isolation, nobody home — no rig, no role
+                                 #   same isolation, no role auto-run
 ```
 
 A seed **cannot** name a network, a profile, or a `security.*` flag —
@@ -379,7 +385,18 @@ trust boundary. `--size small|medium|large` selects a resource bundle (small
 is the default), overridable at mint time — inline
 (`--cpu 2 --memory 3GiB --disk 20GiB`) or via
 `BOX_CPU` / `BOX_MEMORY` / `BOX_DISK` environment variables (the scripting
-form; explicit resource overrides win over the named size). The selected seed,
+form). Resolution is `--cpu/--memory/--disk` > `BOX_*` environment >
+`--size` > seed/default values:
+
+| Size | CPU | Memory | Disk |
+|---|---:|---:|---:|
+| `small` | 2 | 2GiB | 20GiB |
+| `medium` | 4 | 8GiB | 60GiB |
+| `large` | 8 | 16GiB | 120GiB |
+
+The argumentless and runtime-role paths default to `small`. The dedicated
+`staging-box` seed keeps its existing medium resources when no size is given.
+The selected seed,
 runtime role, and resolved user are stamped onto the instance,
 so `shell`, `exec` and `tmux` land in the right user — and a clone still
 knows, because `incus copy` carries the metadata.

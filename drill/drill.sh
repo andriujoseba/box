@@ -1044,8 +1044,8 @@ t0=$SECONDS
 if mint_box /tmp/mint-tpl.log --name tpl --cpu 1 --memory 1GiB; then
   ok "box new --name tpl, no --template  ($((SECONDS - t0))s)"
   tt="$(incus config get tpl user.box.template 2>/dev/null)"
-  [ "$tt" = blank ] && ok "the default template is blank (user.box.template=blank)" \
-                    || no "default template is '${tt:-<unset>}' — expected blank"
+  [ "$tt" = tenant ] && ok "the default path uses the generic seed (user.box.template=tenant)" \
+                     || no "default seed is '${tt:-<unset>}' — expected tenant"
   rc="$(incus config get tpl limits.cpu 2>/dev/null)/$(incus config get tpl limits.memory 2>/dev/null)"
   [ "$rc" = "1/1GiB" ] && ok "inline --cpu/--memory landed (limits = $rc, beating BOX_* env)" \
                        || no "inline resource flags did not land — limits are $rc, expected 1/1GiB"
@@ -1126,7 +1126,7 @@ fi
 for t in codex grok; do
   case "$t" in codex) bin=codex; user=codex ;; grok) bin=grok; user=grok ;; esac
   printf '\n  minting a %s box (cold — validates the template install)…\n' "$t"
-  if mint_box "/tmp/mint-$t.log" --name "$t" --template "$t-box"; then
+  if mint_box "/tmp/mint-$t.log" --name "$t" --role "$t-box" --size medium; then
     [ "$(incus config get "$t" user.box.user 2>/dev/null)" = "$user" ] \
       && ok "$t: template user stamped ($user)" || no "$t: user.box.user not $user"
     if timeout -k 5 30 box exec "$t" -- "$bin" --version </dev/null >/dev/null 2>&1; then
@@ -1154,8 +1154,8 @@ done
 
 printf '\n  minting a claude-box box (cold, ~10 min)…\n'
 t0=$SECONDS
-if mint_box /tmp/mint-drill.log --name drill --template claude-box; then
-  ok "box new --name drill --template claude-box  ($((SECONDS - t0))s)"
+if mint_box /tmp/mint-drill.log --name drill --role claude-box --size medium; then
+  ok "box new --name drill --role claude-box --size medium  ($((SECONDS - t0))s)"
   # The rig pin the record will name, read off the mint's own stamp (#103) and
   # read HERE, because the box does not have to survive to the record (#150).
   # RIG_REF unset no longer means `main` — it means whatever release bin/box

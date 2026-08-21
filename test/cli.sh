@@ -82,6 +82,10 @@ check "new: --user belongs to a runtime role (#159)" 2 \
   "--user requires --role" "$BOX" new --name work --user dev
 check "new: --from refuses a fresh runtime role (#159)" 2 \
   "tenant role rides along" "$BOX" new --name copy --from work --role kimi-box
+check "new: --template and --role are mutually exclusive (#159)" 2 \
+  "choose different mint paths" "$BOX" new --name work --template staging-box --role kimi-box
+check "new: an unknown named size is refused (#159)" 2 \
+  "--size must be small, medium, or large" "$BOX" new --name work --size huge
 
 # ---------------------------------------------------------------------------
 # box exec — preserve command argv across the login-environment boundary
@@ -333,8 +337,8 @@ check "the rig pin probe reads the same redirect install.sh does (#83, #150)" 0 
 
 SEED="$(mktemp)"
 printf '#cloud-config\nusers:\n  - name: "@BOX_USER@"\nruncmd:\n  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash\n' > "$SEED"
-# A seed that installs no rig — 'blank' is the real one. It carries no token,
-# so it needs no pin, and must therefore need no NETWORK either (#150).
+# A synthetic seed that installs no rig. It carries no token, so it needs no
+# pin and must therefore need no NETWORK either (#150).
 NORIG="$(mktemp)"
 printf '#cloud-config\npackages:\n  - tmux\n' > "$NORIG"
 RIGLOGF="$(mktemp)"
@@ -399,6 +403,29 @@ check "render_userdata: a spaced RIG_REF dies on the host" 1 "RIG_REF" \
   rud 'RIG_REF=main plus junk'
 check "render_userdata: a newline-smuggled RIG_REPO dies (whole-string anchor)" 1 "RIG_REPO" \
   rud "RIG_REPO=$(printf 'a/b\nevil')"
+
+# The one generic seed renders into two measured shapes (#159): agent-class
+# when a role is present, and today's blank when it is absent. Drive both
+# through the real renderer, then make every assertion against what cloud-init
+# receives rather than against source-only sentinel blocks.
+ROLESEED="$(mktemp)"; BLANKSEED="$(mktemp)"
+SEEDFILE="$ROOT/templates/tenant/user-data.yaml"
+rud T_USER=claude T_BOOTSTRAP_ROLE=claude-box RIG_REF=main > "$ROLESEED"
+rud T_USER=dev T_BOOTSTRAP_ROLE= RIG_REF=main > "$BLANKSEED"
+check "render_userdata: role sentinels never reach cloud-init (#159)" 1 "" \
+  grep -q '^# box-.*-only-' "$ROLESEED"
+check "render_userdata: blank sentinels never reach cloud-init (#159)" 1 "" \
+  grep -q '^# box-.*-only-' "$BLANKSEED"
+check "generic seed: role tenant has no sudoers entry (#177, #159)" 1 "" \
+  grep -qE '^[[:space:]]*sudo:' "$ROLESEED"
+check "generic seed: blank tenant keeps sudo (#177, #159)" 0 "" \
+  grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$BLANKSEED"
+check "generic seed: blank omits the agent toolchain (#177, #159)" 1 "" \
+  grep -qE '^[[:space:]]*-[[:space:]]+(python3-venv|shellcheck)$' "$BLANKSEED"
+check "generic seed: blank omits the /tmp cap and swap (#178, #159)" 1 "" \
+  grep -qE 'tmp\.mount|swapfile' "$BLANKSEED"
+check "generic seed: blank still preinstalls rig (#159 ruling)" 0 "" \
+  grep -q 'heavy-duty/rig/main/install.sh' "$BLANKSEED"
 rm -f "$RUFN" "$SEED" "$NORIG" "$RIGLOGF"
 
 # YAML well-formedness needs python3 + pyyaml; the CI runner has both. Skip
@@ -440,13 +467,18 @@ for d in "$ROOT"/templates/*/; do
   # that ships a sudo line goes red in this loop until someone puts it on the
   # list deliberately — the same fail-closed shape as the absence block below.
   case "$t" in
-    blank|staging-box)
+    staging-box)
       # Self-converging fleet guests keep root: their tenant's own first act
       # is 'sudo rig runner install' or 'sudo rig bootstrap workload-server'.
       # Agents lose root, self-converging guests keep it — two traits, two
       # answers, and #175's BOX_REQUIRE_VM is the one meant to be inherited.
       check "template '$t': keeps NOPASSWD sudo — a self-converging seed (#177)" 0 "" \
         grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$d/user-data.yaml" ;;
+    tenant)
+      # The source contains both alternatives; the driven ROLESEED above is
+      # the effective agent shape and is what must be unprivileged.
+      check "template 'tenant': rendered role has NO sudoers entry (#177, #159)" 1 "" \
+        grep -qE '^[[:space:]]*sudo:' "$ROLESEED" ;;
     *)
       # shellcheck disable=SC2016  # $1 expands in the child shell, by design
       check "template '$t': the tenant has NO sudoers entry (#177)" 1 "" \
@@ -627,10 +659,8 @@ check "staging-box: the seed user is rig's default for the role ('ops')" 0 "USER
 # #175's five softer declarations are pinned separately from the discovery
 # guard above: the loop catches a future unpinned seed, while this catches one
 # of today's seeds accidentally inheriting staging-box's stronger policy.
-for t in blank tenant; do
-  check "$t: permits only an explicit container override (BOX_NO_CONTAINER_FALLBACK=1)" \
-    0 "" grep -qx 'BOX_NO_CONTAINER_FALLBACK="1"' "$ROOT/templates/$t/box.env"
-done
+check "tenant: permits only an explicit container override (BOX_NO_CONTAINER_FALLBACK=1)" \
+  0 "" grep -qx 'BOX_NO_CONTAINER_FALLBACK="1"' "$ROOT/templates/tenant/box.env"
 # The single runtime tenant seed carries the unprivileged agent tool floor;
 # adding another rig role must not add another box directory (#159).
 for p in python3-venv shellcheck; do
@@ -641,13 +671,10 @@ for retired in claude-box codex-box grok-box kimi-box; do
   check "templates: retired '$retired' seed is deleted (#159)" 1 "" \
     test -e "$ROOT/templates/$retired"
 done
-# blank stays a box with NOBODY home: no rig, no role — same isolation, no
-# tooling, and nothing auto-runs in it.
-check "blank: names no bootstrap role" 1 "" \
-  grep -q '^BOX_BOOTSTRAP_ROLE=' "$ROOT/templates/blank/box.env"
-check "blank: does not preinstall rig" 1 "" grep -q 'install.sh' "$ROOT/templates/blank/user-data.yaml"
+check "templates: retired 'blank' seed is deleted (#159)" 1 "" \
+  test -e "$ROOT/templates/blank"
 
-rm -f "$TPLFN"
+rm -f "$TPLFN" "$ROLESEED" "$BLANKSEED"
 
 # The keys' cmd_new half, grepped the way the expose guard is (line order —
 # a daemon-free run cannot mint). Both refusals must read the EFFECTIVE mode,
@@ -2002,6 +2029,10 @@ check "mint: stamps the mode that was ASKED, not only the outcome (#103)" \
   0 "user.box.mode.asked=container" launchline "$MLOG"
 check "mint: stamps the rig role box will auto-run (#103)" \
   0 "user.box.role=claude-box" launchline "$MLOG"
+check "mint: runtime role defaults to the small cpu row (#159)" 0 "" \
+  launch_has "$MLOG" 'limits\.cpu=2'
+check "mint: runtime role defaults to the small memory row (#159)" 0 "" \
+  launch_has "$MLOG" 'limits\.memory=2GiB'
 check "mint: the role-derived user reaches cloud-init (#159)" 0 "" \
   launch_has "$MLOG" 'name: "claude"'
 check "mint: the role-derived user reaches rig bootstrap (#159)" 0 "" \
@@ -2025,6 +2056,35 @@ check "mint: resolves the pin exactly ONCE, in the parent shell (#150)" 0 "1" \
 check "mint: ...and the seed it shipped carries that same resolved ref (#150)" 0 "" \
   launch_has "$MLOG" 'heavy-duty/rig/9\.9\.9/install\.sh'
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+
+# The public size table and its two higher precedence rungs, driven through a
+# real shimmed mint. VM mode makes the disk device visible on the launch argv.
+MEDIUMLOG="$MWORK/medium-size.log"
+RIG_REF=main mintbox "$MEDIUMLOG" new --name medium --role claude-box --size medium --vm >/dev/null 2>&1
+check "mint size: medium resolves to 4 cpu (#159)" 0 "" \
+  launch_has "$MEDIUMLOG" 'limits\.cpu=4'
+check "mint size: medium resolves to 8GiB memory (#159)" 0 "" \
+  launch_has "$MEDIUMLOG" 'limits\.memory=8GiB'
+check "mint size: medium resolves to a 60GiB disk (#159)" 0 "" \
+  launch_has "$MEDIUMLOG" 'root,size=60GiB'
+LARGELOG="$MWORK/large-size.log"
+RIG_REF=main mintbox "$LARGELOG" new --name large --role claude-box --size large --vm >/dev/null 2>&1
+check "mint size: large resolves to 8 cpu (#159)" 0 "" \
+  launch_has "$LARGELOG" 'limits\.cpu=8'
+check "mint size: large resolves to 16GiB memory (#159)" 0 "" \
+  launch_has "$LARGELOG" 'limits\.memory=16GiB'
+check "mint size: large resolves to a 120GiB disk (#159)" 0 "" \
+  launch_has "$LARGELOG" 'root,size=120GiB'
+FLAGBEATS="$MWORK/flag-beats-size.log"
+RIG_REF=main mintbox "$FLAGBEATS" new --name flagbeats --role claude-box \
+  --size medium --cpu 2 --container >/dev/null 2>&1
+check "mint size: --cpu beats --size medium (#159)" 0 "" \
+  launch_has "$FLAGBEATS" 'limits\.cpu=2'
+ENVBEATS="$MWORK/env-beats-size.log"
+BOX_CPU=1 RIG_REF=main mintbox "$ENVBEATS" new --name envbeats --role claude-box \
+  --size medium --container >/dev/null 2>&1
+check "mint size: BOX_CPU beats --size medium (#159)" 0 "" \
+  launch_has "$ENVBEATS" 'limits\.cpu=1'
 
 # A role that did not exist when this box tree was built takes the same generic
 # path. The arbitrary name is intentionally absent from bin/box and templates/.
@@ -2138,18 +2198,19 @@ check "mint: ...and it stamped no empty fingerprint key either (#103)" 1 "" \
   grep -q 'image.fingerprint' "$NOFP"
 FAKE_BASE_IMAGE=deadbeefcafe0123456789
 
-# --- a seed that installs no rig is stamped no rig pin ----------------------
-# 'blank' carries no @RIG_REPO@ token, so there is no rig to name. A stamp
-# that named one anyway would be fiction, which is worse than a missing key.
-check "mint: the 'blank' seed installs no rig, so no rig pin is stamped (#103)" 1 "" \
-  launch_has "$NOFP" 'user\.box\.rig\.'
+# --- blank and role shapes share the generic seed and rig preinstall --------
+# The #159 ruling keeps the rig pin in both shapes; only the role auto-run and
+# agent-class additions are conditional. The stamp therefore records the rig
+# installed into an argumentless blank, while the role key remains absent.
+check "mint: argumentless blank stamps the preinstalled rig repo (#103, #159)" 0 "" \
+  launch_has "$NOFP" 'user\.box\.rig\.repo=heavy-duty/rig'
+check "mint: argumentless blank stamps the resolved rig ref (#103, #159)" 0 "" \
+  launch_has "$NOFP" 'user\.box\.rig\.ref=9.9.9'
 check "mint: ...and no role either — blank names none (#103)" 1 "" \
   launch_has "$NOFP" 'user\.box\.role'
-# ...and it asked the network NOTHING. A pin nobody uses is a pin nobody needs
-# to resolve, so 'blank' still mints on a host that cannot reach github.com —
-# the failure mode #150's default would otherwise have invented (#150).
-check "mint: the 'blank' seed resolves no pin, so it probes nothing (#150)" 1 "" \
-  grep -q . "$NOFP.curl"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "mint: argumentless blank resolves its shared rig pin once (#150, #159)" 0 "1" \
+  bash -c 'grep -c "releases/latest" "$1"' _ "$NOFP.curl"
 
 # --- the rig pin has ONE definition, and both readers get the same answer ---
 # The seed substitutes it and the stamp records it. Two spellings of the same

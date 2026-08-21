@@ -110,6 +110,15 @@ and box's seed suite holds the line with fail-closed absence greps: no agent
 CLI, no docker, no tailscale, no context-file heredocs in the generic tenant
 seed.
 
+That one seed also backs the argumentless blank mint. Its sole conditional is
+role presence: role mints are unprivileged and add the agent tool floor, fixed
+1GiB `/tmp`, 4GiB swap, and bootstrap role; blank mints keep sudo and omit
+those additions. Both install tmux, curl, ca-certificates, chrony, and pinned
+rig. Resource shape is independent: `small=2/2GiB/20GiB`,
+`medium=4/8GiB/60GiB`, and `large=8/16GiB/120GiB`, resolved in the order
+explicit flag, `BOX_*` environment, named size, then seed/default. A role never
+implies a size.
+
 ## The agent is unprivileged in its own box (#177)
 
 **The agent is unprivileged inside its own box; the operator enters as root
@@ -130,13 +139,13 @@ still work unprivileged, and `box root` covers the rest. A partial sudoers
 allowlist is refused rather than tuned — `apt` alone installs a package that
 owns the box, so it keeps the risk and loses the property.
 
-`blank` and `staging-box` keep sudo, and that is a scoping rather than an
+The generic seed's blank rendering and `staging-box` keep sudo, and that is a scoping rather than an
 oversight: they seed guests that converge *themselves* (`sudo rig runner
 install`, `sudo rig bootstrap workload-server`). **Agents lose root;
 self-converging fleet guests keep it.** The contrast with #175's
 `BOX_REQUIRE_VM` is deliberate — the trust boundary is meant to be inherited
-by every future template, sudo is meant not to be, because `blank`'s
-descendants are not all agents. Two traits, two answers. cloud-init is a
+by every future template, sudo is selected only for self-converging guests.
+Two traits, two answers. cloud-init is a
 first-boot one-shot, so this reaches **newly minted boxes only**; a running
 agent box keeps the entry it was minted with, and stripping it mid-task is
 the operator's call through `box root`.

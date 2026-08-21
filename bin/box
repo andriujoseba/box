@@ -1392,7 +1392,7 @@ reset_identity() {
 # thin-template split: the seed is user + tmux + rig, and what the box BECOMES
 # is 'rig bootstrap <role>'. Only creds-free roles belong here, by contract.
 load_template() {
-  local t="$1" dir line key val
+  local t="$1" dir line key val size_cpu="" size_memory="" size_disk=""
   dir="$root/templates/$t"
   [ -d "$dir" ] || die "no such template: $t (see 'box templates')"
   [ -f "$dir/box.env" ] || die "template '$t' has no box.env"
@@ -1438,14 +1438,22 @@ load_template() {
   if [ -n "$T_BOOTSTRAP_ROLE" ] && ! [[ "$T_BOOTSTRAP_ROLE" =~ ^[a-z][a-z0-9-]*$ ]]; then
     die "template '$t': BOX_BOOTSTRAP_ROLE is not a sane role name: $T_BOOTSTRAP_ROLE"
   fi
-  # Resolution, most specific wins: inline flag (--cpu/--memory/--disk, #57)
-  # > BOX_* environment (how a small host or the drill shrinks every box it
-  # mints) > the template's file > defaults. Values pass to Incus verbatim —
-  # its units, its validation; box adds no parser of its own. Resources only:
-  # there is still no flag for a network or a security.* key, on purpose.
-  T_CPU="${cpu:-${BOX_CPU:-${T_CPU:-4}}}"
-  T_MEMORY="${memory:-${BOX_MEMORY:-${T_MEMORY:-8GiB}}}"
-  T_DISK="${disk:-${BOX_DISK:-${T_DISK:-60GiB}}}"
+  # One public size table (#159). --size takes the old template-resource rung:
+  # explicit resource flag > BOX_* environment > named size > template value
+  # > the small built-in default. A dedicated seed with no --size therefore
+  # keeps its measured resources (staging-box is medium), while the generic
+  # seed and every missing resource fall back to small. Values still pass to
+  # Incus verbatim; box adds no parser for ad-hoc resource values.
+  case "$size" in
+    "") ;;
+    small)  size_cpu=2; size_memory=2GiB;  size_disk=20GiB ;;
+    medium) size_cpu=4; size_memory=8GiB;  size_disk=60GiB ;;
+    large)  size_cpu=8; size_memory=16GiB; size_disk=120GiB ;;
+    *) usage_error "--size must be small, medium, or large: $size" ;;
+  esac
+  T_CPU="${cpu:-${BOX_CPU:-${size_cpu:-${T_CPU:-2}}}}"
+  T_MEMORY="${memory:-${BOX_MEMORY:-${size_memory:-${T_MEMORY:-2GiB}}}}"
+  T_DISK="${disk:-${BOX_DISK:-${size_disk:-${T_DISK:-20GiB}}}}"
 }
 
 # The ONE substitution a template gets — user-data.yaml is otherwise passed to
@@ -1517,15 +1525,25 @@ rig_ref() { rig_pin_resolve; printf '%s\n' "$RIG_REF"; }
 
 render_userdata() {
   local f="$1" repo data ref
-  data="$(cat "$f")"
+  # The generic seed has one conditional axis (#159): a runtime role selects
+  # the agent-class blocks; an argumentless mint selects the blank blocks.
+  # Exact comment sentinels keep the source valid YAML and are stripped from
+  # what reaches cloud-init. There is still one file and one renderer.
+  data="$(awk -v role="${T_BOOTSTRAP_ROLE:+1}" '
+    BEGIN { keep = 1 }
+    /^# box-role-only-begin$/  { keep = role; next }
+    /^# box-role-only-end$/    { keep = 1; next }
+    /^# box-blank-only-begin$/ { keep = !role; next }
+    /^# box-blank-only-end$/   { keep = 1; next }
+    keep { print }
+  ' "$f")"
   data="${data//@BOX_USER@/${T_USER:-}}"
   repo="$(rig_repo)"
   [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
     || die "RIG_REPO must look like owner/repo: $repo"
   # A seed carrying no pin token wants no pin — and must want no NETWORK
-  # either (#150). 'blank' installs no rig, so resolving the released-rig
-  # default for it would fail a mint that needs nothing from github.com over
-  # a fact that mint never uses.
+  # either (#150). The generic seed now carries rig in both its blank and role
+  # shapes (#159); this guard remains for any dedicated tokenless seed.
   case "$data" in
     *@RIG_REPO@*|*@RIG_REF@*) ;;
     *) printf '%s\n' "$data"; return 0 ;;
@@ -1943,6 +1961,7 @@ narrate_resources() {   # narrate_resources <instance> <box-name>
 # errors on every machine, including one with no Incus client (#159).
 resolve_fresh_intent() {
   mint_template=""
+  case "$size" in ""|small|medium|large) ;; *) usage_error "--size must be small, medium, or large: $size" ;; esac
   if [ -n "$template" ]; then
     case "$template" in
       blank)
@@ -1965,7 +1984,8 @@ resolve_fresh_intent() {
     return
   fi
   [ -z "$user" ] || usage_error "--user requires --role"
-  mint_template=blank
+  user=dev
+  mint_template=tenant
 }
 
 cmd_new() {
@@ -2135,10 +2155,8 @@ cmd_new() {
   else
     local t="$mint_template" m extra=()
     load_template "$t"
-    if [ -n "$role" ]; then
-      T_USER="$user"
-      T_BOOTSTRAP_ROLE="$role"
-    fi
+    T_USER="$user"
+    T_BOOTSTRAP_ROLE="$role"
     m="$(pick_mode)"
     # A server-class template (BOX_REQUIRE_VM, #68) has no weaker mode: the VM
     # is its trust boundary, and its guest runs docker. BOX_NO_CONTAINER_FALLBACK
@@ -2192,8 +2210,8 @@ cmd_new() {
     #            back for want of /dev/kvm and one the operator asked for read
     #            identically afterwards, and only the mint knew which
     #   role      the rig role box auto-runs at the hook below
-    #   rig.*     WHICH rig converged it, stamped only for a seed that actually
-    #            installs rig from the pin ('blank' seeds none, so it gets none)
+    #   rig.*     WHICH rig the seed installed, stamped only for a seed that
+    #            actually carries the pin (the generic blank does since #159)
     #   created   when. See mint_time() for why a timestamp belongs here.
     #   origin    mint. A clone re-stamps it (see the --from branch above).
     #

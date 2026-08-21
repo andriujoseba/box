@@ -224,7 +224,7 @@ mintlog="$(mktemp)"
 # 1GiB / 2 cpus: a blank Debian needs no more, and the rehearsal runs TWO
 # boxes at once — on a small (or nested) rehearsal host, 2GiB apiece is the
 # difference between measuring isolation and measuring swap.
-if as_u "$U1" box new --name mine --template blank --cpu 2 --memory 1GiB "${MODE[@]}" >"$mintlog" 2>&1; then
+if as_u "$U1" box new --name mine --cpu 2 --memory 1GiB "${MODE[@]}" >"$mintlog" 2>&1; then
   ok "(b) box new mine — minted"
 else
   no "(b) box new failed for $U1 (rc≠0) — its last words:"
@@ -307,7 +307,7 @@ as_u "$U1" box new --name c1 --from mine/s1 >/dev/null 2>&1 && ok "(b) box new -
 aud "b. full lifecycle exercised as $U1 through the real CLI"
 
 phase "d. same name, two users — projects mean no collision"
-as_u "$U2" box new --name mine --template blank --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1 \
+as_u "$U2" box new --name mine --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1 \
   && ok "(d) $U2 minted their own 'mine' beside $U1's" \
   || no "(d) $U2 could not mint 'mine' — names collide across users"
 
@@ -356,7 +356,7 @@ as_u "$U2" box start all >/dev/null 2>&1 \
   || no "(p) 'box start all' failed for $U2 — later phases run on a stopped box"
 # 'all' is reserved precisely because it is a fleet word, and the refusal must
 # hold on a real daemon and not only in the unit drive.
-as_u "$U2" box new --name all --template blank >/dev/null 2>&1 \
+as_u "$U2" box new --name all >/dev/null 2>&1 \
   && no "(p) a box named 'all' was minted — the fleet word is unreachable now" \
   || ok "(p) 'box new --name all' refused on a real daemon"
 # The other direction, and the one an admin gets wrong by having more power
@@ -371,7 +371,7 @@ as_u "$U2" box new --name all --template blank >/dev/null 2>&1 \
 # deleted. It is the ABSENCE of an action, not a scoped one, and the claim this
 # criterion makes is that the action was scoped. So mint one in 'default' and
 # require it to be the box that stopped.
-if box new --name "$ADMINBOX" --template blank --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1; then
+if box new --name "$ADMINBOX" --cpu 2 --memory 1GiB "${MODE[@]}" >/dev/null 2>&1; then
   ok "(p) the admin owns a box in 'default' — the admin direction has something to act ON"
 else
   no "(p) the admin's own box could not be minted — the admin direction would measure nothing"
