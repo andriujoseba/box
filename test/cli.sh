@@ -6573,6 +6573,9 @@ check "multiuser: (p) asserts the admin's 'all' stopped the admin's own box" 0 "
 # failure and keeps the cleanup/reporting path reachable.
 check "multiuser: (p) time-boxes the admin fleet stop below the job ceiling" 0 "" \
   grep -qF 'timeout -k 5 60 box down all' "$ROOT/drill/multiuser.sh"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "multiuser: (p) captures the bounded stop without a descendant-held pipe" 0 "" \
+  grep -qF 'box down all >"$capture" 2>&1' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) records daemon operations when that stop wedges" 0 "" \
   grep -qF 'incus operation list --format csv' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) records the daemon journal after a prompt stop failure" 0 "" \

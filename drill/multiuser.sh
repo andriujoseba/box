@@ -142,8 +142,11 @@ probe_up() { # probe_up <user> <box> <url>
 # refused shutdown from a daemon operation that wedged, then force-stop only
 # as recovery so the remaining criteria and cleanup can still report.
 bounded_admin_down() { # bounded_admin_down <box>
-  local b="$1" out rc ops guest
-  out="$(timeout -k 5 60 box down all 2>&1)"; rc=$?
+  local b="$1" out rc ops guest capture
+  capture="$(mktemp)"
+  timeout -k 5 60 box down all >"$capture" 2>&1; rc=$?
+  out="$(cat "$capture")"
+  rm -f "$capture"
   if [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
     printf '%s\n' "$out"
     return "$rc"
