@@ -53,6 +53,23 @@ write_files:
     permissions: "0644"
     content: |
       makestep 1.0 -1
+  # /tmp is RAM. systemd's stock tmp.mount sizes it at 50% of it, so the 8GiB
+  # on the memory line above buys ~3.9GB of scratch competing with the agent's
+  # own working set — and raising BOX_MEMORY raises the ceiling with it, which
+  # is why no memory figure fixes this and only a fixed cap does (#178). Not
+  # theoretical: heavy-duty/incubator#214 lost a builder's test suite to
+  # ENOSPC on /tmp against scratch left by EARLIER sessions, and that ENOSPC
+  # and the memory pressure were the same 3.9GB.
+  # A drop-in REPLACES Options= rather than merging into it, so the stock
+  # string is restated in full with only size= changed; the rest is Debian
+  # 13's verbatim. systemd's own line escapes its percentage as 'size=50%%'
+  # and a fixed size needs no escape, which is the second reason the cap is
+  # a figure rather than a smaller percentage.
+  - path: /etc/systemd/system/tmp.mount.d/box-size.conf
+    permissions: "0644"
+    content: |
+      [Mount]
+      Options=mode=1777,strictatime,nosuid,nodev,size=1G,nr_inodes=1m
 packages:
   - tmux
   - curl
@@ -64,6 +81,31 @@ runcmd:
   - systemctl enable chrony
   # Containers share the host clock; VM guests must start chrony (#174).
   - systemd-detect-virt --quiet --container || systemctl start chrony
+  # The tmp.mount drop-in above is read at the NEXT boot; these two lines make
+  # it true on this one. 'remount' resizes a live tmpfs in place, where
+  # restarting tmp.mount would unmount /tmp out from under cloud-init and the
+  # rig installer below, both of which are using it right now (#178). The
+  # guard is a read of the actual fstype, so a guest whose /tmp is not tmpfs
+  # is left alone instead of dying on a remount that means nothing there.
+  - systemctl daemon-reload
+  - test "$(findmnt -no FSTYPE /tmp)" != tmpfs || mount -o remount,size=1G /tmp
+  # 4GiB of swap against the 60GiB disk, so a memory spike degrades instead of
+  # OOM-killing with no grace period and no warning — swap-in is observable,
+  # where a kill is a process that was there and then was not (#178).
+  # Container-guarded for chrony's reason one line up, not a different one: a
+  # container shares the host's swap and cannot swapon at all, so the file
+  # would be 4GiB of nothing and the fstab line a failure at every boot. The
+  # /swapfile test keeps a re-run idempotent, and the dd fallback is
+  # cloud-init's own (cc_mounts.create_swapfile): fallocate is refused on some
+  # filesystems and dd always works.
+  - |
+    if ! systemd-detect-virt --quiet --container && [ ! -e /swapfile ]; then
+      fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
   # Preinstall rig so the box can converge — and re-converge — via
   # 'rig bootstrap codex-box'. @RIG_REPO@/@RIG_REF@ are the pin point (#81):
   # box substitutes them at mint from the RIG_REPO/RIG_REF environment
