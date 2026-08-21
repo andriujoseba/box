@@ -442,6 +442,14 @@ rm -f "$RUFN" "$SEED" "$NORIG" "$RIGLOGF"
 # gracefully (never silently) where they are missing.
 HAVE_YAML=0
 command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null && HAVE_YAML=1
+if [ "$HAVE_YAML" = 1 ]; then
+  check "generic seed: rendered role payload is well-formed YAML (#159)" 0 "" \
+    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$ROLESEED"
+  check "generic seed: rendered blank payload is well-formed YAML (#159)" 0 "" \
+    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$BLANKSEED"
+else
+  echo "skip: rendered generic payload YAML well-formedness (no python3+pyyaml here; CI has both)"
+fi
 
 for d in "$ROOT"/templates/*/; do
   t="$(basename "$d")"
@@ -2066,6 +2074,30 @@ check "mint: resolves the pin exactly ONCE, in the parent shell (#150)" 0 "1" \
 check "mint: ...and the seed it shipped carries that same resolved ref (#150)" 0 "" \
   launch_has "$MLOG" 'heavy-duty/rig/9\.9\.9/install\.sh'
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+
+# The one surviving dedicated template must keep the values load_template
+# read from its seed. Runtime role/user variables are empty on this path, so
+# this drive catches any later assignment that erases staging's identity and
+# silently skips convergence (#159 review round 1).
+STAGINGLOG="$MWORK/staging-template.log"
+RIG_REF=main mintbox "$STAGINGLOG" new --name staging --template staging-box --vm >/dev/null 2>&1
+check "mint staging: keeps the seed user stamp (#159)" 0 "" \
+  launch_has "$STAGINGLOG" 'user\.box\.user=ops'
+check "mint staging: keeps the seed role stamp (#159)" 0 "" \
+  launch_has "$STAGINGLOG" 'user\.box\.role=staging-box'
+check "mint staging: keeps the server autostart demand (#68, #159)" 0 "" \
+  launch_has "$STAGINGLOG" 'boot\.autostart=true'
+check "mint staging: launches as a VM (#68, #159)" 0 "" \
+  launch_has "$STAGINGLOG" ' --vm '
+check "mint staging: keeps its 60GiB VM root device (#68, #159)" 0 "" \
+  launch_has "$STAGINGLOG" 'root,size=60GiB'
+check "mint staging: disables VM secure boot (#159)" 0 "" \
+  launch_has "$STAGINGLOG" 'security\.secureboot=false'
+staging_bootstrap_once() {
+  [ "$(grep -Ec '^incus exec staging -- rig bootstrap staging-box --user ops *$' "$1")" -eq 1 ]
+}
+check "mint staging: converges its role once as the ops user (#159)" 0 "" \
+  staging_bootstrap_once "$STAGINGLOG"
 
 # The public size table and its two higher precedence rungs, driven through a
 # real shimmed mint. VM mode makes the disk device visible on the launch argv.

@@ -1534,7 +1534,7 @@ rig_pin_resolve() {
 rig_ref() { rig_pin_resolve; printf '%s\n' "$RIG_REF"; }
 
 render_userdata() {
-  local f="$1" repo data ref
+  local f="$1" repo data ref package_update
   # The generic seed has one conditional axis (#159): a runtime role selects
   # the agent-class blocks; an argumentless mint selects the blank blocks.
   # Exact comment sentinels keep the source valid YAML and are stripped from
@@ -1554,6 +1554,8 @@ render_userdata() {
     keep && (NR == 1 || $0 !~ /^[[:space:]]*#/) { print }
   ' "$f")"
   data="${data//@BOX_USER@/${T_USER:-}}"
+  if [ -n "${T_BOOTSTRAP_ROLE:-}" ]; then package_update=true; else package_update=false; fi
+  data="${data//\"@BOX_PACKAGE_UPDATE@\"/$package_update}"
   repo="$(rig_repo)"
   [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
     || die "RIG_REPO must look like owner/repo: $repo"
@@ -2171,8 +2173,14 @@ cmd_new() {
   else
     local t="$mint_template" m extra=()
     load_template "$t"
-    T_USER="$user"
-    T_BOOTSTRAP_ROLE="$role"
+    # Runtime intent belongs only to the generic seed. A dedicated template
+    # carries its own user and convergence role; assigning the empty public
+    # --user/--role values here erased staging-box's ops/staging-box contract
+    # after load_template had read it (#159 review round 1).
+    if [ "$t" = tenant ]; then
+      T_USER="$user"
+      T_BOOTSTRAP_ROLE="$role"
+    fi
     m="$(pick_mode)"
     # A server-class template (BOX_REQUIRE_VM, #68) has no weaker mode: the VM
     # is its trust boundary, and its guest runs docker. BOX_NO_CONTAINER_FALLBACK

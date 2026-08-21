@@ -26,12 +26,7 @@ users:
     sudo: "ALL=(ALL) NOPASSWD:ALL"
 # box-blank-only-end
     lock_passwd: true
-# box-role-only-begin
-package_update: true
-# box-role-only-end
-# box-blank-only-begin
-package_update: false
-# box-blank-only-end
+package_update: "@BOX_PACKAGE_UPDATE@"
 # tmux: 'box tmux' runs 'tmux new-session' INSIDE the box (#65).
 # curl + ca-certificates: the rig installer below rides them, and a bare
 # cloud image is not guaranteed to ship either.
