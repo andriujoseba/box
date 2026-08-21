@@ -517,18 +517,13 @@ check "new: the REQUIRE_VM refusal orders after pick_mode" 0 "" bash -c '
   pick="$(printf "%s\n" "$fn" | grep -n "pick_mode"    | head -1 | cut -d: -f1)"
   guard="$(printf "%s\n" "$fn" | grep -n "T_REQUIRE_VM" | head -1 | cut -d: -f1)"
   [ -n "$pick" ] && [ -n "$guard" ] && [ "$pick" -lt "$guard" ]'
-# Order is necessary, not sufficient: a regression to the RAW flag
-# ([ "$mode" != vm ]) would still sit after pick_mode — and would refuse every
-# auto mint on a valid VM host. Pin the guard to the EFFECTIVE operand: the
-# T_REQUIRE_VM line itself must compare $m, the pick_mode result.
+# Order is necessary, not sufficient: the policy call must receive $m, the
+# effective pick_mode result, rather than the raw requested mode.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "new: the REQUIRE_VM guard compares the effective mode (\$m)" 0 "" bash -c '
+check "new: the REQUIRE_VM policy receives the effective mode (\$m)" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep "T_REQUIRE_VM" | grep -qF "\"\$m\" != vm"'
-check "new: an explicit --container overrides REQUIRE_VM with weaker isolation (#175)" \
-  0 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep "T_REQUIRE_VM" | grep -qF "\"\$mode\" != container"'
+    | grep "template_mode_allowed" | grep -qF "\"\$T_REQUIRE_VM\" \"\$m\" \"\$mode\""'
+# shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "new: the KVM-less refusal names KVM and the explicit weaker override (#175)" \
   0 "" bash -c '
   line="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep "no /dev/kvm")"
@@ -565,6 +560,22 @@ check "pick_mode: explicit --vm survives a KVM-less host (#175)" \
 check "pick_mode: a remote mint remains VM mode without local KVM (#175)" \
   0 "vm" pick_mode_case auto "remote:" no
 rm -f "$PICKFN"
+
+# Drive the template policy separately from mode selection. Composed with the
+# discovery assertion above, this simulates the required KVM-less paths for
+# every shipped template without trusting the runner's hardware (#175).
+POLICYFN="$(mktemp)"
+sed -n '/^template_mode_allowed() {/,/^}/p' "$ROOT/bin/box" > "$POLICYFN"
+template_mode_case() { bash -c '. "$0"; template_mode_allowed "$@"' "$POLICYFN" "$@"; }
+check "template mode: REQUIRE_VM refuses an automatic container fallback (#175)" \
+  1 "" template_mode_case 1 container auto
+check "template mode: REQUIRE_VM permits a VM (#175)" \
+  0 "" template_mode_case 1 vm auto
+check "template mode: REQUIRE_VM permits an explicit weaker container (#175)" \
+  0 "" template_mode_case 1 container container
+check "template mode: an unpinned template keeps the ordinary fallback" \
+  0 "" template_mode_case "" container auto
+rm -f "$POLICYFN"
 
 # The auto-run half of #81, grepped the same way (a daemon-free run cannot
 # mint). The seed reaches Incus through render_userdata — the pin point — not

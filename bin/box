@@ -1265,6 +1265,11 @@ pick_mode() {
   fi
 }
 
+template_mode_allowed() {
+  local require_vm="$1" effective="$2" requested="$3"
+  [ "$require_vm" != 1 ] || [ "$effective" = vm ] || [ "$requested" = container ]
+}
+
 # Five minutes, not three: the first VM launch on a fresh pool unpacks the
 # image into a pool volume and takes the coldest possible boot — measured
 # live, an agent can need past the 3-minute mark exactly once per pool while
@@ -2068,7 +2073,7 @@ cmd_new() {
     # operator's explicit --container escape hatch: weaker isolation remains
     # available only when somebody asks for it by name. /dev/kvm is a HOST
     # fact on both tiers, so a grant is never the remedy.
-    if [ "$T_REQUIRE_VM" = 1 ] && [ "$m" != vm ] && [ "$mode" != container ]; then
+    if ! template_mode_allowed "$T_REQUIRE_VM" "$m" "$mode"; then
       die "template '$t' requires VM mode for its untrusted-code boundary, but this host has no /dev/kvm — enable KVM (or pass --container to override with weaker isolation)"
     fi
     # shellcheck disable=SC2054 # "root,size=..." is a single incus argument
