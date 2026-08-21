@@ -6,7 +6,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-remote=""; mode="auto"; name=""; from=""; template=""; force=0; json=0; want_help=0
+remote=""; mode="auto"; name=""; from=""; template=""; role=""; size=""; user=""
+force=0; json=0; want_help=0
 cpu=""; memory=""; disk=""; instance_only=0
 inst=""   # the resolved Incus instance, set by the 'box' precondition
 # Labels snapshot_mark actually CREATED this run, space-separated. Every path
@@ -99,7 +100,7 @@ box_tier() {
 # doesn't enforce a box invariant, it is incus's job, not ours — that is
 # what `box incus` is for.
 CMDS=(
-  "new^--name <box> [--template <t>] [--from <src>[/<snap>]] [--cpu <n>] [--memory <size>] [--disk <size>] [--vm|--container]^^Mint a box from a template (default: blank), or --from an existing box/snapshot^fn:cmd_new^"
+  "new^--name <box> [--role <role>] [--size small|medium|large] [--user <user>] [--from <src>[/<snap>]] [--cpu <n>] [--memory <size>] [--disk <size>] [--vm|--container]^^Mint a box for an optional tenant role, or --from an existing box/snapshot^fn:cmd_new^"
   "templates^^^List the templates this install can mint^fn:cmd_templates^"
   "list^[--json]^^List your boxes^fn:cmd_list^"
   "info^<box> [--json]^box^One box: state, type, IP, what minted it, snapshot labels^fn:cmd_info^"
@@ -985,6 +986,9 @@ while [ $# -gt 0 ]; do
     --name) [ $# -ge 2 ] || usage_error "--name needs a value"; name="$2"; shift 2 ;;
     --from) [ $# -ge 2 ] || usage_error "--from needs a value"; from="$2"; shift 2 ;;
     --template) [ $# -ge 2 ] || usage_error "--template needs a value"; template="$2"; shift 2 ;;
+    --role) [ $# -ge 2 ] || usage_error "--role needs a value"; role="$2"; shift 2 ;;
+    --size) [ $# -ge 2 ] || usage_error "--size needs a value"; size="$2"; shift 2 ;;
+    --user) [ $# -ge 2 ] || usage_error "--user needs a value"; user="$2"; shift 2 ;;
     --cpu) [ $# -ge 2 ] || usage_error "--cpu needs a value"; cpu="$2"; shift 2 ;;
     --memory) [ $# -ge 2 ] || usage_error "--memory needs a value"; memory="$2"; shift 2 ;;
     --disk) [ $# -ge 2 ] || usage_error "--disk needs a value"; disk="$2"; shift 2 ;;
