@@ -2304,7 +2304,13 @@ cmd_new() {
         echo >&2
         echo "box: rig bootstrap $T_BOOTSTRAP_ROLE FAILED in $name." >&2
         echo "box: the box is up and the seed is intact — the role converges, so re-run it:" >&2
-        echo "  box shell $name    # then: sudo rig bootstrap $T_BOOTSTRAP_ROLE" >&2
+        # The ROOT path, not 'box shell' + sudo: since #177 the agent seeds
+        # create an unprivileged tenant, so the old hint died with "claude is
+        # not in the sudoers file" on exactly the boxes it was printed for.
+        # 'box root' authorizes through the host's Incus socket and needs no
+        # sudoers entry in the guest (#176), so it is correct for every
+        # template — the two that kept sudo included.
+        echo "  box root $name    # then: rig bootstrap $T_BOOTSTRAP_ROLE" >&2
         # The mark box cannot take for you (#130), said HERE because here is
         # the only moment the operator is looking. 'bootstrapped' means "box
         # ran the hook and watched it succeed" — a by-hand re-run happens in a
