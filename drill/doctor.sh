@@ -18,10 +18,10 @@
 #     back.
 #
 # Either way the host mints boxes on a broken network, and that is not a
-# hypothetical: it is how a box came up with no DNS at all ("Temporary failure
-# resolving deb.debian.org" in cloud-init), and how a false design veto
-# against #16 got posted from a poisoned baseline. A verdict measured on a
-# broken baseline is not a verdict, which is the whole reason this file exists.
+# hypothetical. It is how a box came up with no DNS at all
+# ("Temporary failure resolving deb.debian.org" in cloud-init), and how a false
+# design veto against #16 got posted from a poisoned baseline. A verdict
+# measured on a broken baseline is not a verdict, which is why this file exists.
 #
 # This script is the answer to "what state is the host actually in?" — the
 # question that kept getting answered by hand.
@@ -428,7 +428,7 @@ if [ -n "$PROFILES" ]; then
       if [ -z "$v" ]; then
         ok "$p: $k unset (as shipped)"
       else
-        no "$p: $k = $v  ← NOT SHIPPED — ipv4_filtering is recorded VETOED, it breaks the box's networking. A box can fail to get on the network at all."
+        no "$p: $k = $v  ← NOT SHIPPED — setup-host sets neither NIC filter, and ipv4_filtering is recorded VETOED. A box can fail to get on the network at all."
         [ "$FIX" = 1 ] && { incus profile device unset "$p" eth0 "$k" && inf "reverted: $k unset"; }
       fi
     done
