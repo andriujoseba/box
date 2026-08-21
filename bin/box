@@ -9,6 +9,7 @@ root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 remote=""; mode="auto"; name=""; from=""; template=""; role=""; size=""; user=""
 force=0; json=0; want_help=0
 cpu=""; memory=""; disk=""; instance_only=0
+mint_template=""
 inst=""   # the resolved Incus instance, set by the 'box' precondition
 # Labels snapshot_mark actually CREATED this run, space-separated. Every path
 # through snapshot_mark returns 0 on purpose — the never-fatal contract — so
@@ -1921,16 +1922,50 @@ narrate_resources() {   # narrate_resources <instance> <box-name>
   echo "box:   box incus $box -- config set {} limits.cpu <n>"
 }
 
+# Resolve the public fresh-mint arguments to one internal seed. Kept before the
+# stack preflight so retired spellings and malformed role/user input are usage
+# errors on every machine, including one with no Incus client (#159).
+resolve_fresh_intent() {
+  mint_template=""
+  if [ -n "$template" ]; then
+    case "$template" in
+      blank)
+        usage_error "--template blank is retired — omit --template for a blank box" ;;
+      claude-box|codex-box|grok-box|kimi-box)
+        usage_error "--template $template is retired — use --role $template --size medium" ;;
+    esac
+    [ -z "$role" ] || usage_error "--template and --role choose different mint paths; use one"
+    [ -z "$user" ] || usage_error "--user customizes a runtime --role, not a template"
+    mint_template="$template"
+    return
+  fi
+  if [ -n "$role" ]; then
+    [[ "$role" =~ ^[a-z][a-z0-9-]*$ ]] \
+      || usage_error "--role must be a plain rig role name (lowercase letters, digits and hyphens): $role"
+    if [ -z "$user" ]; then user="${role%-box}"; fi
+    [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] \
+      || usage_error "--user must be a plain Linux user name (lowercase letters, digits, _ and -): $user"
+    mint_template=tenant
+    return
+  fi
+  [ -z "$user" ] || usage_error "--user requires --role"
+  mint_template=blank
+}
+
 cmd_new() {
   [ -n "$name" ] || usage_error "usage: $(synopsis_of new)"
   refuse_fleet_word "$name"
-  require_stack
-  local instance; instance="$(iname_of "$name")"
   if [ -n "$from" ]; then
     [ -z "$template" ] || usage_error "--from clones an existing box; its template rides along (drop --template)"
     [ -z "$role" ] || usage_error "--from clones an existing box; its tenant role rides along (drop --role)"
     [ -z "$size" ] || usage_error "--from takes explicit --cpu/--memory/--disk overrides, not --size"
     [ -z "$user" ] || usage_error "--from clones an existing box; its user rides along (drop --user)"
+  else
+    resolve_fresh_intent
+  fi
+  require_stack
+  local instance; instance="$(iname_of "$name")"
+  if [ -n "$from" ]; then
     local src="${from%%/*}" snap="" srcref
     case "$from" in */*) snap="${from#*/}" ;; esac
     srcref="$(iname_of "$src")"; [ -n "$snap" ] && srcref="$srcref/$snap"
@@ -2082,28 +2117,7 @@ cmd_new() {
       echo "box: will not label the source's state as one. 'box info $name' lists what it did inherit."
     fi
   else
-    local t m extra=()
-    if [ -n "$template" ]; then
-      case "$template" in
-        blank)
-          usage_error "--template blank is retired — omit --template for a blank box" ;;
-        claude-box|codex-box|grok-box|kimi-box)
-          usage_error "--template $template is retired — use --role $template --size medium" ;;
-      esac
-      [ -z "$role" ] || usage_error "--template and --role choose different mint paths; use one"
-      [ -z "$user" ] || usage_error "--user customizes a runtime --role, not a template"
-      t="$template"
-    elif [ -n "$role" ]; then
-      [[ "$role" =~ ^[a-z][a-z0-9-]*$ ]] \
-        || usage_error "--role must be a plain rig role name (lowercase letters, digits and hyphens): $role"
-      if [ -z "$user" ]; then user="${role%-box}"; fi
-      [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] \
-        || usage_error "--user must be a plain Linux user name (lowercase letters, digits, _ and -): $user"
-      t=tenant
-    else
-      [ -z "$user" ] || usage_error "--user requires --role"
-      t=blank
-    fi
+    local t="$mint_template" m extra=()
     load_template "$t"
     if [ -n "$role" ]; then
       T_USER="$user"

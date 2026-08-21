@@ -23,7 +23,7 @@
 # most of the risk while feeling safer. Either the agent is unprivileged or
 # it is not.
 users:
-  - name: @BOX_USER@
+  - name: "@BOX_USER@"
     shell: /bin/bash
     lock_passwd: true
 package_update: true
