@@ -39,7 +39,6 @@ including an operator's own boxes on a shared host.
 | `--run-id <id>` | pin the ID box's, rig's and cast's records for one release share; unset, it generates `drill-<version>-<date>-01` and prints it early |
 | `DRILL_EXPECT=<n>` | raise the probe floor above the table's own total; a non-numeric value is refused before the host is touched |
 | `DRILL_OWNS_SETUP=1` | opt out of the installer's automatic host setup and let the drill sequence it; phase I is then a declared skip, because `install.sh`'s own contract (#64) is what it asserts |
-| `RIG_REF=<ref>` | pin the rig revision the mints consume; unset, a mint resolves rig's latest release (#150), and the record reports what the mint actually used |
 | `NO_COLOR` | drop the ANSI, as does any stdout that is not a terminal — a record is pasted at least as often as it is read |
 
 `--help` prints the script's own header block. That block **is** the help text
@@ -49,8 +48,8 @@ the whole phase list, and the range quoted here and in `CONTRIBUTING.md` is the
 range the script runs, read out of the script rather than trusted.
 
 On a host with less than 20GiB of RAM the drill exports `BOX_MEMORY=3GiB
-BOX_CPU=2` and says so — the `claude-box` template's own 8GiB/4cpu is then what
-was *not* drilled.
+BOX_CPU=2` and says so — `--size medium`'s own 8GiB/4cpu is then what was *not*
+drilled.
 
 ## What it checks
 
@@ -58,13 +57,22 @@ The script prints **eight ledgered phases**, in this order, plus unkeyed
 sections (the install, the host setup, the summary, the audit answers) that
 emit no verdicts. Each phase declares how many verdicts a complete run of it
 emits; the table below is that declaration, and the summary grades the run
-against it as a floor. **87 probes** total.
+against it as a floor. **81 probes** total.
+
+**What a box drill proves is what box owns**: that a mint comes up, at the size
+it was asked for, on the shared placement contract and behind the real trust
+boundary; that snapshot, restore, clone, export, import and rename do what they
+say; that the multi-user tier holds; and that teardown leaves the host as it
+found it. It does **not** prove that a box becomes an agent, or a server, or
+anything else — box provisions and manages VMs and does not converge them
+(#214), so a drill that asserted a converged guest would be asserting somebody
+else's contract.
 
 | | phase | probes |
 |---|---|---|
 | **I** | **The installer's contract.** `install.sh` runs the host setup itself (#64), so the drill asserts what it left — `boxnet`, the `box-isolate` ACL, the `box-net` profile, the nft bridge drop — *before* anything else on the host mutates the stack. Skipped, declared, under `DRILL_OWNS_SETUP=1`. | 1 |
 | **A** | **Incus semantics.** The assumptions box is built on, probed directly: that `incus config get <inst> user.box` returns `1` (this is on the path of *every* box command — if it lies, everything fails closed); that the `user.box=1` list filter selects our instances and excludes an untagged one; that `--columns nstS` gives four clean CSV fields; that the state column reads `RUNNING`; that `incus rename` really does refuse a running instance; that snapshot-list's first CSV field is the label; that an **unset** config key reads as empty with exit 0 (#15 B4); and that `incus copy` **preserves `user.*` keys** (#15 B2 — the whole template-metadata design in #17 rests on it). | 8 |
-| **B** | **The box surface.** Version, the empty-host message, templates and the key allowlist that stops one naming a network, mint, list, info, snapshot, clone-from-a-snapshot-of-a-renamed-box, the `--from` clone honouring `--cpu`/`--memory`/`--disk` (#171), rename (running must refuse, stopped must work), the escape hatch and its isolation warning, the `rm` confirmation guard, and the CLI contract (typo'd command, typo'd flag, `list <box>`). **The boundary** gets its own treatment: the drill launches an instance box did *not* mint, aims `down`, `rm` and the escape hatch at it, and requires all three to refuse — and the instance to still be standing afterwards. | 51 |
+| **B** | **The box surface.** Version, the empty-host message, templates and the key allowlist that stops one naming a network, mint, list, info, snapshot, clone-from-a-snapshot-of-a-renamed-box, the `--from` clone honouring `--cpu`/`--memory`/`--disk` (#171), rename (running must refuse, stopped must work), the escape hatch and its isolation warning, the `rm` confirmation guard, and the CLI contract (typo'd command, typo'd flag, `list <box>`). **The boundary** gets its own treatment: the drill launches an instance box did *not* mint, aims `down`, `rm` and the escape hatch at it, and requires all three to refuse — and the instance to still be standing afterwards. | 45 |
 | **C** | **Isolation baseline (#15 section A).** From inside a real box: public egress works; the box cannot reach a listener on the host's gateway; RFC1918 is dropped; a **sibling box is unreachable** (a listener runs on the peer so "refused" — the packet arrived — cannot masquerade as "dropped"); DNS does not enumerate the sibling; IPv6 is off; and the host cannot connect **into** a box. | 9 |
 | **E** | **`box expose` — a deliberate loopback door (#55).** A listener is started inside a box and the port exposed: the host's loopback must reach it, `expose --list` and `box info` must say the box has a hole in it, a **non**-exposed port must still be dropped (the feature is per-port, never a global ingress opening), and `--remove` must shut the door. | 7 |
 | **D** | **The isolation contract, stated.** Not a rehearsal — see below. It judges only one thing: if phase C's baseline box could not reach the internet at all, it says out loud that every isolation result above is suspect rather than a pass. | 0 |

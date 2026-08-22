@@ -34,9 +34,11 @@ meant to. Keep using it for what it has always been for.
 - **What ran** — which drill, how many probes, `drill/drill.sh` invocation.
 - **On what host** — the machine, the OS, the Incus version. "Real hardware"
   is the claim; name the hardware.
-- **The pinned candidate refs** — the exact `BOX_REF` / `RIG_REF` /
-  `CAST_REF` under test, and the other repos' commit SHAs. A drill that does
-  not say what it drilled proves nothing later.
+- **The pinned candidate refs** — the exact `BOX_REF` / `CAST_REF` under
+  test, and the other repos' commit SHAs. A drill that does not say what it
+  drilled proves nothing later. Box's record names no converger ref since
+  #214: box installs nothing into a guest, so there is no such ref to pin and
+  naming one would claim a dependency box does not have.
 - **The shared run ID**, so this record reconciles with the sibling repos'.
 - **The numbers** — passed, failed, how long it took.
 - **What failed**, plainly.
@@ -103,7 +105,6 @@ Copy the shape, not the number.
 - **Date:** 2026-07-21
 - **Candidate refs:**
   - box `release/9.9.9` @ `abc1234`
-  - rig `release/4.4.4` @ `def5678` (minted with `RIG_REF=release/4.4.4`)
   - cast `release/2.2.2` @ `9abcdef`
 
 ## What ran
@@ -114,13 +115,13 @@ residue. Then `drill/multiuser.sh` for the two-user grant matrix.
 
 ## Result
 
-**86/87 passed, 1 failed.** 41 minutes wall clock.
+**80/81 passed, 1 failed.** 41 minutes wall clock.
 
 - Failed: `multiuser.sh` criterion (m) — the raw instance kept a stale route
   after teardown. Filed as #999. Judged not release-blocking: it affects
   teardown residue on a host that is about to be wiped, not the trust
   boundary itself.
-- The VM boundary probes (the 87-probe isolation contract) passed clean,
+- The VM boundary probes (the 81-probe isolation contract) passed clean,
   which is the assertion this repo's drill exists to make.
 
 ## Audit answers
