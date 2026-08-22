@@ -2104,7 +2104,7 @@ check "mint: ...and box_id() never asks the box for it (#181)" 0 "" \
 # An id every box shares is not an identity. Two mints, two ids.
 MLOG2="$MWORK/mint2.log"
 check "mint: a second mint runs to completion" 0 "ready" \
-  mintbox "$MLOG2" new --name w1b --role claude-box --container
+  mintbox "$MLOG2" new --name w1b --user claude --container
 stamped_id() { launchline "$1" | grep -oE 'user\.box\.id=[0-9a-f-]+' | head -1 | cut -d= -f2; }
 mint_ids_differ() {
   local a b; a="$(stamped_id "$1")"; b="$(stamped_id "$2")"
@@ -2119,9 +2119,9 @@ check "mint: two boxes minted on one host get DIFFERENT ids (#181)" 0 "" \
 export SHIM_PREFIX="$NOUUID"
 NOIDLOG="$MWORK/noid.log"
 check "mint: a host with no UUID source still mints (#181)" 0 "ready" \
-  mintbox "$NOIDLOG" new --name w7 --role claude-box --container
+  mintbox "$NOIDLOG" new --name w7 --container
 check "mint: ...and says out loud that this box has no stable id (#181)" 0 "no stable id" \
-  mintbox "$NOIDLOG" new --name w7 --role claude-box --container
+  mintbox "$NOIDLOG" new --name w7 --container
 check "mint: ...stamping no id at all, rather than an empty key (#181)" 1 "" \
   launch_has "$NOIDLOG" 'user\.box\.id'
 unset SHIM_PREFIX
@@ -2133,7 +2133,7 @@ check "mint: stamps the mint time as UTC ISO 8601 (#103)" 0 "" \
 # does not rewrite it, and box_user()/the login hint read two of them.
 check "mint: the pre-existing boundary tag still rides the same line" \
   0 "user.box=1" launchline "$MLOG"
-check "mint: stamps the generic tenant seed selected at runtime (#159)" \
+check "mint: stamps the internal tenant seed every mint renders (#159, #214)" \
   0 "user.box.template=tenant" launchline "$MLOG"
 check "mint: the pre-existing user stamp is untouched" \
   0 "user.box.user=claude" launchline "$MLOG"
@@ -2168,51 +2168,37 @@ check "mint: ...and it stamped no empty fingerprint key either (#103)" 1 "" \
   grep -q 'image.fingerprint' "$NOFP"
 FAKE_BASE_IMAGE=deadbeefcafe0123456789
 
-# --- blank and role shapes share the generic seed and rig preinstall --------
-# The #159 ruling keeps the rig pin in both shapes; only the role auto-run and
-# agent-class additions are conditional. The stamp therefore records the rig
-# installed into an argumentless blank, while the role key remains absent.
-check "mint: argumentless blank stamps the preinstalled rig repo (#103, #159)" 0 "" \
-  launch_has "$NOFP" 'user\.box\.rig\.repo=heavy-duty/rig'
-check "mint: argumentless blank stamps the resolved rig ref (#103, #159)" 0 "" \
-  launch_has "$NOFP" 'user\.box\.rig\.ref=9.9.9'
-check "mint: ...and no role either — blank names none (#103)" 1 "" \
+# --- one seed, one shape, no pin --------------------------------------------
+# The #159 ruling kept a pin in both of the seed's shapes and made only the
+# auto-run conditional. #214 removed both the pin and the second shape, so what
+# used to be asserted here — the stamped repo, the stamped resolved ref, the
+# one-probe-per-mint count — has no subject. The argumentless mint is now the
+# ONLY mint, and its stamp carries none of the three retired keys.
+check "mint: an argumentless mint stamps no converger repo (#214)" 1 "" \
+  launch_has "$NOFP" 'user\.box\.rig\.repo'
+check "mint: an argumentless mint stamps no converger ref (#214)" 1 "" \
+  launch_has "$NOFP" 'user\.box\.rig\.ref'
+check "mint: ...and no role either (#103, #214)" 1 "" \
   launch_has "$NOFP" 'user\.box\.role'
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "mint: argumentless blank resolves its shared rig pin once (#150, #159)" 0 "1" \
-  bash -c 'grep -c "releases/latest" "$1"' _ "$NOFP.curl"
-
-# --- the rig pin has ONE definition, and both readers get the same answer ---
-# The seed substitutes it and the stamp records it. Two spellings of the same
-# default would eventually disagree, and a stamp that disagrees with the seed
-# it shipped alongside is worse than no stamp. Driven through the environment
-# override, so the two are compared on a value neither can have hardcoded.
-RIGLOG="$MWORK/rig.log"
-export RIG_REPO=someone/rig RIG_REF=probe-ref
-mintbox "$RIGLOG" new --name w5 --role claude-box --container >/dev/null 2>&1
-unset RIG_REPO RIG_REF
-check "mint: the rig pin override reaches the STAMP (#103)" 0 "" \
-  launch_has "$RIGLOG" 'user\.box\.rig\.repo=someone/rig'
-check "mint: ...both halves of it (#103)" 0 "" \
-  launch_has "$RIGLOG" 'user\.box\.rig\.ref=probe-ref'
-check "mint: ...and the SEED it shipped with carries the same pin (#103)" 0 "" \
-  launch_has "$RIGLOG" 'someone/rig/probe-ref'
-check "mint: ...and a pinned mint resolves nothing, so it probes nothing (#150)" 1 "" \
-  grep -q . "$RIGLOG.curl"
-
-# --- a pin that cannot be resolved ends the mint ----------------------------
-# The sharp edge of resolving a default at mint: the probe can fail. Falling
-# back to main would reintroduce #150's defect quietly, on the one host where
-# nobody would look — and a die() inside the launch line's own command
-# substitution would exit a SUBSHELL and let incus launch a box seeded with
-# nothing. So the mint must die, before the launch, saying what to pass.
-NORESOLVE="$MWORK/noresolve.log"
-export FAKE_CURL_RC=6
-check "mint: an unresolvable rig pin FAILS the mint (#150)" 1 "could not resolve rig's latest release" \
-  mintbox "$NORESOLVE" new --name w6 --role claude-box --container
-unset FAKE_CURL_RC
-check "mint: ...and nothing was launched — the refusal came first (#150)" 1 "" \
-  grep -q '^incus launch ' "$NORESOLVE"
+check "mint: an argumentless mint probes nothing at all (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$NOFP.curl"
+# The seed it shipped carries no installer line either — the stamp and the
+# payload are two different surfaces, and the cut had to reach both.
+check "mint: ...and the seed it shipped installs nothing (#214)" 1 "" \
+  launch_has "$NOFP" 'install\.sh'
+# THE MINT WITH NO NETWORK, end to end (#214). This is the single clearest
+# proof the pin is gone: with the shim curl failing every call, a mint that
+# still resolved a pin would die where this one succeeds. It deserves its own
+# case rather than riding an assertion about a stamp.
+OFFLINE="$MWORK/offline.log"
+check "mint: a mint with the network down still succeeds (#214)" 0 "ready" \
+  mintbox "$OFFLINE" new --name offline --container
+check "mint: ...having launched a box, not died before the launch (#214)" 0 "" \
+  grep -q '^incus launch ' "$OFFLINE"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "mint: ...and having asked the network nothing (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$OFFLINE.curl"
 
 # --- the clone: the sharpest edge of the whole stamp ------------------------
 # 'incus copy' carries every user.* key forward (audit B2) — which is what
@@ -2233,7 +2219,7 @@ check "clone: re-stamps a fresh created time (#103)" 0 "" \
   grep -qE 'user\.box\.created=[0-9]{4}-[0-9]{2}-[0-9]{2}T' "$CLONELOG"
 # The other half of the decision, and the reason it is a decision at all: the
 # LINEAGE keys are left alone on purpose. The clone's disk genuinely came from
-# that image, that template, that user, that role — re-stamping them from the
+# that image, that template and that user — re-stamping them from the
 # cloning process's own template lookup would be the actual lie, and would
 # break the login hint that reads user.box.template off the instance.
 check "clone: does NOT re-stamp the template — it is inherited lineage (#103)" 1 "" \
@@ -2242,7 +2228,10 @@ check "clone: does NOT re-stamp the user — box_user() reads the source's (#103
   restamp_has "$CLONELOG" 'user\.box\.user'
 check "clone: does NOT re-stamp the image — the disk really came from it (#103)" 1 "" \
   restamp_has "$CLONELOG" 'user\.box\.image'
-check "clone: does NOT re-stamp the role — the source's rig converged it (#103)" 1 "" \
+# A pre-#214 source still carries user.box.role and user.box.rig.*; the clone
+# neither re-stamps nor strips them. They are not box's keys any more, and an
+# artifact of a mint that happened is not a thing to bring up to date.
+check "clone: does NOT re-stamp a retired role key (#103, #214)" 1 "" \
   restamp_has "$CLONELOG" 'user\.box\.role'
 # The third column, and the one review found: 'mode.asked' is neither lineage
 # nor re-stampable. It is a mint-event fact whose asker was the SOURCE's
@@ -2550,7 +2539,7 @@ check "clone: narrates the resources it actually carries (#171 D6)" \
 SIZEDMINT="$MWORK/sized-mint.log"
 check "mint: narrates them too, from the same helper (#171 D6)" \
   0 "resources, read back from incus: cpu=6 mem=12GiB disk=80GiB" \
-  mintbox "$SIZEDMINT" new --name w14 --role claude-box --container
+  mintbox "$SIZEDMINT" new --name w14 --container
 # One helper, one call site, after the branches rejoin — so the parity is
 # structural and a third way of minting cannot ship silent about its sizing.
 # shellcheck disable=SC2016  # the $-strings are literals inside bash -c
@@ -2584,7 +2573,7 @@ check "clone: an unreadable read-back says so rather than going quiet (#171 D6)"
   mintbox "$MWORK/blind-clone.log" new --name w12 --from work/authed
 check "mint: ...and the mint path degrades the same way (#171 D6)" \
   0 "incus reported no resource figures" \
-  mintbox "$MWORK/blind-mint.log" new --name w15 --role claude-box --container
+  mintbox "$MWORK/blind-mint.log" new --name w15 --container
 
 # D5 — the post-copy handle, where box does print one, carries what incus
 # actually does. 'box new --help' is that place now: the D3 refusal prints no
@@ -2669,11 +2658,25 @@ check "info: surfaces the mint time and the box that minted it (#103)" \
   0 "MINTED     2026-07-19T14:22:07Z by box 0.8.0" infobox "$STAMPED"
 check "info: surfaces the image alias AND what it resolved to (#103)" \
   0 "IMAGE      images:debian/13/cloud @ 8a2f1c9d4e5b" infobox "$STAMPED"
-check "info: surfaces the template with its user and role (#103)" \
-  0 "TEMPLATE   claude (user claude, role claude)" infobox "$STAMPED"
-check "info: surfaces which rig converged it (#103)" \
-  0 "RIG        heavy-duty/rig@main" infobox "$STAMPED"
+check "info: surfaces the template with its user (#103)" \
+  0 "TEMPLATE   claude (user claude)" infobox "$STAMPED"
 check "info: surfaces the origin (#103)" 0 "ORIGIN     mint" infobox "$STAMPED"
+# THE LEGACY STAMP (#214). $STAMPED deliberately still carries user.box.role,
+# user.box.rig.repo and user.box.rig.ref: that is exactly what every box minted
+# before this release has on it, and no migration rewrites them. box must read
+# such a box without error and print none of the three — the keys are simply
+# not box's any more, so they are not box's to report.
+info_shows() { infobox "$1" | grep -qE "$2"; }   # (info_has, defined once, early)
+check "info: a legacy stamp reads without error (#214)" 0 "NAME       work" \
+  infobox "$STAMPED"
+check "info: ...printing its provenance block as usual (#214)" 0 "MINTED     " \
+  infobox "$STAMPED"
+check "info: ...and no RIG row for the retired keys (#214)" 1 "" \
+  info_shows "$STAMPED" '^RIG '
+check "info: ...nor the role in the TEMPLATE parenthesis (#214)" 1 "" \
+  info_shows "$STAMPED" 'role claude'
+check "info: ...and it exits 0 rather than choking (#214)" 0 "" \
+  infobox "$STAMPED"
 
 # The identity reads back in the HEADER, not in the provenance block (#181).
 # The block below answers how this box came to BE; the id answers which box it
@@ -4752,18 +4755,18 @@ check "probe ledger: the extracted block is valid bash" 0 "" bash -n "$LEDGERFN"
 # script around it, so the harness supplies it, exactly as the drill does.
 led() { bash -c "set -u; findings=(); . '$LEDGERFN'; $1"; }
 # A complete run: every phase emits what it declared.
-FULL='PHASE_RAN=([I]=1 [A]=8 [B]=51 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)'
+FULL='PHASE_RAN=([I]=1 [A]=8 [B]=45 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)'
 
 # shellcheck disable=SC2016  # the snippet is evaluated by led(), not here
-check "probe ledger: the declared total is 87" 0 "[87]" led 'printf "[%s]" "$(ledger_declared)"'
+check "probe ledger: the declared total is 81" 0 "[81]" led 'printf "[%s]" "$(ledger_declared)"'
 # The number CONTRIBUTING and drills/README.md have quoted all along with
 # nothing checking it. If a phase gains probes, both move together or this reds.
 check "probe ledger: ...which is the contract CONTRIBUTING states" 0 "" \
-  grep -qF '87-probe' "$ROOT/CONTRIBUTING.md"
+  grep -qF '81-probe' "$ROOT/CONTRIBUTING.md"
 
 check "probe ledger: a complete run is short in nothing" 0 "[]" \
   led "$FULL; printf '[%s]' \"\$(ledger_short)\""
-check "probe ledger: a complete run's floor is the declared total" 0 "[87]" \
+check "probe ledger: a complete run's floor is the declared total" 0 "[81]" \
   led "$FULL; printf '[%s]' \"\$(ledger_expected)\""
 
 # THE regression. A phase that never executed used to be invisible: the pass
@@ -4779,7 +4782,7 @@ check "probe ledger: overshooting a phase is not a shortfall" 0 "[]" \
 
 # A declared skip is honest — it lowers the expectation by exactly its probes
 # and says so. The whole point is that the floor is never tuned down silently.
-check "probe ledger: a declared skip lowers the floor by its probes" 0 "[78]" \
+check "probe ledger: a declared skip lowers the floor by its probes" 0 "[72]" \
   led "$FULL; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_expected)\""
 check "probe ledger: ...so a declared skip is not a shortfall" 0 "[]" \
   led "$FULL; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_short)\""
@@ -4801,7 +4804,7 @@ check "probe ledger: tally returns 0 so ok/no still do" 0 "[0][0]" \
 # A verdict emitted outside any ledgered phase means the table has drifted.
 check "probe ledger: an unattributed verdict is surfaced, not swallowed" 0 "unattributed" \
   led "PHASE=-; tally; ledger_line"
-check "probe ledger: the per-phase line is what a single total cannot say" 0 "B 51/51" \
+check "probe ledger: the per-phase line is what a single total cannot say" 0 "B 45/45" \
   led "$FULL; ledger_line"
 
 # The wiring, so the ledger cannot be left correct-but-unused.
@@ -4893,37 +4896,37 @@ summary_lacks() {   # 0 when the composed run does NOT say $1
   local needle="$1"; shift
   ! run_summary "$1" 2>&1 | grep -qF -e "$needle"
 }
-COMPLETE="$FULL; pass=87; fail=0"
+COMPLETE="$FULL; pass=81; fail=0"
 
-check "drill summary: a complete run reports 87/87 and EXITS 0" 0 "87/87 passed, 0 failed" \
+check "drill summary: a complete run reports 81/81 and EXITS 0" 0 "81/81 passed, 0 failed" \
   run_summary "$COMPLETE"
 
-# THE regression, end to end. Phase C never executed: 78 verdicts, none of them
-# failing, and the drill used to leave here 0 with "78 passed, 0 failed" on the
+# THE regression, end to end. Phase C never executed: 72 verdicts, none of them
+# failing, and the drill used to leave here 0 with "72 passed, 0 failed" on the
 # line an operator transcribes into drills/<version>.md as proof.
 check "drill summary: a phase that never ran EXITS NON-ZERO" 1 "the drill ran SHORT:" \
-  run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
+  run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=72"
 check "drill summary: ...naming the short phase, against the full denominator" 1 \
-  "short in: C(0/9)" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
-check "drill summary: ...and the record carries 78/87, not a clean 78" 1 \
-  "78/87 passed, 1 failed" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
+  "short in: C(0/9)" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=72"
+check "drill summary: ...and the record carries 72/81, not a clean 72" 1 \
+  "72/81 passed, 1 failed" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=72"
 # The verdict names both roads to a short phase, not just the commoner one.
 check "drill summary: ...and does not diagnose 'never ran' as the only cause" 1 \
-  "or failed before emitting the rest" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
+  "or failed before emitting the rest" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=72"
 
-# A DECLARED skip is the line between honest and tuned-down: same 78 verdicts,
+# A DECLARED skip is the line between honest and tuned-down: same 72 verdicts,
 # but the run said which nine it was not going to emit, and why.
 check "drill summary: a declared skip lowers the floor and EXITS 0" 0 \
-  "78/78 passed, 0 failed" \
-  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=78"
+  "72/72 passed, 0 failed" \
+  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=72"
 check "drill summary: ...and the SKIP survives into the findings block" 0 \
   "SKIP: no isolation stack" \
-  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=78"
+  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=72"
 
 # The other road to non-zero: nothing short, one thing genuinely failed. Both
 # roads have to work, and the second must not be reported as the first.
 check "drill summary: a complete run with one real FAIL EXITS NON-ZERO" 1 \
-  "86/87 passed, 1 failed" run_summary "$COMPLETE; pass=86; fail=1"
+  "80/81 passed, 1 failed" run_summary "$COMPLETE; pass=80; fail=1"
 check "drill summary: ...and is not mislabelled as a short run" 0 "" \
   summary_lacks "the drill ran SHORT:" "$COMPLETE; pass=86; fail=1"
 
@@ -5102,64 +5105,52 @@ check "drill record: ...and the refusal says why that matters" 2 "destroys the j
 check "drill record: ...while an empty file is not a record and may be used" 0 "" \
   rec "record_check_path '$RECWORK/empty.md'"
 
-# --- the rig pin, read off the mint rather than re-derived -------------------
-# The record must say what the MINT used. It used to re-derive that from the
-# environment, carrying bin/box's `main` default as a second spelling — and
-# #150 made that spelling a lie: RIG_REF unset now resolves rig's latest
-# RELEASE at mint, so an unpinned run would have recorded `main` while the
-# guest was handed a tag, asserting a combination nobody drilled. So the value
-# is read off the mint's own stamp (#103), and where there is no stamp to read
-# the record admits it instead of naming a ref.
+# --- one candidate ref, and no pin to read off a stamp ----------------------
+# What lived here was the converger pin: read off the mint's own stamp (#150,
+# #103) because the environment could no longer answer, driven against a shim
+# incus, and carried into the reproduce-prefix. #214 removed the installation,
+# the stamp and the variable, so the assertions invert — the record names box's
+# ref alone, and reaches for nothing else.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: an unpinned run no longer claims 'main' (#150)" 0 "[heavy-duty/rig][unresolved]" \
-  rec 'record_collect o/r main 0; printf "[%s][%s]" "$REC_RIG_REPO" "$REC_RIG_REF"'
+check "drill record: collects no converger repo (#214)" 0 "[]" \
+  rec 'record_collect o/r main 0; printf "[%s]" "${REC_RIG_REPO:-}"'
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: ...and an overridden rig pin is what lands in the record" 0 "[you/rig][topic]" \
-  rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r main 0; printf "[%s][%s]" "$REC_RIG_REPO" "$REC_RIG_REF"'
-# The stamp read itself, driven against a shim incus: this is what the mint
-# site above fills REC_RIG_* from, and it is the only place the resolved
-# default survives — bin/box resolved it, the environment never saw it.
-STAMPSHIM="$(mktemp -d)"
-cat > "$STAMPSHIM/incus" <<'SHIM'
-#!/usr/bin/env bash
-# Fake incus for the drill's stamp read: 'config get <box> <key>' answers from
-# $FAKE_STAMP ("<key> <value>" lines), and an unset key prints EMPTY, exits 0 —
-# which is what a real incus does (audit B4) and what 'unresolved' guards.
-case "$*" in
-  "config get "*)
-    [ -n "${FAKE_STAMP:-}" ] || exit 0
-    key="$*"; key="${key##* }"
-    awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_STAMP" ;;
-esac
-exit 0
-SHIM
-chmod +x "$STAMPSHIM/incus"
-STAMPF="$(mktemp)"
-printf 'user.box.rig.repo heavy-duty/rig\nuser.box.rig.ref 0.3.1\n' > "$STAMPF"
-stamped() { PATH="$STAMPSHIM:$PATH" FAKE_STAMP="$1" rec "$2"; }
+check "drill record: collects no converger ref (#214)" 0 "[]" \
+  rec 'record_collect o/r main 0; printf "[%s]" "${REC_RIG_REF:-}"'
+# The pin environment cannot reach the record either. It used to be the first
+# fallback record_collect consulted; a run that still honoured it would put a
+# variable box never read into the reproduction of a run that never used it.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: the pin is read off the mint's stamp (#103, #150)" 0 "[0.3.1]" \
-  stamped "$STAMPF" 'printf "[%s]" "$(drill_stamp drill rig.ref)"'
+check "drill record: a set pin in the environment is not collected (#214)" 0 "[]" \
+  rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r main 0; printf "[%s%s]" "${REC_RIG_REPO:-}" "${REC_RIG_REF:-}"'
+# drill_stamp() went with its only caller (#214): a reader with nothing to read
+# is a place for the question to come back.
+check "drill record: drill_stamp is gone from drill.sh (#214)" 1 "" \
+  grep -q 'drill_stamp' "$ROOT/drill/drill.sh"
+check "drill record: drill.sh reads no retired stamp at all (#214)" 1 "" \
+  grep -qE 'user\.box\.(role|rig)' "$ROOT/drill/drill.sh"
+check "drill record: drill.sh passes no --role (#214)" 1 "" \
+  grep -q -- '--role' "$ROOT/drill/drill.sh"
+# The invocation still has to reproduce the run, so the flags and DRILL_EXPECT
+# stay; what leaves is the pin, because a prefix naming a variable box does not
+# read would claim a dependency box does not have.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: ...and a box with no stamp is 'unresolved', never blank (#150)" 0 "[unresolved]" \
-  stamped /dev/null 'printf "[%s]" "$(drill_stamp drill rig.ref)"'
-rm -rf "$STAMPSHIM" "$STAMPF"
-# The invocation has to reproduce the run, so the pin belongs in it: the flags
-# alone name a different drill than the one that ran — and after #150 so does
-# the same command left unpinned, which would resolve whatever is latest then.
-# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: the invocation carries the env pins, not just the flags" 0 \
-  "RIG_REF=topic bash drill/drill.sh --repo o/r --ref v1" \
+check "drill record: the invocation carries no converger pin (#214)" 0 \
+  "bash drill/drill.sh --repo o/r --ref v1" \
   rec 'export RIG_REF=topic; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
-# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: ...the ref the MINT resolved, where the environment set none (#150)" 0 \
-  "RIG_REF=0.3.1 bash drill/drill.sh" \
-  rec 'REC_RIG_REF=0.3.1; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
 INVF="$(mktemp)"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-rec 'record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"' > "$INVF" 2>/dev/null
+rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"' > "$INVF" 2>/dev/null
+check "drill record: ...not even one set in the environment (#214)" 1 "" \
+  grep -qE 'RIG_RE(PO|F)=' "$INVF"
 check "drill record: ...and 'unresolved' is never put in a command line (#150)" 1 "" \
   grep -q unresolved "$INVF"
+# DRILL_EXPECT is the one env pin left, and it must have survived the removal
+# of the two beside it.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: DRILL_EXPECT still reaches the invocation (#153)" 0 \
+  "DRILL_EXPECT=90 bash drill/drill.sh" \
+  rec 'export DRILL_EXPECT=90; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
 rm -f "$INVF"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--keep-boxes" \
@@ -5168,17 +5159,16 @@ check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--k
 # --- the record itself ------------------------------------------------------
 # A finished drill, pinned so every field is assertable. record_collect fills
 # only what is not already set, which is what lets a test pin the world away.
-RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=51 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
+RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=45 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
 REC_VERSION=9.9.9; REC_DATE=2026-07-21; REC_HOST='bare Debian 13, Incus 6.0.2'
-REC_RUN_ID=drill-9.9.9-20260721-01; REC_BOX_SHA=abc1234; REC_RIG_SHA=def5678
-REC_RIG_REF=0.3.1
+REC_RUN_ID=drill-9.9.9-20260721-01; REC_BOX_SHA=abc1234
 REC_ELAPSED=2460; record_collect heavy-duty/box release/9.9.9 0"
 emit() {   # emit <state> → the record that state produces, on stdout
   rm -f "$RECOUT"
   rec "$RECSTATE; $1; record_write '$RECOUT'" >/dev/null 2>&1
   cat "$RECOUT" 2>/dev/null
 }
-CLEAN='pass=87; fail=0'
+CLEAN='pass=81; fail=0'
 
 # drills/README.md:34-42 asks for six things. One check each, because a record
 # missing one of them is the hand-transcription this replaces, reintroduced.
@@ -5193,24 +5183,23 @@ check "drill record: dates the run" 0 "**Date:** 2026-07-21" emit "$CLEAN"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: pins box's candidate ref TO A SHA" 0 \
   'box `release/9.9.9` @ `abc1234`' emit "$CLEAN"
-# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: ...and rig's, which is the other half of the combination" 0 \
-  'rig `0.3.1` @ `def5678`' emit "$CLEAN"
-# The reproduction has to carry the rig pin the run used, not just the flags:
-# an unpinned run resolved a RELEASE at mint (#150), so a reproduction left
-# equally unpinned would resolve whatever is latest the day it is re-run.
+# ...and box's is the ONLY candidate ref the record names now (#214). The
+# second row said which converger the mint had installed; box installs none, so
+# a row there would be a combination nobody drilled being claimed as one.
+check "drill record: names no second candidate ref (#214)" 1 "" \
+  bash -c 'emit "$1" | grep -qE "^  - (rig|cast) "' _ "$CLEAN"
 check "drill record: says what ran, as a command that reproduces it" 0 \
-  'RIG_REF=0.3.1 bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
+  'bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
 check "drill record: gives the numbers and the wall clock" 0 \
-  "**87/87 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
+  "**81/81 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
 check "drill record: carries the per-phase ledger a single total cannot say" 0 \
-  "B 51/51" emit "$CLEAN"
+  "B 45/45" emit "$CLEAN"
 check "drill record: states the floor and the table's total as two facts" 0 \
-  "Probe floor: 87 expected this run; the table declares 87." emit "$CLEAN"
+  "Probe floor: 81 expected this run; the table declares 81." emit "$CLEAN"
 # DRILL_EXPECT can raise the floor above the table, and the record must not read
 # that as an error — the operator is deliberately demanding more than the table.
 check "drill record: ...which stays readable when DRILL_EXPECT raises the floor" 0 \
-  "Probe floor: 90 expected this run; the table declares 87." \
+  "Probe floor: 90 expected this run; the table declares 81." \
   emit "DRILL_EXPECT=90; $CLEAN"
 # The record is pasted into a file and read months later. Escape codes in it are
 # the peculiar thing this issue found: every script emitted ANSI unconditionally.
@@ -5230,22 +5219,22 @@ check "drill record: ...and says the judgement is the operator's to write" 0 \
   "a judgement it must not fabricate" emit "$CLEAN"
 
 # THE #153 regression, in the artifact #153 exists to protect. A run that emitted
-# 78 of 87 and failed none is not "78/78 passed" — and the record is precisely
+# 72 of 81 and failed none is not "72/72 passed" — and the record is precisely
 # where that fraction used to get written down as proof a release was drilled.
 check "drill record: a short run's denominator is the FLOOR, not what ran" 0 \
-  "**78/87 passed" emit "pass=78; fail=0; PHASE_RAN[C]=0"
+  "**72/81 passed" emit "pass=72; fail=0; PHASE_RAN[C]=0"
 check "drill record: ...and the short phase is named in it" 0 "C 0/9" \
-  emit "pass=78; fail=0; PHASE_RAN[C]=0"
+  emit "pass=72; fail=0; PHASE_RAN[C]=0"
 # A DECLARED skip is the honest half: the floor moves, and the record says which
 # probes were not expected and why — recorded as skipped, never as passing.
 check "drill record: a declared skip lowers the record's denominator" 0 \
-  "**78/78 passed" emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  "**72/72 passed" emit "pass=72; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: ...and the skip is recorded AS a skip, beside the failures" 0 \
   "- SKIP: no isolation stack" \
-  emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  emit "pass=72; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: ...and the waived probes are visible in the ledger line" 0 \
   "9 waived by declared skips" \
-  emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  emit "pass=72; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: failures land in it verbatim, uncoloured" 0 "- FAIL: the boundary held open" \
   emit "pass=86; fail=1; no 'the boundary held open' >/dev/null"
 check "drill record: a clean run says so rather than leaving a bare heading" 0 \
@@ -5285,7 +5274,7 @@ run_emit() {   # run_emit <state> — EXIT STATUS is the drill's own
 }
 check "drill emit: a clean run writes the record and still EXITS 0" 0 \
   "record written:" run_emit "$CLEAN"
-check "drill emit: ...and the file on disk is the record" 0 "**87/87 passed, 0 failed.**" \
+check "drill emit: ...and the file on disk is the record" 0 "**81/81 passed, 0 failed.**" \
   cat "$RECOUT"
 check "drill emit: ...pinned to the run ID the drill announced at install time" 0 \
   "drill-9.9.9-20260721-01" cat "$RECOUT"
@@ -5303,10 +5292,10 @@ check "drill: ...and no phase header sends the operator to the closed audit" 1 "
 # before that `no` fires would put a clean sweep in the record on a short run,
 # which is the defect #153 closed.
 check "drill emit: a short run EXITS NON-ZERO with a record written" 1 \
-  "record written:" run_emit "pass=78; fail=0; PHASE_RAN[C]=0"
+  "record written:" run_emit "pass=72; fail=0; PHASE_RAN[C]=0"
 check "drill emit: ...and the record it wrote carries the shortfall, not a sweep" 0 \
   "FAIL: the drill ran SHORT:" cat "$RECOUT"
-check "drill emit: ...against the full denominator, 78/87" 0 "**78/87 passed" cat "$RECOUT"
+check "drill emit: ...against the full denominator, 72/81" 0 "**72/81 passed" cat "$RECOUT"
 
 # A record that cannot be written must not be able to turn a clean drill red:
 # the exit status is the floor's verdict on the DRILL, and a full disk has no
