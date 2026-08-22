@@ -69,27 +69,38 @@ check "unknown flag on list exits 2"           2 "unknown option"   "$BOX" list 
 # A flag that needs a value and gets none.
 check "--name with no value exits 2"           2 "--name needs a value" "$BOX" new --name
 # #159's hard cut is resolved before the Incus preflight, so every retired
-# spelling teaches the runtime-role form even on a machine with no daemon.
+# spelling teaches its replacement even on a machine with no daemon.
 check "new: --template blank hard-cuts to the argumentless blank mint (#159)" 2 \
   "omit --template" "$BOX" new --name work --template blank
-check "new: --template tenant hard-cuts the internal generic seed (#159)" 2 \
-  "omit --template for a blank box, or use --role <role>" \
+check "new: --template tenant hard-cuts the internal seed (#159)" 2 \
+  "omit --template, that IS the default mint" \
   "$BOX" new --name work --template tenant
 for retired in claude-box codex-box grok-box kimi-box; do
-  check "new: --template $retired hard-cuts to --role (#159)" 2 \
-    "--role $retired --size medium" "$BOX" new --name work --template "$retired"
+  check "new: --template $retired hard-cuts to a blank mint (#159, #214)" 2 \
+    "every box is blank now" "$BOX" new --name work --template "$retired"
 done
-check "new: malformed runtime roles fail before Incus (#159)" 2 \
-  "--role must be a plain rig role name" "$BOX" new --name work --role 'bad role'
-check "new: --user belongs to a runtime role (#159)" 2 \
-  "--user requires --role" "$BOX" new --name work --user dev
-check "new: --from refuses a fresh runtime role (#159)" 2 \
-  "tenant role rides along" "$BOX" new --name copy --from work --role kimi-box
+# --role is a HARD CUT and refuses LOUDLY (#214): unrecognized would be an
+# "unknown option", which teaches nothing to the operator who typed the flag
+# this release removed. Every arm of the message is asserted, because the
+# message IS the replacement path — the issue's criterion names 'box root' and
+# the bootstrap step, and a message missing either sends the operator nowhere.
+check "new: --role is refused, not unrecognized (#214)" 2 \
+  "--role is gone" "$BOX" new --name work --role claude-box
+check "new: --role's refusal names 'box root' (#214)" 2 \
+  "box root work" "$BOX" new --name work --role claude-box
+check "new: --role's refusal names the bootstrap step (#214)" 2 \
+  "rig bootstrap claude-box --user dev" "$BOX" new --name work --role anything-at-all
+check "new: --role's refusal keeps --size in the taught line (#214)" 2 \
+  "box new --name work --size medium" "$BOX" new --name work --role claude-box
+check "new: --role refuses with no value too (#214)" 2 \
+  "--role is gone" "$BOX" new --name work --role
+check "new: --user is a plain Linux user name (#159)" 2 \
+  "--user must be a plain Linux user name" "$BOX" new --name work --user 'bad user'
+check "new: --user rides the default mint, not a dedicated template (#214)" 2 \
+  "declares its own user" "$BOX" new --name work --template staging-box --user dev
 check "new: --from keeps named sizes on the fresh-mint side (#159)" 2 \
   "explicit --cpu/--memory/--disk overrides, not --size" \
   "$BOX" new --name copy --from work --size medium
-check "new: --template and --role are mutually exclusive (#159)" 2 \
-  "choose different mint paths" "$BOX" new --name work --template staging-box --role kimi-box
 check "new: an unknown named size is refused (#159)" 2 \
   "--size must be small, medium, or large" "$BOX" new --name work --size huge
 check "help new: publishes the large size row (#159)" 0 "large       8    16GiB  120GiB" \
@@ -233,9 +244,9 @@ tpl() {
   root="$1" bash -c '
     die() { echo "box: $*" >&2; exit 1; }
     . "$0"; load_template "$1"
-    printf "IMAGE=%s USER=%s REQUIRE_VM=%s NO_FALLBACK=%s AUTOSTART=%s ROLE=%s\n" \
+    printf "IMAGE=%s USER=%s REQUIRE_VM=%s NO_FALLBACK=%s AUTOSTART=%s\n" \
       "$T_IMAGE" "$T_USER" "$T_REQUIRE_VM" "$T_NO_CONTAINER_FALLBACK" \
-      "$T_AUTOSTART" "$T_BOOTSTRAP_ROLE"
+      "$T_AUTOSTART"
   ' "$TPLFN" "$2"
 }
 
@@ -264,194 +275,200 @@ printf 'BOX_IMAGE="images:debian/13/cloud"\nBOX_USER="dev"\nBOX_NO_CONTAINER_FAL
   > "$EVILROOT/templates/tenant-vm-default/box.env"
 check "load_template: NO_CONTAINER_FALLBACK round-trips (accepted + surfaced)" \
   0 "REQUIRE_VM= NO_FALLBACK=1" tpl "$EVILROOT" tenant-vm-default
-# BOX_BOOTSTRAP_ROLE (#81): accepted and surfaced through the real parser —
-# and the value is a rig role NAME, nothing more. It is handed to
-# 'incus exec … rig bootstrap <role>' at mint, so anything shell-shaped in
-# it must die at parse time, on the host, before a guest exists.
+# BOX_BOOTSTRAP_ROLE (#81) named the role box auto-ran after mint. #214 cut the
+# hook it fed, so the key is no longer in the allowlist and a box.env carrying
+# it now dies BY NAME at parse time — the loud shape, not a silently ignored
+# key that would leave an operator believing their template still converges.
 mkdir -p "$EVILROOT/templates/tenant"
 printf 'BOX_IMAGE="images:debian/13/cloud"\nBOX_USER="claude"\nBOX_BOOTSTRAP_ROLE="claude"\n' \
   > "$EVILROOT/templates/tenant/box.env"
-check "load_template: BOX_BOOTSTRAP_ROLE round-trips (accepted + surfaced)" \
-  0 "ROLE=claude" tpl "$EVILROOT" tenant
-printf 'BOX_IMAGE="images:debian/13/cloud"\nBOX_USER="claude"\nBOX_BOOTSTRAP_ROLE="claude; rm -rf /"\n' \
-  > "$EVILROOT/templates/tenant/box.env"
-check "load_template: a shell-shaped BOX_BOOTSTRAP_ROLE dies at the gate" \
-  1 "not a sane role name" tpl "$EVILROOT" tenant
+check "load_template: BOX_BOOTSTRAP_ROLE is refused by name (#214)" \
+  1 "unknown key 'BOX_BOOTSTRAP_ROLE'" tpl "$EVILROOT" tenant
+check "load_template: ...and the refusal says a template does not converge (#214)" \
+  1 "none for convergence" tpl "$EVILROOT" tenant
 rm -rf "$EVILROOT"
 
 # ---------------------------------------------------------------------------
-# render_userdata (#81) — the seed's ONE substitution, driven for real: the
-# rig pin point. RIG_REPO defaults to heavy-duty/rig and RIG_REF to rig's
-# LATEST RELEASE, resolved at mint off the releases/latest redirect (#150);
-# RIG_REPO/RIG_REF override at mint (how a rig branch under review reaches a
-# guest); and a hostile value — the tokens land inside a runcmd shell line —
-# dies on the host before touching the YAML. bash's =~ anchors the WHOLE
-# string, so a multi-line value cannot sneak one clean line past it (the
-# line-oriented grep -q failure mode).
+# THE STRONG FORM (#214). box provisions and manages VMs, and it does not
+# converge them — so after this release bin/box and templates/ name the
+# converger nowhere they ACT, and the four pin helpers do not exist.
 #
-# A shim curl serves canned redirects, the same way test/release.sh drives
-# install.sh's own channel probe: the suite must never depend on github.com
-# being up, or on which rig release is latest the day it runs.
-# ---------------------------------------------------------------------------
-RIGSHIM="$(mktemp -d)"
-cat > "$RIGSHIM/curl" <<'SHIM'
-#!/usr/bin/env bash
-# Fake curl for the rig pin probe. FAKE_REDIRECT is what GitHub's
-# releases/latest answers with; FAKE_CURL_RC makes the request itself fail;
-# FAKE_CURL_LOG records every URL asked for, which is how "how many probes
-# did one mint make?" becomes an assertion.
-url=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -o|--output|-w|--write-out|-m|--max-time) shift 2 ;;
-    -*) shift ;;
-    *) url="$1"; shift ;;
-  esac
+# This guard owns the comment-stripping rule, so it cannot be argued with
+# later. A line is a comment when its first non-blank character is '#'; every
+# other line is checked whole, trailing comments included, because a rule that
+# tried to strip an inline '#' from shell or YAML would have to know which ones
+# are inside a string. Prose may name the converger — that is what the issue
+# blesses — so comments are stripped, and so is exactly ONE region of bin/box:
+# --role's refusal message, which the issue's own criteria require to name
+# 'box root' AND the bootstrap step. That region is delimited by the sentinel
+# pair below and the guard asserts there is exactly one of it, so widening the
+# exception means adding a visible sentinel pair and turning this red.
+#
+# The word boundary is not decoration: 'origin' and 'right' both contain the
+# three letters, and a substring match would red the whole file for saying
+# 'origin=mint'.
+strongform() {   # <file> — the non-comment, non-prose body
+  awk '
+    /^# box-strong-form-prose-begin$/ { prose = 1; next }
+    /^# box-strong-form-prose-end$/   { prose = 0; next }
+    prose { next }
+    $0 ~ /^[[:space:]]*#/ { next }
+    { print }
+  ' "$1"
+}
+check "strong form: bin/box carries exactly one prose exception (#214)" 0 "1" \
+  bash -c 'grep -c "^# box-strong-form-prose-begin$" "$1"' _ "$ROOT/bin/box"
+check "strong form: ...and it is closed" 0 "1" \
+  bash -c 'grep -c "^# box-strong-form-prose-end$" "$1"' _ "$ROOT/bin/box"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "strong form: no acting line in bin/box names the converger (#214)" 1 "" \
+  bash -c 'strongform "$1" | grep -qwE "rig"' _ "$ROOT/bin/box"
+check "strong form: bin/box names no pin variable where it acts (#214)" 1 "" \
+  bash -c 'strongform "$1" | grep -qE "RIG_REPO|RIG_REF"' _ "$ROOT/bin/box"
+for f in "$ROOT"/templates/*/box.env "$ROOT"/templates/*/user-data.yaml; do
+  rel="templates/$(basename "$(dirname "$f")")/$(basename "$f")"
+  check "strong form: $rel names the converger nowhere at all (#214)" 1 "" \
+    grep -qwE 'rig|RIG_REPO|RIG_REF' "$f"
+  check "strong form: $rel has no prose exception of its own (#214)" 1 "" \
+    grep -q 'box-strong-form-prose' "$f"
 done
-[ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
-case "$url" in
-  */releases/latest)
-    [ "${FAKE_CURL_RC:-0}" -eq 0 ] || exit "${FAKE_CURL_RC}"
-    printf '%s' "${FAKE_REDIRECT-}"; exit 0 ;;
-  *) exit 22 ;;
-esac
+# The four pin helpers are UNDEFINED, by name. The seed no longer carries a pin
+# to resolve, so nothing reads them — and a resolver left behind is a mint that
+# can still make a HEAD request nobody asked for.
+for h in rig_repo rig_ref rig_latest_release rig_pin_resolve; do
+  check "strong form: $h is undefined in bin/box (#214)" 1 "" \
+    grep -qE "^$h\\(\\)" "$ROOT/bin/box"
+done
+# The guard must FAIL where it is supposed to. Drive it against a fixture that
+# names the converger on an acting line: a guard nobody has watched go red is
+# a guard asserting nothing.
+SFPROBE="$(mktemp)"
+printf '# a comment naming rig is fine\necho "rig bootstrap claude-box"\n' > "$SFPROBE"
+check "strong form: the guard reds on an acting line (the guard's own test)" 0 "" \
+  bash -c 'strongform "$1" | grep -qwE "rig"' _ "$SFPROBE"
+printf '# box-strong-form-prose-begin\necho "rig bootstrap claude-box"\n# box-strong-form-prose-end\n' > "$SFPROBE"
+check "strong form: ...and passes the same line inside the prose region" 1 "" \
+  bash -c 'strongform "$1" | grep -qwE "rig"' _ "$SFPROBE"
+rm -f "$SFPROBE"
+
+# ---------------------------------------------------------------------------
+# render_userdata (#81, #214) — the seed's ONE substitution, and after the cut
+# @BOX_USER@ is the whole of it. What used to live here was the pin group: a
+# shim curl serving canned releases/latest redirects, the default-is-latest
+# assertions, the hostile-value gates. All of it went with the pin. What
+# replaces it is the opposite assertion, and it is the sharper one: the pin
+# tokens are INERT TEXT now, the pin environment changes nothing, and a mint
+# makes no network request at all — so a box mints on a host that cannot reach
+# github.com, which the pin probe had quietly taken away.
+# ---------------------------------------------------------------------------
+# A curl that cannot be called without saying so. Every invocation is logged
+# and every invocation fails: 'no network call' is then proven twice over, by
+# an empty log and by a render that did not die.
+NETSHIM="$(mktemp -d)"
+NETLOG="$(mktemp)"
+cat > "$NETSHIM/curl" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
+exit 77
 SHIM
-chmod +x "$RIGSHIM/curl"
+chmod +x "$NETSHIM/curl"
 
 RUFN="$(mktemp)"
-# The pin's DEFAULTS live in rig_repo/rig_ref and the resolution behind them in
-# rig_latest_release/rig_pin_resolve (#150) — extract them alongside the
-# function that reads them, or the extracted copy silently renders an empty
-# repo and every assertion below goes green against nothing. The count guards
-# the extraction the way it always has: four helpers, four definitions.
-{ grep -cE '^rig_(repo|ref|latest_release|pin_resolve)\(\)' "$ROOT/bin/box" | grep -qx 4 || echo 'die "the rig pin helpers moved — this extraction is stale"'
-  grep -E '^rig_(repo|ref)\(\)' "$ROOT/bin/box"
-  awk '/^rig_latest_release\(\) \{/,/^\}/' "$ROOT/bin/box"
-  awk '/^rig_pin_resolve\(\) \{/,/^\}/' "$ROOT/bin/box"
-  awk '/^render_userdata\(\) \{/,/^\}/' "$ROOT/bin/box"; } > "$RUFN"
-check "render_userdata: extracted from bin/box (guards the awk)" 0 "RIG_REPO" cat "$RUFN"
-check "render_userdata: the pin's defaults came with it (guards the grep)" 0 "heavy-duty/rig" cat "$RUFN"
-check "render_userdata: the pin's RESOLUTION came with it too (#150)" 0 "releases/latest" cat "$RUFN"
-check "render_userdata: the extracted function is valid bash"    0 "" bash -n "$RUFN"
-# Two probes for two channels — box's own in install.sh (#83) and rig's here
-# (#150) — and they are the same trick, so they must stay the same trick. Not
-# byte-identical (this one takes the repo as an argument and time-boxes the
-# request), so what is asserted is the pair of facts a rewrite of either would
-# break: the redirect they read, and the tag shape they accept from it.
-# shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "the rig pin probe reads the same redirect install.sh does (#83, #150)" 0 "" \
-  bash -c 'for f in "$@"; do grep -q "releases/latest\"" "$f" || exit 1
-             grep -q "\*/releases/tag/?\*" "$f" || exit 1; done' _ "$ROOT/install.sh" "$RUFN"
+awk '/^render_userdata\(\) \{/,/^\}/' "$ROOT/bin/box" > "$RUFN"
+check "render_userdata: extracted from bin/box (guards the awk)" 0 "@BOX_USER@" cat "$RUFN"
+check "render_userdata: the extracted function is valid bash" 0 "" bash -n "$RUFN"
 
 SEED="$(mktemp)"
 printf '#cloud-config\nusers:\n  - name: "@BOX_USER@"\nruncmd:\n  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash\n' > "$SEED"
-# A synthetic seed that installs no rig. It carries no token, so it needs no
-# pin and must therefore need no NETWORK either (#150).
-NORIG="$(mktemp)"
-printf '#cloud-config\npackages:\n  - tmux\n' > "$NORIG"
-RIGLOGF="$(mktemp)"
-SEEDFILE="$SEED"   # which fixture rud renders; the no-token case swaps it
+SEEDFILE="$SEED"
 # shellcheck disable=SC2016  # $0/$1 expand in the child shell, by design
 rud() { # rud [VAR=val ...] — render the fixture seed through the real function
-  : > "$RIGLOGF"
-  env T_USER=fixture FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" \
-      FAKE_CURL_LOG="$RIGLOGF" PATH="$RIGSHIM:$PATH" "$@" \
+  : > "$NETLOG"
+  env T_USER=fixture FAKE_CURL_LOG="$NETLOG" PATH="$NETSHIM:$PATH" "$@" \
       bash -c 'die() { echo "box: $*" >&2; exit 1; }; . "$0"; render_userdata "$1"' "$RUFN" "$SEEDFILE"
 }
-# The default is the LATEST RELEASE, not main: a released box that converged
-# its guests against rig's development tip shipped a combination nobody
-# drilled, which is the whole of #150.
-check "render_userdata: the default pin is rig's LATEST RELEASE (#150)" 0 \
-  "githubusercontent.com/heavy-duty/rig/9.9.9/install.sh" rud
-check "render_userdata: ...and it reached the installer's own env too (#150)" 0 \
-  'RIG_REPO="heavy-duty/rig" RIG_REF="9.9.9"' rud
-check "render_userdata: ...and it was read off the releases/latest redirect (#150)" 0 \
-  "https://github.com/heavy-duty/rig/releases/latest" cat "$RIGLOGF"
-# The dev channel survives as an explicit opt-in — and asks the network
-# nothing, because there is nothing left to resolve.
-check "render_userdata: RIG_REF=main is still the dev channel, explicitly (#150)" 0 \
-  "githubusercontent.com/heavy-duty/rig/main/install.sh" rud RIG_REF=main
-check "render_userdata: ...and an explicit ref probes nothing (#150)" 1 "" \
-  grep -q . "$RIGLOGF"
-check "render_userdata: RIG_REPO/RIG_REF override at mint" 0 "dan-claude-bot/rig/feat/bootstrap-roles/install.sh" \
-  rud RIG_REPO=dan-claude-bot/rig RIG_REF=feat/bootstrap-roles
-check "render_userdata: the runtime user reaches cloud-init (#159)" 0 \
-  'name: "custom"' rud T_USER=custom RIG_REF=main
-# The probe follows the repo, so a fork's own releases are what a fork's seeds
-# get — one default, not a hardcoded heavy-duty/rig channel.
-rud RIG_REPO=you/rig >/dev/null 2>&1
-check "render_userdata: an overridden RIG_REPO is the repo the probe asks (#150)" 0 \
-  "https://github.com/you/rig/releases/latest" cat "$RIGLOGF"
-# A seed with no pin token needs no pin: it must render untouched AND ask the
-# network nothing. 'blank' mints on a host that cannot reach github.com.
-SEEDFILE="$NORIG"
-check "render_userdata: a seed with no pin token renders untouched (#150)" 0 "packages:" rud
-check "render_userdata: ...and never probes for a pin it will not use (#150)" 1 "" \
-  grep -q . "$RIGLOGF"
-SEEDFILE="$SEED"
-# Failing to resolve is LOUD. Falling back to main would reintroduce the exact
-# defect, quietly, on the one host where the probe could not run.
-check "render_userdata: an unresolvable pin dies rather than falling back (#150)" 1 \
-  "could not resolve rig's latest release" rud FAKE_CURL_RC=6
-check "render_userdata: ...and a repo with no releases dies the same way (#150)" 1 \
-  "could not resolve rig's latest release" \
-  rud FAKE_REDIRECT=https://github.com/heavy-duty/rig/releases
-check "render_userdata: ...naming both escape hatches, so the operator can move" 1 \
-  "RIG_REF=main" rud FAKE_CURL_RC=6
-# The resolved tag is untrusted input — it arrives off an HTTP redirect header
-# — so it meets the same allowlist an operator's RIG_REF does.
-check "render_userdata: a hostile RESOLVED tag dies on the host too (#150)" 1 "RIG_REF" \
-  rud 'FAKE_REDIRECT=https://github.com/heavy-duty/rig/releases/tag/v1"; rm -rf /; "'
-# shellcheck disable=SC2016  # $0/$1 expand in the child shells, by design
-check "render_userdata: no token survives the render" 1 "" \
-  bash -c 'env T_USER=fixture FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" PATH="$3:$PATH" bash -c "die() { echo box: \$*; exit 1; }; . \"\$0\"; render_userdata \"\$1\"" "$1" "$2" | grep -qE "@(RIG|BOX)_"' _ "$RUFN" "$SEED" "$RIGSHIM"
-check "render_userdata: a shell-shaped RIG_REPO dies on the host" 1 "RIG_REPO" \
-  rud 'RIG_REPO=evil"; rm -rf /; "/rig'
-check "render_userdata: a spaced RIG_REF dies on the host" 1 "RIG_REF" \
-  rud 'RIG_REF=main plus junk'
-check "render_userdata: a newline-smuggled RIG_REPO dies (whole-string anchor)" 1 "RIG_REPO" \
-  rud "RIG_REPO=$(printf 'a/b\nevil')"
+check "render_userdata: the tenant user reaches cloud-init (#159)" 0 \
+  'name: "custom"' rud T_USER=custom
+# The token is INERT TEXT (#214). A test that still expected resolution here
+# would be asserting the thing this release removed, so what is asserted is
+# that the seed comes out carrying its own bytes.
+check "render_userdata: @RIG_REPO@ renders into itself — the token is inert (#214)" 0 \
+  '@RIG_REPO@/@RIG_REF@/install.sh' rud
+check "render_userdata: ...and RIG_REF in the environment does not touch it (#214)" 0 \
+  '@RIG_REPO@/@RIG_REF@/install.sh' rud RIG_REF=main
+check "render_userdata: ...nor does a pinned release (#214)" 0 \
+  '@RIG_REPO@/@RIG_REF@/install.sh' rud RIG_REF=0.3.0
+check "render_userdata: ...nor does an overridden repo (#214)" 0 \
+  '@RIG_REPO@/@RIG_REF@/install.sh' rud RIG_REPO=you/rig
+# The pin environment produces no warning either: box has no standing to
+# comment on a variable that is now somebody else's (#214).
+check "render_userdata: a set pin says nothing on stderr (#214)" 0 "" \
+  bash -c 'out="$(rud RIG_REF=main RIG_REPO=you/rig 2>&1 >/dev/null)"; [ -z "$out" ]'
+# THE offline proof. The pin probe made a HEAD request on every mint of a
+# rig-bearing seed and DIED if it failed; with the probe gone, minting is
+# offline. This shim fails every call and logs it, so a surviving probe reds
+# both halves.
+check "render_userdata: a hostile pin value cannot die on the host any more (#214)" 0 \
+  'packages:' bash -c 'printf "#cloud-config\npackages:\n  - tmux\n" > "$2"
+     SEEDFILE="$2" rud "RIG_REPO=evil\"; rm -rf /; \"/rig"' _ "$(mktemp)"
+check "render_userdata: the render makes NO network call (#214)" 1 "" \
+  grep -q . "$NETLOG"
 
-# The one generic seed renders into two measured shapes (#159): agent-class
-# when a role is present, and today's blank when it is absent. Drive both
-# through the real renderer, then make every assertion against what cloud-init
-# receives rather than against source-only sentinel blocks.
-ROLESEED="$(mktemp)"; BLANKSEED="$(mktemp)"
+# The one seed renders into ONE measured shape (#214): the agent-class hygiene,
+# unconditionally. Drive it through the real renderer, then make every
+# assertion against what cloud-init receives rather than against source.
+SEEDLOG="$(mktemp)"
 SEEDFILE="$ROOT/templates/tenant/user-data.yaml"
-rud T_USER=claude T_BOOTSTRAP_ROLE=claude-box RIG_REF=main > "$ROLESEED"
-rud T_USER=dev T_BOOTSTRAP_ROLE= RIG_REF=main > "$BLANKSEED"
-check "render_userdata: role sentinels never reach cloud-init (#159)" 1 "" \
-  grep -q '^# box-.*-only-' "$ROLESEED"
-check "render_userdata: blank sentinels never reach cloud-init (#159)" 1 "" \
-  grep -q '^# box-.*-only-' "$BLANKSEED"
+rud T_USER=dev > "$SEEDLOG"
+check "render_userdata: the tenant render makes no network call either (#214)" 1 "" \
+  grep -q . "$NETLOG"
+check "render_userdata: no sentinel survives into cloud-init (#159, #214)" 1 "" \
+  grep -q '^# box-.*-only-' "$SEEDLOG"
 check "render_userdata: source-only comments do not inflate Incus user-data (#159, #209)" 1 "" \
-  sed '1d' "$BLANKSEED" | grep -qE '^[[:space:]]*#'
+  sed '1d' "$SEEDLOG" | grep -qE '^[[:space:]]*#'
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "render_userdata: blank payload stays below one 4KiB overflow page (#209)" 0 "" \
-  bash -c '[ "$(wc -c < "$1")" -lt 4096 ]' _ "$BLANKSEED"
-check "generic seed: role tenant has no sudoers entry (#177, #159)" 1 "" \
-  grep -qE '^[[:space:]]*sudo:' "$ROLESEED"
-check "generic seed: blank tenant keeps sudo (#177, #159)" 0 "" \
-  grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$BLANKSEED"
-check "generic seed: blank omits the agent toolchain (#177, #159)" 1 "" \
-  grep -qE '^[[:space:]]*-[[:space:]]+(python3-venv|shellcheck)$' "$BLANKSEED"
-check "generic seed: blank omits the /tmp cap and swap (#178, #159)" 1 "" \
-  grep -qE 'tmp\.mount|swapfile' "$BLANKSEED"
-check "generic seed: blank still preinstalls rig (#159 ruling)" 0 "" \
-  grep -q 'heavy-duty/rig/main/install.sh' "$BLANKSEED"
-rm -f "$RUFN" "$SEED" "$NORIG" "$RIGLOGF"
+check "render_userdata: the payload stays below one 4KiB overflow page (#209)" 0 "" \
+  bash -c '[ "$(wc -c < "$1")" -lt 4096 ]' _ "$SEEDLOG"
+check "render_userdata: no token survives the render (#214)" 1 "" \
+  grep -qE '@(RIG|BOX)_' "$SEEDLOG"
+# The six rows of the seed's one hygiene (#214 section 2), each asserted
+# against the RENDERED payload — the thing cloud-init is handed.
+check "tenant seed: the tenant has no sudoers entry (#177)" 1 "" \
+  grep -qE '^[[:space:]]*sudo:' "$SEEDLOG"
+check "tenant seed: shellcheck ships (#177 decision 3)" 0 "" \
+  grep -qE '^[[:space:]]*-[[:space:]]+shellcheck$' "$SEEDLOG"
+check "tenant seed: python3-venv ships (#177 decision 3)" 0 "" \
+  grep -qE '^[[:space:]]*-[[:space:]]+python3-venv$' "$SEEDLOG"
+check "tenant seed: /tmp is capped at a FIXED 1GiB (#178)" 0 "" \
+  grep -q 'size=1G' "$SEEDLOG"
+check "tenant seed: a 4GiB swapfile is laid on the disk (#178)" 0 "" \
+  grep -q 'fallocate -l 4G /swapfile' "$SEEDLOG"
+check "tenant seed: chrony and its makestep drop-in ship (#174)" 0 "" \
+  bash -c 'grep -q "box-makestep.conf" "$1" && grep -qE "^[[:space:]]*-[[:space:]]+chrony$" "$1"' _ "$SEEDLOG"
+check "tenant seed: the container-aware chrony start survives (#174)" 0 "" \
+  grep -q 'systemd-detect-virt --quiet --container || systemctl start chrony' "$SEEDLOG"
+check "tenant seed: tmux, curl and ca-certificates ship (#65, #214)" 0 "" \
+  bash -c 'for pkg in tmux curl ca-certificates; do
+             grep -qE "^[[:space:]]*-[[:space:]]+$pkg\$" "$1" || exit 1; done' _ "$SEEDLOG"
+check "tenant seed: package_update is on — the seed installs packages (#214)" 0 "" \
+  grep -qE '^package_update: true$' "$SEEDLOG"
+# The one default spelled in two files. bin/box needs a user before
+# load_template has read one, so BOX_USER cannot be the single source — which
+# makes 'they agree' something to assert rather than to hope.
+check "tenant seed: BOX_USER and bin/box's default are the same 'dev' (#214)" 0 "" \
+  bash -c 'grep -qx '"'"'BOX_USER="dev"'"'"' "$1" && grep -qF '"'"'user="${user:-dev}"'"'"' "$2"' \
+  _ "$ROOT/templates/tenant/box.env" "$ROOT/bin/box"
+rm -f "$RUFN" "$SEED"
 
 # YAML well-formedness needs python3 + pyyaml; the CI runner has both. Skip
 # gracefully (never silently) where they are missing.
 HAVE_YAML=0
 command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null && HAVE_YAML=1
 if [ "$HAVE_YAML" = 1 ]; then
-  check "generic seed: rendered role payload is well-formed YAML (#159)" 0 "" \
-    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$ROLESEED"
-  check "generic seed: rendered blank payload is well-formed YAML (#159)" 0 "" \
-    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$BLANKSEED"
+  check "tenant seed: the rendered payload is well-formed YAML (#159)" 0 "" \
+    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$SEEDLOG"
 else
-  echo "skip: rendered generic payload YAML well-formedness (no python3+pyyaml here; CI has both)"
+  echo "skip: rendered payload YAML well-formedness (no python3+pyyaml here; CI has both)"
 fi
 
 for d in "$ROOT"/templates/*/; do
@@ -466,9 +483,9 @@ for d in "$ROOT"/templates/*/; do
   # deliberate: a new template that forgets the pin must fail this same loop.
   check "template '$t': declares one of the two no-fallback demands (#175)" \
     0 "" grep -Eq '^BOX_(REQUIRE_VM|NO_CONTAINER_FALLBACK)="1"$' "$d/box.env"
-  # cloud-init is passed to Incus verbatim (modulo the two rig pin tokens),
-  # so it must exist, declare itself, and be well-formed — a mint is far too
-  # late to learn about a typo.
+  # cloud-init is passed to Incus verbatim (modulo @BOX_USER@, the one
+  # substitution left after #214), so it must exist, declare itself, and be
+  # well-formed — a mint is far too late to learn about a typo.
   check "template '$t': user-data.yaml exists" 0 "" test -f "$d/user-data.yaml"
   # shellcheck disable=SC2016  # $1 expands in the child shell, by design
   check "template '$t': user-data.yaml begins with #cloud-config" 0 "" \
@@ -489,17 +506,17 @@ for d in "$ROOT"/templates/*/; do
   # list deliberately — the same fail-closed shape as the absence block below.
   case "$t" in
     staging-box)
-      # Self-converging fleet guests keep root: their tenant's own first act
-      # is 'sudo rig runner install' or 'sudo rig bootstrap workload-server'.
-      # Agents lose root, self-converging guests keep it — two traits, two
-      # answers, and #175's BOX_REQUIRE_VM is the one meant to be inherited.
+      # Self-converging fleet guests keep root: that guest's own first act,
+      # run by its operator from inside, needs it. Tenants lose root,
+      # self-converging guests keep it — two traits, two answers, and #175's
+      # BOX_REQUIRE_VM is the one meant to be inherited.
       check "template '$t': keeps NOPASSWD sudo — a self-converging seed (#177)" 0 "" \
         grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$d/user-data.yaml" ;;
     tenant)
-      # The source contains both alternatives; the driven ROLESEED above is
-      # the effective agent shape and is what must be unprivileged.
-      check "template 'tenant': rendered role has NO sudoers entry (#177, #159)" 1 "" \
-        grep -qE '^[[:space:]]*sudo:' "$ROLESEED" ;;
+      # One shape since #214, so the SOURCE is the effective shape: there is no
+      # conditional arm left for a sudo line to hide in.
+      check "template 'tenant': has NO sudoers entry (#177, #214)" 1 "" \
+        grep -qE '^[[:space:]]*sudo:' "$d/user-data.yaml" ;;
     *)
       # shellcheck disable=SC2016  # $1 expands in the child shell, by design
       check "template '$t': the tenant has NO sudoers entry (#177)" 1 "" \
@@ -548,8 +565,8 @@ for d in "$ROOT"/templates/*/; do
   # listed, so a fifth agent seed inherits the requirement without an edit and
   # a fleet guest that grows a cap goes red until someone lists it deliberately.
   case "$t" in
-    blank|staging-box)
-      # Self-converging fleet guests. A workload server's /tmp at 1GiB is a
+    staging-box)
+      # A self-converging fleet guest. A workload server's /tmp at 1GiB is a
       # decision #178 did not make, and swap on a guest that is not running
       # untrusted agent code is a different question; assert the ABSENCE so
       # the scoping is pinned rather than merely true today.
@@ -577,7 +594,7 @@ for d in "$ROOT"/templates/*/; do
       done
       # The drop-in is read at the next boot; the remount is what makes the cap
       # true on the mint boot, and it resizes a live tmpfs in place rather than
-      # unmounting /tmp under cloud-init and the rig installer.
+      # unmounting /tmp out from under cloud-init.
       check "template '$t': applies the /tmp cap on the mint boot too (#178)" 0 "" \
         grep -qE '^[[:space:]]*-[[:space:]]+test "\$\(findmnt -no FSTYPE /tmp\)" != tmpfs \|\| mount -o remount,size=1G /tmp$' "$d/user-data.yaml"
       # #178 D2: no swap means every spike is a hard OOM-kill with no grace
@@ -609,10 +626,10 @@ for d in "$ROOT"/templates/*/; do
       check "template '$t': box.env states the /tmp and swap shape it causes (#178)" 0 "" \
         bash -c 'grep -qE "^#.*/tmp" "$1" && grep -qE "^#.*swap" "$1" && grep -qF "#178" "$1"' _ "$d/box.env" ;;
   esac
-  # Static seeds duplicate BOX_USER into cloud-init. The generic tenant seed
+  # A dedicated seed duplicates BOX_USER into cloud-init. box's own tenant seed
   # instead carries exactly the token render_userdata replaces at mint.
   if [ "$t" = tenant ]; then
-    check "template 'tenant': cloud-init carries the runtime user token (#159)" 0 "" \
+    check "template 'tenant': cloud-init carries the tenant user token (#159)" 0 "" \
       grep -qE '^[[:space:]]*-[[:space:]]+name:[[:space:]]+"@BOX_USER@"$' "$d/user-data.yaml"
   else
     tuser="$(tpl "$ROOT" "$t" | sed -n 's/.*USER=\([^ ]*\).*/\1/p')"
@@ -621,71 +638,73 @@ for d in "$ROOT"/templates/*/; do
   fi
 
   # ------------------------------------------------------------------------
-  # The thin-template contract (#81), both halves per template:
+  # The thin-template contract (#81, #214). It used to have two halves: a seed
+  # that named a role had to preinstall the converger carrying both pin tokens,
+  # on the installer URL and on the installer's own env. box installs nothing
+  # into a guest now, so that half inverts — NO seed carries an installer line,
+  # and the assertion is its absence.
   #
-  # THE SEED — a template that names a tenant role (BOX_BOOTSTRAP_ROLE) must
-  # preinstall rig carrying BOTH pin tokens, on the installer URL and on the
-  # installer's own env, or the pin is a half-truth: a mint would fetch one
-  # ref's installer and install another ref's tree.
+  # curl and ca-certificates stay, and their reason changed rather than
+  # vanished: they carry the OPERATOR's installer, whose first line is a
+  # 'curl … | bash' run inside the box. A seed that dropped them would break
+  # the path this release replaced the mint hook with — so the packages are
+  # required and the install LINE is refused, which is a narrower assertion
+  # than "no curl" and the only one that is true.
   # ------------------------------------------------------------------------
-  trole="$(tpl "$ROOT" "$t" | sed -n 's/.*ROLE=\([^ ]*\).*/\1/p')"
-  if [ -n "$trole" ] || [ "$t" = tenant ]; then
-    check "template '$t': the seed installs rig (role '$trole')" 0 "" \
-      grep -q 'install.sh' "$d/user-data.yaml"
-    # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-    check "template '$t': the rig install carries the @RIG_REPO@ pin token" 0 "" \
-      bash -c 'grep "install.sh" "$1" | grep -q "@RIG_REPO@/@RIG_REF@"' _ "$d/user-data.yaml"
-    # shellcheck disable=SC2016
-    check "template '$t': the pin reaches the installer's env too" 0 "" \
-      bash -c 'grep "install.sh" "$1" | grep -q "RIG_REPO=\"@RIG_REPO@\" RIG_REF=\"@RIG_REF@\""' _ "$d/user-data.yaml"
-    # HOME=/root: a scar found live — cloud-init's runcmd has no $HOME and
-    # rig's installer (set -u) dies on it (rig#39). The pin must survive
-    # every seed rewrite.
-    # shellcheck disable=SC2016
-    check "template '$t': the rig install pins HOME=/root (runcmd has no \$HOME)" 0 "" \
-      bash -c 'grep "install.sh" "$1" | grep -q "HOME=/root "' _ "$d/user-data.yaml"
-  fi
+  # shellcheck disable=SC2016  # $1 expands in the child shell, by design
+  check "template '$t': the seed installs no converger (#214)" 1 "" \
+    bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -q "install.sh"' _ "$d/user-data.yaml"
+  # shellcheck disable=SC2016
+  check "template '$t': ...and pipes nothing into a shell at all (#214)" 1 "" \
+    bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qE "\\| *(HOME=[^ ]* )?(bash|sh)\\b"' _ "$d/user-data.yaml"
+  for pkg in curl ca-certificates; do
+    check "template '$t': keeps '$pkg' for the operator's installer (#214)" 0 "" \
+      grep -qE "^[[:space:]]*-[[:space:]]+$pkg\$" "$d/user-data.yaml"
+  done
   # ------------------------------------------------------------------------
-  # THE ABSENCE — no tenant content in ANY template, ever again. Everything a
-  # box becomes lives in rig's roles (rig#31); a template that grows an agent
-  # CLI, docker, node, a tailnet join or a context-file heredoc is the
-  # regression this suite exists to refuse. Greps run over EFFECTIVE
+  # THE ABSENCE — no tenant content in ANY template, ever again. What a box
+  # becomes is converged inside it by its operator (#214); a template that
+  # grows an agent CLI, docker, node, a tailnet join or a context-file heredoc
+  # is the regression this suite exists to refuse. Greps run over EFFECTIVE
   # cloud-init lines (comments may name what they refuse — #69's idiom), and
   # they fail CLOSED: the want-exit is 1, so re-adding any of it goes red.
   # ------------------------------------------------------------------------
   # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-  check "template '$t': no agent CLI install (rig's job, rig#31)" 1 "" \
+  check "template '$t': no agent CLI install (not box's job, #214)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "claude\.ai|x\.ai|@openai|npm|nodesource|nodejs"' _ "$d/user-data.yaml"
   # shellcheck disable=SC2016
-  check "template '$t': no docker (rig's job, rig#31)" 1 "" \
+  check "template '$t': no docker (not box's job, #214)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qi docker' _ "$d/user-data.yaml"
   # shellcheck disable=SC2016
   check "template '$t': nothing that joins or admits (no tailscale/authkey/ssh)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "tailscale|authkey|ssh"' _ "$d/user-data.yaml"
   # shellcheck disable=SC2016
-  check "template '$t': no context file (the #80 guard lives in rig's roles)" 1 "" \
+  check "template '$t': no context file (box does not write one, #80, #214)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "CLAUDE\.md|AGENTS\.md"' _ "$d/user-data.yaml"
 done
 
 # The staging seed's boot demands are part of its contract (#68/#69): the VM
-# is its trust boundary (its guest runs docker, via rig) and a server returns
-# from a host reboot without an operator. Pinned to the FILE so neither can
-# quietly vanish in a rewrite.
+# is its trust boundary (its guest runs docker, once converged) and a server
+# returns from a host reboot without an operator. Pinned to the FILE so neither
+# can quietly vanish in a rewrite.
 check "staging-box: demands VM mode (BOX_REQUIRE_VM=1)" 0 "" \
   grep -qx 'BOX_REQUIRE_VM="1"' "$ROOT/templates/staging-box/box.env"
 check "staging-box: demands autostart (BOX_AUTOSTART=1)" 0 "" \
   grep -qx 'BOX_AUTOSTART="1"' "$ROOT/templates/staging-box/box.env"
-check "staging-box: the tenant role is 'staging-box'" 0 "ROLE=staging-box" tpl "$ROOT" staging-box
-check "staging-box: the seed user is rig's default for the role ('ops')" 0 "USER=ops" tpl "$ROOT" staging-box
+check "staging-box: keeps its 'ops' user (#214 kept the whole server shape)" 0 "USER=ops" tpl "$ROOT" staging-box
+check "staging-box: its ops user still creates itself in cloud-init" 0 "" \
+  grep -qE '^[[:space:]]*-[[:space:]]+name:[[:space:]]+ops$' "$ROOT/templates/staging-box/user-data.yaml"
+check "staging-box: BOX_BOOTSTRAP_ROLE is gone from the file (#214)" 1 "" \
+  grep -q 'BOX_BOOTSTRAP_ROLE' "$ROOT/templates/staging-box/box.env"
 # #175's five softer declarations are pinned separately from the discovery
 # guard above: the loop catches a future unpinned seed, while this catches one
 # of today's seeds accidentally inheriting staging-box's stronger policy.
 check "tenant: permits only an explicit container override (BOX_NO_CONTAINER_FALLBACK=1)" \
   0 "" grep -qx 'BOX_NO_CONTAINER_FALLBACK="1"' "$ROOT/templates/tenant/box.env"
-# The single runtime tenant seed carries the unprivileged agent tool floor;
-# adding another rig role must not add another box directory (#159).
+# box's one tenant seed carries the unprivileged tool floor unconditionally
+# (#214): there is no second shape and no role that could select one.
 for p in python3-venv shellcheck; do
-  check "tenant: ships '$p' — an unprivileged role cannot apt-install it (#177)" 0 "" \
+  check "tenant: ships '$p' — an unprivileged tenant cannot apt-install it (#177)" 0 "" \
     grep -qE "^[[:space:]]*-[[:space:]]+$p\$" "$ROOT/templates/tenant/user-data.yaml"
 done
 for retired in claude-box codex-box grok-box kimi-box; do
@@ -695,7 +714,7 @@ done
 check "templates: retired 'blank' seed is deleted (#159)" 1 "" \
   test -e "$ROOT/templates/blank"
 
-rm -f "$TPLFN" "$ROLESEED" "$BLANKSEED"
+rm -f "$TPLFN" "$SEEDLOG"
 
 # The keys' cmd_new half, grepped the way the expose guard is (line order —
 # a daemon-free run cannot mint). Both refusals must read the EFFECTIVE mode,
