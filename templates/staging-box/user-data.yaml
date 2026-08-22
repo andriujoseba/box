@@ -1,11 +1,10 @@
 #cloud-config
-# A thin, creds-free, server-class seed (#81): the 'ops' user, tmux (#65),
-# and rig — nothing that joins a tailnet or admits credentials, no docker,
-# no sshd config, no keys. The server posture comes from
-# 'rig bootstrap staging-box' (heavy-duty/rig#31), which box auto-runs after
-# mint; the tailnet workload join holds a pre-auth key and stays
-# operator-run ('box shell' → 'sudo rig bootstrap workload-server'), exactly as
-# #69 designed it — box never sees the key.
+# A thin, creds-free, server-class seed (#81): the 'ops' user and tmux (#65) —
+# nothing that joins a tailnet or admits credentials, no docker, no sshd
+# config, no keys. The server posture is OPERATOR-run, converged inside the
+# box after box has minted it (#214), and so is the tailnet workload join,
+# which holds a pre-auth key — exactly as #69 designed that half: box never
+# sees the key, and since #214 box does not run the other half either.
 users:
   - name: ops
     shell: /bin/bash
@@ -13,9 +12,10 @@ users:
     lock_passwd: true
 package_update: true
 # tmux: 'box tmux' runs 'tmux new-session' INSIDE the box (#65) — and the
-# operator babysits the workload join through it.
-# curl + ca-certificates: the rig installer below rides them, and a bare
-# cloud image is not guaranteed to ship either.
+# operator babysits the convergence and the workload join through it.
+# curl + ca-certificates: they carry the OPERATOR's installer (#214) — the
+# first line of the by-hand converge is a 'curl … | bash' inside this box —
+# and a bare cloud image is not guaranteed to ship either.
 # chrony: step resumed guests back to real UTC even after startup (#174).
 write_files:
   - path: /etc/chrony/conf.d/box-makestep.conf
@@ -31,16 +31,3 @@ runcmd:
   - systemctl enable chrony
   # Containers share the host clock; VM guests must start chrony (#174).
   - systemd-detect-virt --quiet --container || systemctl start chrony
-  # Preinstall rig so the box can converge — and re-converge — via
-  # 'rig bootstrap staging-box'. @RIG_REPO@/@RIG_REF@ are the pin point (#81):
-  # box substitutes them at mint from the RIG_REPO/RIG_REF environment
-  # (default heavy-duty/rig @ its LATEST RELEASE, resolved at mint off the
-  # releases/latest redirect — #150 closed the unpinned default, because a
-  # released box converging its guests against rig's development tip ships a
-  # combination nobody drilled; RIG_REF=main is still the dev channel, said
-  # explicitly). The pin covers both the installer fetched AND the tree
-  # it installs, so a branch under review is testable end to end.
-  # HOME=/root: cloud-init runs runcmd as root but with NO $HOME in the
-  # environment, and the rig installer (set -u) reads $HOME for its DEST —
-  # measured live: the mint died with "HOME: unbound variable" without it.
-  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | HOME=/root RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash
