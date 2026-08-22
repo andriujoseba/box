@@ -422,6 +422,95 @@ check "strong form: ...and an acting line added INSIDE it reds (the guard's own 
 rm -f "$SFPROBE"
 
 # ---------------------------------------------------------------------------
+# THE CORPUS, not one fragment (#214 §5, amended by triage 2026-08-22).
+#
+# changelog.d/ is assembled WHOLE into a release's section, so the unit that
+# reaches the tag is the DIRECTORY and not the file this PR adds. A fragment
+# already sitting here announcing what this cut removes ships alongside the
+# fragment announcing the removal, however carefully the new one is worded —
+# and a record that reports a fact the tree no longer has is the #153 defect
+# class, in the one directory whose entire output is the release notes.
+#
+# So the rule is the corpus: no surviving fragment announces --role, a pin, a
+# converger, or a seed set that does not exist. Two exceptions, and they are
+# named HERE rather than remembered, because an exception a reviewer has to
+# recall is one nobody can red:
+#
+#   214.md  — this release's own removals. It must name what it removes; a
+#             BREAKING entry that cannot say '--role' is not an entry.
+#   159.md  — one line, 'Retired agent template spellings'. That clause is
+#             HISTORY and is correct as history: those spellings were retired,
+#             and the sentence says so in the past tense about a thing that
+#             happened, not in the present about a thing that exists.
+#
+# Both exceptions are asserted to still HIT below. An absence sweep whose
+# exception list has quietly emptied is asserting nothing, and this one would
+# go green on a directory with no fragments in it at all.
+#
+# The pattern is the acceptance criterion's, verbatim and case-insensitive, so
+# what the suite enforces and what the panel greps cannot drift apart.
+CL_PATTERN='\brig\b|RIG_RE(PO|F)|--role|agent (box|boxes|seed|seeds|template|templates)|blank template'
+cl_announces_removed() {          # <file>
+  grep -qEi "$CL_PATTERN" "$1"
+}
+cl_announces_removed_except() {   # <file> <fixed string the one blessed line carries>
+  grep -vF -- "$2" "$1" | grep -qEi "$CL_PATTERN"
+}
+check "corpus: 214.md still names the removal it announces (#214)" 0 "" \
+  cl_announces_removed "$ROOT/changelog.d/214.md"
+check "corpus: 159.md still carries the history clause the sweep excepts (#214)" 0 "1" \
+  grep -c 'Retired agent template spellings' "$ROOT/changelog.d/159.md"
+# Every tracked file in the directory, not a *.md glob: the criterion greps
+# changelog.d/ whole, and README.md and shape assemble into nothing but are
+# read by the same people.
+while read -r rel; do
+  case "$rel" in
+    changelog.d/214.md) continue ;;
+    changelog.d/159.md)
+      check "corpus: $rel announces nothing removed but its history clause (#214)" 1 "" \
+        cl_announces_removed_except "$ROOT/$rel" 'Retired agent template spellings' ;;
+    *)
+      check "corpus: $rel announces nothing this release removes (#214)" 1 "" \
+        cl_announces_removed "$ROOT/$rel" ;;
+  esac
+done < <(git -C "$ROOT" ls-files changelog.d 2>/dev/null)
+# The guard's own test, on the two shapes it exists to tell apart: a stale
+# SUBJECT — true in substance, naming a seed set #209 collapsed — and the same
+# claim repaired onto the tree that exists. The repair is the ruling's, D1
+# restated: the hygiene four fragments called an agent-box property is now
+# every ordinary box's, which is why 'Agent boxes' → 'Every ordinary box' and
+# not 'Agent boxes' → 'Tenant boxes'.
+CLPROBE="$(mktemp)"
+printf -- '- Agent boxes cap /tmp at a fixed 1GiB (#178).\n' > "$CLPROBE"
+check "corpus: the guard reds on a stale subject (the guard's own test)" 0 "" \
+  cl_announces_removed "$CLPROBE"
+printf -- '- Every ordinary box caps /tmp at a fixed 1GiB (#178).\n' > "$CLPROBE"
+check "corpus: ...and passes the repaired line" 1 "" \
+  cl_announces_removed "$CLPROBE"
+# A word boundary here too, and it matters more than in bin/box: 'rigid' and
+# 'origin' are both ordinary changelog English.
+printf -- '- A rigid schema, checked at origin, for the right reasons.\n' > "$CLPROBE"
+check "corpus: ...and does not red 'rigid', 'origin' or 'right' (the boundary)" 1 "" \
+  cl_announces_removed "$CLPROBE"
+rm -f "$CLPROBE"
+# The real pre-amendment fragment, not a fixture — the same negative control
+# the strong form gets, and for the same reason: a guard tuned to a line
+# someone invented for it has not shown it would have caught the line that was
+# actually there. 177.md is the one with content to remove rather than a
+# subject to repair, so it is the one worth driving. The ancestor is the strong
+# form's located pre-cut commit; an unreachable one FAILS above and is not
+# re-diagnosed here.
+if [ -n "$SFPRECOMMIT" ]; then
+  CLPRE="$(mktemp)"
+  git -C "$ROOT" show "$SFPRECOMMIT:changelog.d/177.md" > "$CLPRE" 2>/dev/null || true
+  check "corpus: the guard reds on the real pre-amendment 177.md (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
+    cl_announces_removed "$CLPRE"
+  check "corpus: ...and is green on the amended one (the control's other half)" 1 "" \
+    cl_announces_removed "$ROOT/changelog.d/177.md"
+  rm -f "$CLPRE"
+fi
+
+# ---------------------------------------------------------------------------
 # THE CLAIM, not the word (#214). The strong form above matches 'rig' — so it
 # is blind BY CONSTRUCTION to the sentence that survived it:
 #
