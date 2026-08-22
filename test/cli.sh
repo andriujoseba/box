@@ -585,6 +585,132 @@ check "help surface: ...and the legacy claudebox/claudenet names pass (the bound
 rm -f "$SFPROBE"
 
 # ---------------------------------------------------------------------------
+# THE PAGES AN OPERATOR IS SENT TO (#214). Three rounds of this PR have ended
+# the same way: the mechanism cut complete, and one more prose surface still
+# selling the box the cut stops minting. Round 1 was CONTRIBUTING.md, round 2
+# bin/box's header and the first line of 'box --help', round 3
+# docs/box-recipe.md — a file this diff does not otherwise touch, linked by
+# name from README.md's lede, in the paragraph right after the new cold-start
+# promise. Each was invisible to the guards above BY CONSTRUCTION: the strong
+# form reads bin/box and templates/, and the help guard drives the help. A
+# fourth round of the same finding is a guard nobody wrote, so here it is.
+#
+# The set is what an operator actually reaches: the README, the two pages its
+# lede links, and the file a contributor is pointed at. docs/plans/ is
+# deliberately out — those are dated design records, true of the day they were
+# written, which is the same "history is correct as history" rule that excepts
+# 159.md's one clause in the corpus sweep above.
+#
+# Two rules, because the defect had two shapes.
+DOC_PAGES="README.md CONTRIBUTING.md docs/box-recipe.md docs/box-design.md"
+#
+# RULE 1 — NO PAGE CLAIMS A MINT LANDS AN AGENT.
+#
+# The retired seed names are in the pattern: after #209 collapsed those four
+# directories, 'claude-box' in these pages is a box template that does not
+# exist. With exactly one exception, and it is why the sweep filters before it
+# matches — where 'rig bootstrap' is on the line, '<name>-box' is a RIG ROLE
+# and the line is the four-step path this release documents. That is the
+# boundary doing the work: the same token, told apart by whose noun it is.
+#
+# The rest of the pattern is the claim in the shapes it was actually made in,
+# and the file is folded to one line first, because prose wraps and the
+# sentence that failed round 3 wrapped between 'agent already' and 'installed'.
+# 'ships' and 'gets' are on opposite sides of the line on purpose: what a box
+# SHIPS is a claim about what a mint delivers, and after this cut a mint
+# delivers the seed. What a converged box GETS is a claim about that box's
+# state, which is still true and is how box-design.md states it, one sentence
+# above 'box does not write that file and never did'.
+DOC_PATTERN='\b(claude|codex|grok|kimi)-box\b|whichever template you minted'
+DOC_PATTERN="$DOC_PATTERN"'|\bagent\b[^.]{0,40}already installed|already installed[^.]{0,40}\bagent\b'
+DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|template|templates)\b[^.]{0,40}\b(ships?|each ship)\b[^.]{0,40}\bagent\b'
+doc_sells_a_minted_agent() {  # <file>
+  grep -v 'rig bootstrap' "$1" | tr '\n' ' ' | grep -qEi "$DOC_PATTERN"
+}
+for rel in $DOC_PAGES; do
+  check "docs: $rel claims no agent a mint does not land (#214)" 1 "" \
+    doc_sells_a_minted_agent "$ROOT/$rel"
+done
+#
+# RULE 2 — NO RUNNABLE FLOW MINTS A BOX AND THEN RUNS AN AGENT ON IT.
+#
+# The sharper half, and it survived rule 1 in the very file that failed round
+# 3: a fenced block reading 'box new' / 'box shell' / 'git clone' / 'claude'
+# makes no claim in prose at all, and ends by invoking a binary that is not on
+# the box — the same shape as the Quick start's 'gh auth login', which three
+# reviewers took as blocking in round 1. A block that mints and invokes an
+# agent must converge in between. The discriminator is the FIRST WORD of the
+# line, which is what makes it cheap and exact: 'claude' alone is an
+# invocation, 'rig bootstrap claude-box' is the converge that earns it.
+doc_flow_skips_the_converge() {  # <file>
+  awk '
+    /^```/ {
+      if (inb) {
+        if (mint && agent && !conv)
+          { bad = 1; print FILENAME ": a block mints a box, then invokes an agent, and never converges it" }
+        inb = 0; mint = 0; agent = 0; conv = 0
+      } else inb = 1
+      next
+    }
+    inb {
+      if ($0  ~ /box[ \t]+new/)                  mint  = 1
+      if ($1  ~ /^(claude|codex|grok|kimi)$/)    agent = 1
+      if ($0  ~ /rig[ \t]+bootstrap|install\.sh/) conv = 1
+    }
+    END { exit(bad ? 0 : 1) }
+  ' "$1"
+}
+for rel in $DOC_PAGES; do
+  check "docs: $rel runs no agent on a box it just minted blank (#214)" 1 "" \
+    doc_flow_skips_the_converge "$ROOT/$rel"
+done
+# The negative control, and it is the real pre-cut docs/box-recipe.md rather
+# than a fixture — the same standard rounds 1 and 2 set for the strong form and
+# the corpus sweep. That file is untouched by this branch until this round, so
+# the located pre-cut ancestor carries exactly the page that shipped: red on
+# both rules there, green on both here.
+if [ -n "$SFPRECOMMIT" ]; then
+  DOCPRE="$(mktemp)"
+  git -C "$ROOT" show "$SFPRECOMMIT:docs/box-recipe.md" > "$DOCPRE" 2>/dev/null || true
+  check "docs: rule 1 reds on the real pre-cut box-recipe.md (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
+    doc_sells_a_minted_agent "$DOCPRE"
+  check "docs: rule 2 reds on that same page's four-line flow (the sharper half)" 0 \
+    "never converges it" doc_flow_skips_the_converge "$DOCPRE"
+  rm -f "$DOCPRE"
+fi
+# ...and the boundary, which is where a pattern this broad earns its keep. All
+# five of these are live at HEAD and every one of them is honest: a rig role in
+# the documented converge, two agent-context paths, a legacy stamp key, the one
+# template that still exists, and the 'gets' sentence rule 1 must not touch.
+DOCPROBE="$(mktemp)"
+{ printf 'rig bootstrap claude-box --user dev\n'
+  printf 'the file at ~/.claude/CLAUDE.md, or ~/.codex/AGENTS.md\n'
+  printf 'user.claudebox=1 stays honored forever\n'
+  printf 'box new --template staging-box mints the server seed\n'
+  printf 'A box with a coding agent on it gets a global agent-context file.\n'; } > "$DOCPROBE"
+check "docs: ...and the rig role, the agent-context paths and staging-box pass (the boundary)" 1 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# The guard's own test on the claim it exists for, in both shapes, so a green
+# sweep above is a sweep that would have gone red.
+printf 'The claude-box template ships a CLI agent, so a fresh box has one.\n' > "$DOCPROBE"
+check "docs: rule 1 reds on the claim itself (the guard's own test)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'box mints VMs with a coding agent already\ninstalled — nothing to do.\n' > "$DOCPROBE"
+check "docs: ...including across the line wrap the round-3 sentence had" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf '%s\n' '```' 'box new' 'box shell' 'claude   # brings the project up' '```' > "$DOCPROBE"
+check "docs: rule 2 reds on a mint-then-agent block" 0 "never converges it" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+printf '%s\n' '```' 'box new' 'box root work' 'rig bootstrap claude-box' 'box shell' 'claude' '```' \
+  > "$DOCPROBE"
+check "docs: ...and passes the same block with the converge in it" 1 "" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+printf '%s\n' '```' 'box new' 'box shell' 'git clone <repo>' '```' > "$DOCPROBE"
+check "docs: ...and does not red a block that mints without invoking an agent" 1 "" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+rm -f "$DOCPROBE"
+
+# ---------------------------------------------------------------------------
 # render_userdata (#81, #214) — the seed's ONE substitution, and after the cut
 # @BOX_USER@ is the whole of it. What used to live here was the pin group: a
 # shim curl serving canned releases/latest redirects, the default-is-latest

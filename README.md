@@ -21,9 +21,9 @@ not a box with the safety off.
 
 **The tool knows nothing about your projects.** You just `git clone` inside a
 box. A repo can ship an optional [`.box/`](docs/box-recipe.md)
-runbook that the box's coding agent reads and acts on — there is no `install`
-step and no host-run setup. See [docs/box-design.md](docs/box-design.md) for the
-design rationale.
+runbook that the coding agent you converged onto the box reads and acts on —
+there is no `install` step and no host-run setup. See
+[docs/box-design.md](docs/box-design.md) for the design rationale.
 
 > **0.6.0**: multi-user support.
 
@@ -788,9 +788,9 @@ inherit.
 ## Recipes: the `.box/` convention
 
 A repo that wants to be easy to stand up in a box ships an optional `.box/`
-folder — a runbook the box's coding agent reads and follows (install deps,
-start services, template env, seed data, smoke-test). It is agent-facing
-documentation, not a host-executed script. See
+folder — a runbook the agent you converged onto the box reads and follows
+(install deps, start services, template env, seed data, smoke-test). It is
+agent-facing documentation, not a host-executed script. See
 [docs/box-recipe.md](docs/box-recipe.md).
 
 ## Uninstall
