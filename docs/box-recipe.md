@@ -42,17 +42,23 @@ another converger follows the same shape):
 ```sh
 box new --name work --size medium   # a blank box, nothing converged
 box root work                       # root inside it, and converge it:
-curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \
+  | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash
 rig bootstrap claude-box --user dev
 box shell work                      # in as the tenant user, on the box you just converged
 git clone <repo> && cd <repo>
 claude                              # the agent reads .box/ and brings the project up
 ```
 
-The first four lines are the mint-and-converge path, and it is the README's
-rather than this page's: [Quick start](../README.md#quick-start) carries it
-with the surrounding argument, and `<ref>` is a rig release you pin there. They
-are here because the last three do not run without them.
+The first five lines are the mint-and-converge path — four steps, the third
+wrapped — and it is the README's rather than this page's: [Quick
+start](../README.md#quick-start) teaches the same command verbatim, with the
+surrounding argument. `<ref>` is a rig release you pin, and **`RIG_REF` on the
+pipe is what pins it**: the one in the URL only decides which copy of
+`install.sh` runs, and that installer resolves an unset `RIG_REF` through
+rig's latest-release channel, so a line without the arguments installs
+whatever is newest no matter which `<ref>` you substituted. These five are here
+because the last three do not run without them.
 
 The operator can also just say: *"set this project up per .box"*.
 
