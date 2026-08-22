@@ -316,15 +316,19 @@ strongform() {   # <file> — the non-comment, non-prose body
     { print }
   ' "$1"
 }
+# Called from THIS shell, never through 'bash -c': a helper that is not
+# exported comes back 127 from a child, and 127 is a non-zero exit — which is
+# what an absence assertion wants, so the guard would pass by not existing.
+sf_names_converger() { strongform "$1" | grep -qwE 'rig'; }
+sf_names_pin()       { strongform "$1" | grep -qE 'RIG_REPO|RIG_REF'; }
 check "strong form: bin/box carries exactly one prose exception (#214)" 0 "1" \
-  bash -c 'grep -c "^# box-strong-form-prose-begin$" "$1"' _ "$ROOT/bin/box"
+  grep -c "^# box-strong-form-prose-begin$" "$ROOT/bin/box"
 check "strong form: ...and it is closed" 0 "1" \
-  bash -c 'grep -c "^# box-strong-form-prose-end$" "$1"' _ "$ROOT/bin/box"
-# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+  grep -c "^# box-strong-form-prose-end$" "$ROOT/bin/box"
 check "strong form: no acting line in bin/box names the converger (#214)" 1 "" \
-  bash -c 'strongform "$1" | grep -qwE "rig"' _ "$ROOT/bin/box"
+  sf_names_converger "$ROOT/bin/box"
 check "strong form: bin/box names no pin variable where it acts (#214)" 1 "" \
-  bash -c 'strongform "$1" | grep -qE "RIG_REPO|RIG_REF"' _ "$ROOT/bin/box"
+  sf_names_pin "$ROOT/bin/box"
 for f in "$ROOT"/templates/*/box.env "$ROOT"/templates/*/user-data.yaml; do
   rel="templates/$(basename "$(dirname "$f")")/$(basename "$f")"
   check "strong form: $rel names the converger nowhere at all (#214)" 1 "" \
@@ -345,10 +349,16 @@ done
 SFPROBE="$(mktemp)"
 printf '# a comment naming rig is fine\necho "rig bootstrap claude-box"\n' > "$SFPROBE"
 check "strong form: the guard reds on an acting line (the guard's own test)" 0 "" \
-  bash -c 'strongform "$1" | grep -qwE "rig"' _ "$SFPROBE"
+  sf_names_converger "$SFPROBE"
 printf '# box-strong-form-prose-begin\necho "rig bootstrap claude-box"\n# box-strong-form-prose-end\n' > "$SFPROBE"
 check "strong form: ...and passes the same line inside the prose region" 1 "" \
-  bash -c 'strongform "$1" | grep -qwE "rig"' _ "$SFPROBE"
+  sf_names_converger "$SFPROBE"
+# A word boundary, not a substring: 'origin=mint' and 'the right side' both
+# carry the three letters, and a substring guard would red the whole file for
+# saying either.
+printf 'echo "user.box.origin=mint  # the right side to fail on"\n' > "$SFPROBE"
+check "strong form: ...and does not red 'origin' or 'right' (the boundary)" 1 "" \
+  sf_names_converger "$SFPROBE"
 rm -f "$SFPROBE"
 
 # ---------------------------------------------------------------------------
@@ -402,15 +412,18 @@ check "render_userdata: ...nor does an overridden repo (#214)" 0 \
   '@RIG_REPO@/@RIG_REF@/install.sh' rud RIG_REPO=you/rig
 # The pin environment produces no warning either: box has no standing to
 # comment on a variable that is now somebody else's (#214).
+rud_is_silent() { local out; out="$(rud "$@" 2>&1 >/dev/null)"; [ -z "$out" ]; }
 check "render_userdata: a set pin says nothing on stderr (#214)" 0 "" \
-  bash -c 'out="$(rud RIG_REF=main RIG_REPO=you/rig 2>&1 >/dev/null)"; [ -z "$out" ]'
-# THE offline proof. The pin probe made a HEAD request on every mint of a
-# rig-bearing seed and DIED if it failed; with the probe gone, minting is
-# offline. This shim fails every call and logs it, so a surviving probe reds
-# both halves.
+  rud_is_silent RIG_REF=main RIG_REPO=you/rig
+# A value that used to DIE on the host — the tokens landed inside a runcmd
+# shell line, so a smuggled quote had to be refused before it reached the YAML
+# — now cannot die, because nothing reads it. The seed renders, untouched.
+HOSTILE="$(mktemp)"
+printf '#cloud-config\npackages:\n  - tmux\n' > "$HOSTILE"
+rud_hostile() { SEEDFILE="$HOSTILE" rud 'RIG_REPO=evil"; rm -rf /; "/rig'; }
 check "render_userdata: a hostile pin value cannot die on the host any more (#214)" 0 \
-  'packages:' bash -c 'printf "#cloud-config\npackages:\n  - tmux\n" > "$2"
-     SEEDFILE="$2" rud "RIG_REPO=evil\"; rm -rf /; \"/rig"' _ "$(mktemp)"
+  'packages:' rud_hostile
+rm -f "$HOSTILE"
 check "render_userdata: the render makes NO network call (#214)" 1 "" \
   grep -q . "$NETLOG"
 
@@ -443,10 +456,12 @@ check "tenant seed: /tmp is capped at a FIXED 1GiB (#178)" 0 "" \
   grep -q 'size=1G' "$SEEDLOG"
 check "tenant seed: a 4GiB swapfile is laid on the disk (#178)" 0 "" \
   grep -q 'fallocate -l 4G /swapfile' "$SEEDLOG"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
 check "tenant seed: chrony and its makestep drop-in ship (#174)" 0 "" \
   bash -c 'grep -q "box-makestep.conf" "$1" && grep -qE "^[[:space:]]*-[[:space:]]+chrony$" "$1"' _ "$SEEDLOG"
 check "tenant seed: the container-aware chrony start survives (#174)" 0 "" \
   grep -q 'systemd-detect-virt --quiet --container || systemctl start chrony' "$SEEDLOG"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
 check "tenant seed: tmux, curl and ca-certificates ship (#65, #214)" 0 "" \
   bash -c 'for pkg in tmux curl ca-certificates; do
              grep -qE "^[[:space:]]*-[[:space:]]+$pkg\$" "$1" || exit 1; done' _ "$SEEDLOG"
@@ -455,6 +470,7 @@ check "tenant seed: package_update is on — the seed installs packages (#214)" 
 # The one default spelled in two files. bin/box needs a user before
 # load_template has read one, so BOX_USER cannot be the single source — which
 # makes 'they agree' something to assert rather than to hope.
+# shellcheck disable=SC2016  # $1/$2 expand in the child shell, by design
 check "tenant seed: BOX_USER and bin/box's default are the same 'dev' (#214)" 0 "" \
   bash -c 'grep -qx '"'"'BOX_USER="dev"'"'"' "$1" && grep -qF '"'"'user="${user:-dev}"'"'"' "$2"' \
   _ "$ROOT/templates/tenant/box.env" "$ROOT/bin/box"
@@ -846,10 +862,14 @@ check "new: cloud-init user-data goes through render_userdata" 0 "" bash -c '
     | grep -F "cloud-init.user-data" | grep -q "render_userdata"'
 check "new: no mint path execs a converger in the guest (#214)" 1 "" bash -c '
   grep -E "^[[:space:]]*[^#]" "'"$ROOT"'/bin/box" | grep "incus exec" | grep -qw "rig"'
-check "new: T_BOOTSTRAP_ROLE is gone from bin/box entirely (#214)" 1 "" \
-  grep -q 'T_BOOTSTRAP_ROLE' "$ROOT/bin/box"
-check "new: BOX_BOOTSTRAP_ROLE is gone from bin/box entirely (#214)" 1 "" \
-  grep -q 'BOX_BOOTSTRAP_ROLE' "$ROOT/bin/box"
+# On ACTING lines, the same rule the strong form uses: the comment that says
+# what BOX_BOOTSTRAP_ROLE was and why it went is exactly the prose a reader
+# arriving at the allowlist needs, and deleting it would delete the record.
+sf_names() { strongform "$1" | grep -q -- "$2"; }
+check "new: T_BOOTSTRAP_ROLE is gone from bin/box's code (#214)" 1 "" \
+  sf_names "$ROOT/bin/box" 'T_BOOTSTRAP_ROLE'
+check "new: BOX_BOOTSTRAP_ROLE is gone from bin/box's code (#214)" 1 "" \
+  sf_names "$ROOT/bin/box" 'BOX_BOOTSTRAP_ROLE'
 
 # The launch phase, narrated and time-boxed (#93) — grepped the way the other
 # mint-path guards are (a daemon-free run cannot mint). Twice in the
@@ -910,9 +930,10 @@ check "new: BOX_LAUNCH_TIMEOUT is documented in box help new" 0 "" bash -c '
 # shellcheck disable=SC2016  # the path expands in the child shell, by design
 check "templates: no template names a convergence role at all (#214)" 1 "" bash -c '
   grep -h "^BOX_BOOTSTRAP_ROLE=" "'"$ROOT"'"/templates/*/box.env | grep -q .'
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "new: the ready hint offers 'box root' for a server-class box (#176, #214)" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -A2 "staging-box" | grep -q "box root"'
+    | grep -A10 "eff. = staging-box" | grep -q "box root \$name"'
 
 # ---------------------------------------------------------------------------
 # The 'pristine' mark (#104). The whole feature is a MOMENT: the guest after
@@ -1144,15 +1165,19 @@ check "rollback: a REFUSED create is not remembered (incus said no)" 0 "ABSENT" 
 # One label's mark must not answer for another's.
 check "rollback: marks do not bleed between labels" 0 "ABSENT" \
   bash -c 'marks=" manual "; . "'"$PRISFN"'"; mark_taken pristine && echo TAKEN || echo ABSENT'
-# The call site itself, pinned statically: the hook-failure message offers the
-# restore only under the guard. On a 'dir' host EVERY hook failure reaches this
-# line with no pristine mark, so an unconditional offer is a copy-pasteable
-# command that errors at the one moment the operator is standing there.
+# The one CALLER of mark_taken was the convergence hook's failure message: on a
+# 'dir' host every hook failure reached that line with no pristine mark, so an
+# unconditional offer was a copy-pasteable command that errored at the one
+# moment the operator was standing there. #214 removed the hook and the message
+# with it, so cmd_new offers no restore at all — and the assertion inverts to
+# that absence, which is what keeps a future offer from shipping ungated.
+# mark_taken() itself stays: it is the honest reader of `marks` (the never-fatal
+# contract makes the exit status unusable), and the next caller needs it.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "rollback: the hook-failure restore offer is GATED on the mark existing" 0 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -B12 "box restore \$name pristine. is still there" \
-    | grep -q "if mark_taken pristine; then"'
+check "rollback: cmd_new offers no restore it cannot promise (#104, #214)" 1 "" bash -c '
+  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "box restore .* pristine. is still there"'
+check "rollback: mark_taken survives for the next caller (#104)" 0 "" \
+  grep -q '^mark_taken()' "$ROOT/bin/box"
 rm -f "$PRISFN"
 
 # ---------------------------------------------------------------------------
@@ -2015,7 +2040,7 @@ check "mint staging: disables VM secure boot (#159)" 0 "" \
 # The dedicated seed converges NOTHING at mint (#214) — the whole server
 # posture is operator-run now, exactly as its tailnet join always was.
 check "mint staging: execs no converger of its own (#214)" 1 "" \
-  grep -q '^incus exec staging' "$STAGINGLOG"
+  grep -qE '^incus exec staging .* bootstrap' "$STAGINGLOG"
 check "mint staging: renders no installer line into its seed (#214)" 1 "" \
   launch_has "$STAGINGLOG" 'install\.sh'
 check "mint staging: keeps the ops sudo line in the rendered seed (#214)" 0 "" \
@@ -2025,6 +2050,7 @@ check "mint staging: keeps the ops sudo line in the rendered seed (#214)" 0 "" \
 # still carry a role if the cut had been made only on the tenant path.
 check "mint staging: stamps no tenant role either (#214)" 1 "" \
   launch_has "$STAGINGLOG" 'user\.box\.role='
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
 check "mint staging: makes no network request either (#214)" 0 "0" \
   bash -c 'grep -c . "$1" || true' _ "$STAGINGLOG.curl"
 
@@ -2076,6 +2102,7 @@ check "mint: a set pin changes nothing about the seed (#214)" 1 "" \
   launch_has "$PINENVLOG" 'you/rig|0\.3\.0'
 check "mint: a set pin stamps nothing (#214)" 1 "" \
   launch_has "$PINENVLOG" 'user\.box\.rig'
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
 check "mint: a set pin probes nothing (#214)" 0 "0" \
   bash -c 'grep -c . "$1" || true' _ "$PINENVLOG.curl"
 check "mint: a set pin warns about nothing (#214)" 1 "" \
@@ -4773,8 +4800,8 @@ check "probe ledger: a complete run's floor is the declared total" 0 "[81]" \
 # count simply ended lower and exit 0 vouched for it.
 check "probe ledger: a phase that never ran is named, not silently dropped" 0 "C(0/9)" \
   led "$FULL; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_short)\""
-check "probe ledger: ...and one missing probe inside a phase is named too" 0 "B(50/51)" \
-  led "$FULL; PHASE_RAN[B]=50; printf '[%s]' \"\$(ledger_short)\""
+check "probe ledger: ...and one missing probe inside a phase is named too" 0 "B(44/45)" \
+  led "$FULL; PHASE_RAN[B]=44; printf '[%s]' \"\$(ledger_short)\""
 
 # A floor, not an equality: adding a probe must not red the commit that adds it.
 check "probe ledger: overshooting a phase is not a shortfall" 0 "[]" \
@@ -5125,12 +5152,14 @@ check "drill record: a set pin in the environment is not collected (#214)" 0 "[]
   rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r main 0; printf "[%s%s]" "${REC_RIG_REPO:-}" "${REC_RIG_REF:-}"'
 # drill_stamp() went with its only caller (#214): a reader with nothing to read
 # is a place for the question to come back.
-check "drill record: drill_stamp is gone from drill.sh (#214)" 1 "" \
-  grep -q 'drill_stamp' "$ROOT/drill/drill.sh"
+# On ACTING lines again: drill.sh's comments record what drill_stamp() was and
+# why the per-role mints left, which is the history the next reader needs.
+check "drill record: drill_stamp is gone from drill.sh's code (#214)" 1 "" \
+  sf_names "$ROOT/drill/drill.sh" 'drill_stamp'
 check "drill record: drill.sh reads no retired stamp at all (#214)" 1 "" \
-  grep -qE 'user\.box\.(role|rig)' "$ROOT/drill/drill.sh"
+  sf_names "$ROOT/drill/drill.sh" 'user\.box\.\(role\|rig\)'
 check "drill record: drill.sh passes no --role (#214)" 1 "" \
-  grep -q -- '--role' "$ROOT/drill/drill.sh"
+  sf_names "$ROOT/drill/drill.sh" '--role'
 # The invocation still has to reproduce the run, so the flags and DRILL_EXPECT
 # stay; what leaves is the pin, because a prefix naming a variable box does not
 # read would claim a dependency box does not have.
@@ -5186,8 +5215,14 @@ check "drill record: pins box's candidate ref TO A SHA" 0 \
 # ...and box's is the ONLY candidate ref the record names now (#214). The
 # second row said which converger the mint had installed; box installs none, so
 # a row there would be a combination nobody drilled being claimed as one.
-check "drill record: names no second candidate ref (#214)" 1 "" \
-  bash -c 'emit "$1" | grep -qE "^  - (rig|cast) "' _ "$CLEAN"
+# Called from THIS shell: emit() is not exported, and a 127 from a child would
+# satisfy an absence assertion by never having run. Counted rather than
+# absence-grepped, because box's own row has the same shape as the one that
+# left — an absence assertion here would have to exclude 'box' by name and
+# would then go green on any THIRD row somebody adds.
+record_ref_rows() { emit "$1" | grep -cE '^  - [a-z]+ `'; }
+check "drill record: names exactly ONE candidate ref — box's (#214)" 0 "1" \
+  record_ref_rows "$CLEAN"
 check "drill record: says what ran, as a command that reproduces it" 0 \
   'bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
 check "drill record: gives the numbers and the wall clock" 0 \
