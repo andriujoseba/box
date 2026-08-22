@@ -956,18 +956,12 @@ printf '%s\n' '```' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig
   'box new' 'box shell' 'claude' '```' > "$DOCPROBE"
 check "docs: ...and passes the same block with rig's installer in it" 1 "" \
   doc_flow_skips_the_converge "$DOCPROBE"
-# Rule 4, both ways. The red fixture is a FIXTURE and not the real pre-cut
-# page, and the reason is worth stating rather than hiding: no pre-cut tree
-# carries this defect. Pre-cut, box converged the box itself and its seed line
-# (templates/tenant/user-data.yaml:133 at the merge base) already piped through
-# RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" -- the repo has always taught the
-# pinned form, and the unpinned line was introduced by THIS branch's own prose
-# when the command moved from a seed box substitutes into a page an operator
-# copies. So the honest control is the line as it stood at 8dcf19c, reproduced
-# here byte for byte, and the rule's value is forward: it stops the next
-# abbreviation, which is what a round-5 finding on the same page earns.
-printf 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh | bash\n' \
-  > "$DOCPROBE"
+# Rule 4, both ways, starting with the literal the whole control is anchored on:
+# docs/box-recipe.md:45 exactly as it stood at 8dcf19c, the line round 5 blocked
+# on. It is written once, here, and every assertion below refers to THIS string
+# rather than retyping it, so the fixture and the control cannot drift apart.
+DOC_PRE_FIX_CONVERGE='curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh | bash'
+printf '%s\n' "$DOC_PRE_FIX_CONVERGE" > "$DOCPROBE"
 check "docs: rule 4 reds on a converge that pins the installer but not the tree (#214)" 0 "" \
   doc_curls_rig_without_the_pin "$DOCPROBE"
 # Double-quoted with '\\' rather than single-quoted with a trailing '\': the
@@ -994,6 +988,75 @@ printf '%s\n' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/
 check "docs: ...and never fires on box's own installer, which pins with BOX_REF" 1 "" \
   doc_curls_rig_without_the_pin "$DOCPROBE"
 rm -f "$DOCPROBE"
+
+# RULE 4'S NEGATIVE CONTROL, and it is a real page rather than a fixture.
+#
+# §4's 2026-08-22 amendment asks for "the same guard run against the real
+# pre-cut docs/box-recipe.md". That object does not exist, and the measurement
+# is the answer rather than an argument: at the pre-cut ancestor the whole tree
+# carries ONE file matching 'rig/[^ ]*install.sh' -- test/cli.sh's pin group,
+# which this branch deletes -- box's own three installer curls pin with BOX_REF
+# and are out by repo, and templates/tenant/user-data.yaml:133 already piped
+# through RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@". The repo has only ever
+# taught the pinned form. The unpinned line was introduced by THIS branch's own
+# prose at da6eb05, when the command moved from a seed box substitutes into a
+# page an operator copies, so no pre-cut object can red this rule.
+#
+# The criterion's STANDARD is satisfiable where its object is not, and the
+# standard is what the other rules actually meet: a real file, located and
+# never hard-coded, red there and green here, loud rather than skipped. So the
+# control MUTATES the live pages -- fold the continuation, strip the pin off
+# the pipe -- and drives the guard at the result. Not a walk to 8dcf19c's blob,
+# which would be more literal and worse: rules 0-3 walk to a commit on
+# permanent history, while 8dcf19c is this branch's own, so that control's
+# survival would depend on how a human merges, and a walk that finds nothing
+# must fail loudly -- a red main for a history reason. A mutation has no
+# history dependency in either direction.
+doc_unpin_the_converge() {  # <file> -> the same page with rig's pin abbreviated off
+  awk '
+    hold != "" {                                  # the pipe under a folded curl
+      sub(/^[ \t]*/, ""); sub(/RIG_REPO=[^ ]+[ \t]+RIG_REF=[^ ]+[ \t]+/, "")
+      print hold " " $0; hold = ""; next
+    }
+    /rig\/[^ ]*install\.sh/ && /\\[ \t]*$/ {      # a page wrap: join it first
+      hold = $0; sub(/[ \t]*\\[ \t]*$/, "", hold); next
+    }
+    /rig\/[^ ]*install\.sh/ { pend = NR + 1 }     # bin/box wraps inside an echo
+    NR <= pend { sub(/RIG_REPO=[^ ]+[ \t]+RIG_REF=[^ ]+[ \t]+/, "") }
+    { print }
+    END { if (hold != "") print hold }
+  ' "$1"
+}
+# The mutation corpus is NAMED, not discovered, and every member is asserted to
+# carry a converge before it is mutated -- rule 0's lesson: a page that silently
+# drops out of a data-driven list takes its own control with it. These are the
+# three PIN_PAGES entries that curl rig's installer at HEAD; the other five make
+# no converge claim, which the loop above already proves by reading them.
+DOCMUT="$(mktemp)"
+for rel in README.md docs/box-recipe.md bin/box; do
+  check "docs: $rel carries a rig converge for the control to mutate (#214)" 0 "" \
+    grep -qE 'rig/[^ ]*install\.sh' "$ROOT/$rel"
+  doc_unpin_the_converge "$ROOT/$rel" > "$DOCMUT"
+  # The half that stops this becoming a fixture with extra steps: if the
+  # canonical form is ever reshaped past the mutation's reach, this reds rather
+  # than quietly no-opping into a control that asserts nothing.
+  check "docs: ...and the control's mutation actually bites $rel" 1 "" \
+    cmp -s "$ROOT/$rel" "$DOCMUT"
+  check "docs: rule 4 reds on the real $rel with its pin abbreviated away (#214)" 0 "" \
+    doc_curls_rig_without_the_pin "$DOCMUT"
+done
+# ...and the assertion that earns the word REAL: on the two prose pages the
+# mutation does not merely produce something the guard dislikes, it reproduces
+# docs/box-recipe.md:45 at 8dcf19c byte for byte -- the exact line round 5
+# blocked on, derived mechanically from the live page. bin/box is excluded here
+# and only here: its copy is wrapped inside an echo, so the abbreviation lands
+# as 'echo "    | bash" >&2' and there is no single line to compare.
+for rel in README.md docs/box-recipe.md; do
+  doc_unpin_the_converge "$ROOT/$rel" > "$DOCMUT"
+  check "docs: ...and $rel's abbreviation is the round-5 line byte for byte" 0 "" \
+    grep -qxF -e "$DOC_PRE_FIX_CONVERGE" "$DOCMUT"
+done
+rm -f "$DOCMUT"
 
 # ---------------------------------------------------------------------------
 # render_userdata (#81, #214) — the seed's ONE substitution, and after the cut
