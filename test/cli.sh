@@ -815,11 +815,31 @@ done
 # here it also does the wrapping: the canonical form wraps with a trailing '\'
 # in a page and with '\\" >&2' inside bin/box's echo, and folding the file to
 # one line makes both of those the same window instead of two special cases.
+#
+# ...and the match is ANCHORED ON THE PIPE, which is the same lesson one rule
+# further on and the thing 'read the match' does not buy by itself. The claim
+# this rule makes is that the pin rides the pipe the curl FEEDS; a window of
+# 'somewhere in the next 120 characters' of a file folded to one line is a
+# different and weaker claim, because the window crosses fences, sentences and
+# paragraphs freely:
+#
+#   curl … rig/<ref>/install.sh | bash
+#   Set RIG_REPO=heavy-duty/rig RIG_REF=0.3.0 in your environment first.
+#   -> green: an unpinned converge laundered by a sentence ABOUT the pin
+#
+# So the pin must follow the pipe with nothing but whitespace between, and the
+# window before the pipe cannot cross one ('[^|]'). The pipe group is OPTIONAL
+# rather than required, and that is deliberate: made mandatory, a converge that
+# never pipes at all -- 'curl … rig/<ref>/install.sh > /tmp/i.sh' -- emits no
+# match, the inverted grep reads empty input, and the rule reports green on a
+# line carrying no pin whatsoever. Optional, that line matches without a pipe,
+# finds no pin, and reds. A guard must not go quiet on the shape it never
+# anticipated; both halves of this rule are the same rule 0 lesson.
 PIN_PAGES="$DOC_PAGES bin/box"
 doc_curls_rig_without_the_pin() {  # <file>
   tr '\n' ' ' < "$1" \
-    | grep -oE 'rig/[^ ]*install\.sh.{0,120}' \
-    | grep -qvE 'RIG_REPO=[^ ]+[ \t]+RIG_REF='
+    | grep -oE 'rig/[^ ]*install\.sh[^|]{0,80}(\|[ \t]*[^|]{0,60})?' \
+    | grep -qvE '\|[ \t]*RIG_REPO=[^ ]+[ \t]+RIG_REF='
 }
 for rel in $PIN_PAGES; do
   check "docs: $rel is in the pin corpus and exists to be read (#214)" 0 "" \
@@ -986,6 +1006,22 @@ check "docs: ...and passes bin/box's echo-wrapped copy of the same command" 1 ""
 printf '%s\n' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | bash' \
   'curl -fsSL .../install.sh | BOX_REF=0.6.0 bash' > "$DOCPROBE"
 check "docs: ...and never fires on box's own installer, which pins with BOX_REF" 1 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# ...and the two shapes the pipe anchor exists for. The first is the round-6
+# probe: the defect line with a sentence ABOUT the pin after it, which the
+# 120-char window read as a pin and reported green. Written from the same
+# DOC_PRE_FIX_CONVERGE literal as every other assertion here, so it cannot
+# drift away from the line it is supposed to be.
+printf '%s\n' "$DOC_PRE_FIX_CONVERGE" \
+  'Set RIG_REPO=heavy-duty/rig RIG_REF=0.3.0 in your environment first.' > "$DOCPROBE"
+check "docs: rule 4 reds on an unpinned converge laundered by a sentence about the pin (#214)" 0 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# The second is what makes the pipe group optional rather than required: a
+# converge that never pipes carries no pin either, and a rule that emits no
+# match on it would report green on the loudest possible miss.
+printf '%s\n' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh > /tmp/i.sh' \
+  > "$DOCPROBE"
+check "docs: ...and on a converge that pipes nowhere at all, so the anchor cannot go quiet" 0 "" \
   doc_curls_rig_without_the_pin "$DOCPROBE"
 rm -f "$DOCPROBE"
 
