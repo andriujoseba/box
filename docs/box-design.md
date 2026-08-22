@@ -10,23 +10,26 @@ design decisions.
 
 ## Principle: separate the tool from the agent
 
-- **The tool** mints isolated boxes with the agent installed but **unauthenticated**.
-  It knows nothing about projects, secrets, recipes, or memory.
+- **The tool** mints isolated boxes carrying a thin seed and **nothing else** —
+  no agent, and since #214 no converger either. It knows nothing about projects,
+  secrets, recipes, or memory.
 - **The agent** (Claude Code, Codex, Grok — whichever template, inside the box)
   reads an optional `.box/` runbook in a cloned repo and acts on it. The recipe's
   consumer is the reasoning agent, not host machinery.
 
 ## Boxes are strictly creds-free
 
-`box new --name <n>` launches a blank box: everything installed, **no**
-git credentials and **no** agent credentials. The operator authenticates
-interactively *inside* the box:
+`box new --name <n>` launches a blank box: the thin seed only, **no**
+git credentials and **no** agent credentials. Since #214 there is no agent to
+authenticate at the mint either — the operator converges one, then authenticates
+it interactively *inside* the box:
 
-- **The coding agent** — e.g. `claude` → `/login` (paste-a-code OAuth: copy the
-  URL, open it in your own browser, paste the code back); `codex` and `grok`
-  have their own login step. Works because the box is outbound-only; the tool
-  never handles a token.
-- **Git** — the operator adds their own PAT / `gh auth login` inside the box.
+- **The coding agent** — whatever the converge installed; e.g. `claude` →
+  `/login` (paste-a-code OAuth: copy the URL, open it in your own browser, paste
+  the code back). Works because the box is outbound-only; the tool never handles
+  a token.
+- **Git** — the operator adds their own PAT / `gh auth login` inside the box,
+  once the converge has put `git` and `gh` there.
 
 The tool stores and injects **no** credentials, ever. This dissolves the
 multi-user problem: nothing shared, nothing committed.
@@ -104,7 +107,7 @@ Resource shape is independent of all of this: `small=2/2GiB/20GiB`,
 `medium=4/8GiB/60GiB`, and `large=8/16GiB/120GiB`, resolved in the order
 explicit flag, `BOX_*` environment, named size, then seed/default.
 
-## The agent is unprivileged in its own box (#177)
+## The tenant is unprivileged in its own box (#177)
 
 **The tenant is unprivileged inside its own box; the operator enters as root
 from the host.** The tenant seed creates its user with no sudoers

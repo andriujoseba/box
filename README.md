@@ -7,9 +7,10 @@ box comes up blank — one thin tenant seed, an unprivileged user, nobody home �
 and what it becomes is installed inside it, by you, afterwards. The box is the
 product — you log in and work; destroying it loses nothing you didn't push.
 
-**Strictly creds-free.** A box ships with everything installed and **no**
-credentials — no agent token, no git PAT, nothing. You authenticate
-interactively _inside_ the box. The tool never stores or injects a secret. That
+**Strictly creds-free.** A box ships with a thin seed and **no** credentials —
+no agent token, no git PAT, nothing. What converges it is yours to run, and you
+authenticate interactively _inside_ the box. The tool never stores or injects a
+secret. That
 means there's nothing shared or committed, so it's safe for multiple operators
 out of the box.
 
@@ -261,12 +262,12 @@ box new --name work --size medium   # a blank box, nothing converged
 box shell work                      # enter as the tenant user (default: dev)
 ```
 
-Inside the box, install what you need and authenticate as needed:
-
-```sh
-gh auth login                    # or drop a PAT in — your git credentials, your call
-git clone https://github.com/you/project && cd project
-```
+**That box is blank, and blank is literal.** The seed carries a tenant user, a
+fixed 1GiB `/tmp`, swap, chrony, `tmux`, `curl`, `ca-certificates`,
+`python3-venv` and `shellcheck` — that list is the whole of it. There is no
+coding agent on it, and **no `gh`**; the tenant has no sudo, so it cannot
+`apt install` one either. Authenticating is therefore not the first thing you
+do on a fresh box. Converging is.
 
 **Box mints; you converge.** Turning a box into a coding-agent box, a server,
 or anything else is four steps, and box performs none of them
@@ -279,6 +280,14 @@ box root work                            # root inside it, authorized by the hos
 curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \
   | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash
 rig bootstrap claude-box --user dev
+```
+
+Once your converger has put a toolchain on the box, authenticate inside it —
+box never handles the credential, before or after:
+
+```sh
+gh auth login                    # or drop a PAT in — your git credentials, your call
+git clone https://github.com/you/project && cd project
 ```
 
 **Read the cold-start promise honestly.** Box used to sell a creds-free
@@ -739,7 +748,7 @@ drill installs the whole stack, mints every template cold, snapshots and
 clones, probes every boundary from inside the boxes, opens and shuts the
 `expose` door (and checks the contract survives it), re-homes a faithful
 pre-0.4.0 box through `migrate-host`, and removes what it minted —
-currently **84 checks, 84 passing**. [drill/RUNS.md](drill/RUNS.md) is the full
+currently **81 checks, 81 passing**. [drill/RUNS.md](drill/RUNS.md) is the full
 history, including every trap that fooled a run into a wrong verdict.
 
 ### Run the drill yourself
