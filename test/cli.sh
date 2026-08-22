@@ -684,9 +684,9 @@ done
 # sentences above for naming the FILE a converged box gets.
 DOC_PATTERN='(rig[ \t]+bootstrap[ \t]+)?\b(claude|codex|grok|kimi)-box\b|whichever template you minted'
 DOC_PATTERN="$DOC_PATTERN"'|\bagent\b[^.]{0,40}already installed|already installed[^.]{0,40}\bagent\b'
-DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|template|templates)\b[^.]{0,40}\b(ships?|each ship)\b[^.]{0,40}\bagents?\b'
-DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|template|templates)\b[^.]{0,60}'
-DOC_PATTERN="$DOC_PATTERN"'\b(has|have|comes? with|includes?|carries|carry|brings?|arrives? with|ships? with|leaves?[^.]{0,20} with)'
+DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|seed|seeds|template|templates)\b[^.]{0,40}\b(ships?|each ship)\b[^.]{0,40}\bagents?\b'
+DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|seed|seeds|template|templates)\b[^.]{0,60}'
+DOC_PATTERN="$DOC_PATTERN"'\b(has|have|comes? with|includes?|carries|carry|brings?|arrives? with|ships? with|minted[ \t]+with|leaves?[^.]{0,20} with)'
 DOC_PATTERN="$DOC_PATTERN"'[ \t]+(an?|one|the|its|your|another)?[ \t]*([A-Za-z]+[ \t]+)?agents?([^-A-Za-z]|$)'
 #
 # The exemptions, and they read the MATCH and never the line. Two of them:
@@ -700,8 +700,27 @@ DOC_PATTERN="$DOC_PATTERN"'[ \t]+(an?|one|the|its|your|another)?[ \t]*([A-Za-z]+
 # its claim, because the negation there is not the agent's.
 DOC_EXEMPT='^rig[ \t]+bootstrap'
 DOC_EXEMPT="$DOC_EXEMPT"'|\b(no|not|never|neither|nor|without)\b[ \t]+([a-z]+[ \t]+){0,2}agents?\b'
+#
+# ...and the match is TRUNCATED AT ITS FIRST 'agent' before the exemption sees
+# it, which is the difference between the paragraph above being true and being
+# a hope. ERE matching is leftmost-LONGEST, so the ships arm runs its window on
+# to the LAST 'agent' it can reach and swallows any denial in between:
+#
+#   The box ships an agent and no agent token.
+#   emitted match: [box ships an agent and no agent]   -> exempt -> green
+#
+# That is a live claim laundered by a denial of something else, which is the
+# one direction the exemption's own comment says it must not cut. The claim the
+# arm actually made is the text up to the noun it matched FIRST; everything
+# after it belongs to some other clause, and the exemption has no business
+# reading it. Truncated, 'box ships an agent' carries no denial and reds, while
+# README.md:10 trims to '...and no credentials - no agent' and stays green
+# because its own noun is the negated one -- on its merits now, where before it
+# was green only because the em dash put it outside the arm's 40-char window.
 doc_sells_a_minted_agent() {  # <file>
-  tr '\n' ' ' < "$1" | grep -oEi "$DOC_PATTERN" | grep -qvEi "$DOC_EXEMPT"
+  tr '\n' ' ' < "$1" | grep -oEi "$DOC_PATTERN" \
+    | sed -E 's/([Aa][Gg][Ee][Nn][Tt][Ss]?).*$/\1/' \
+    | grep -qvEi "$DOC_EXEMPT"
 }
 for rel in $DOC_PAGES; do
   check "docs: $rel claims no agent a mint does not land (#214)" 1 "" \
@@ -766,6 +785,48 @@ for rel in $DOC_PAGES; do
   check "docs: $rel calls no agent the box's (#214)" 1 "" \
     doc_calls_the_agent_the_box_s "$ROOT/$rel"
 done
+#
+# RULE 4 — A RUNNABLE CONVERGE PINS THE TREE, NOT JUST THE INSTALLER.
+#
+# §4 spells the canonical replacement as 'curl … rig/<ref>/install.sh |
+# RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash' and binds the README to teach it
+# verbatim. The recipe abbreviated it to '| bash' and the page three lines
+# below still called <ref> "a rig release you pin there" — which is the defect:
+# the <ref> in the URL pins WHICH COPY of install.sh executes, and that
+# installer reads REF="${RIG_REF:-}" and resolves an unset value through the
+# latest-release channel. So the abbreviated line downloads an old release's
+# installer and then installs whatever is newest, and the page's own pin claim
+# is false. An operator who pinned deliberately gets an unpinned box, silently.
+#
+# Rules 1-3 could not see it: it makes no claim about a mint, invokes no agent,
+# and owns no agent. It is a claim about the CONVERGE, which is the other half
+# of what this cut moved to the operator — so if box no longer converges, the
+# one thing box's docs still owe is a converge line that does what it says.
+#
+# Scoped to rig's installer BY REPO and not by exemption: box's own installer
+# (README.md:44 and :55-57) pins with BOX_REF and is a different contract, and
+# 'rig/' simply is not in its URL. bin/box joins the corpus here because
+# refuse_role prints this same command and is the surface an operator hits
+# without reading a page at all; changelog.d/214.md teaches it too but is
+# consumed at release, so guarding a file that legitimately disappears would
+# make this rule the silent-skip the corpus rule 0 exists to prevent.
+#
+# Read on the MATCH and not the line — N1's lesson from the round above, and
+# here it also does the wrapping: the canonical form wraps with a trailing '\'
+# in a page and with '\\" >&2' inside bin/box's echo, and folding the file to
+# one line makes both of those the same window instead of two special cases.
+PIN_PAGES="$DOC_PAGES bin/box"
+doc_curls_rig_without_the_pin() {  # <file>
+  tr '\n' ' ' < "$1" \
+    | grep -oE 'rig/[^ ]*install\.sh.{0,120}' \
+    | grep -qvE 'RIG_REPO=[^ ]+[ \t]+RIG_REF='
+}
+for rel in $PIN_PAGES; do
+  check "docs: $rel is in the pin corpus and exists to be read (#214)" 0 "" \
+    test -f "$ROOT/$rel"
+  check "docs: $rel pins the rig tree and not just the installer (#214)" 1 "" \
+    doc_curls_rig_without_the_pin "$ROOT/$rel"
+done
 # The negative control, and it is the real pre-cut docs/box-recipe.md rather
 # than a fixture — the same standard rounds 1 and 2 set for the strong form and
 # the corpus sweep. That file is untouched by this branch until this round, so
@@ -829,6 +890,36 @@ check "docs: ...and on 'includes'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
 printf 'A box ships a coding agent, and no credentials.\n' > "$DOCPROBE"
 check "docs: ...and the denial exemption does not launder a claim beside it" 0 "" \
   doc_sells_a_minted_agent "$DOCPROBE"
+# ...and the other direction, which is the one the pair above did NOT drive and
+# which was green at 8dcf19c: a denial of the SAME noun, placed after the claim
+# and inside the arm's reach, so leftmost-longest ran the match on to it and the
+# exemption dropped the claim with it. These two are the reason the match is
+# truncated at its first noun; both were live claims reported ok.
+printf 'The box ships an agent and no agent token.\n' > "$DOCPROBE"
+check "docs: ...and a trailing denial of the same noun does not launder it either" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'A minted box ships a coding agent; there is no agent token.\n' > "$DOCPROBE"
+check "docs: ...including across a semicolon, which is not a sentence end here" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# The subject alternation knows the noun this PR's own prose adopted. 'Seed' is
+# what README.md:265 calls what a mint lands, so a guard blind to the word is
+# blind to the page's own vocabulary -- and these three matched NOTHING, which
+# is a different failure from matching and being exempted.
+printf 'The tenant seed includes a coding agent.\n' > "$DOCPROBE"
+check "docs: rule 1 reds on 'seed', the noun the page itself uses (#214)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'The seed carries a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on 'the seed carries'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
+printf 'A fresh box is minted with a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on the passive 'is minted with'" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# ...and the boundary the widening had to keep: README.md:265's own sentence,
+# whose subject IS 'seed' and whose verb IS 'carries', and which is honest
+# because its object is a tenant user. Binding the object to the verb is what
+# keeps it green; if the arm ever drifts back to "noun near verb", this reds.
+printf 'The seed carries a tenant user, a fixed 1GiB /tmp, swap and chrony.\n' > "$DOCPROBE"
+check "docs: ...and passes the real 'seed carries' sentence, whose object is not an agent" 1 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
 # Rule 1's converge boundary is now anchored to the match, so a false claim
 # sharing a line with the documented converge no longer leaves with it — the
 # hole the old whole-line 'grep -v' had.
@@ -865,6 +956,43 @@ printf '%s\n' '```' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig
   'box new' 'box shell' 'claude' '```' > "$DOCPROBE"
 check "docs: ...and passes the same block with rig's installer in it" 1 "" \
   doc_flow_skips_the_converge "$DOCPROBE"
+# Rule 4, both ways. The red fixture is a FIXTURE and not the real pre-cut
+# page, and the reason is worth stating rather than hiding: no pre-cut tree
+# carries this defect. Pre-cut, box converged the box itself and its seed line
+# (templates/tenant/user-data.yaml:133 at the merge base) already piped through
+# RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" -- the repo has always taught the
+# pinned form, and the unpinned line was introduced by THIS branch's own prose
+# when the command moved from a seed box substitutes into a page an operator
+# copies. So the honest control is the line as it stood at 8dcf19c, reproduced
+# here byte for byte, and the rule's value is forward: it stops the next
+# abbreviation, which is what a round-5 finding on the same page earns.
+printf 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh | bash\n' \
+  > "$DOCPROBE"
+check "docs: rule 4 reds on a converge that pins the installer but not the tree (#214)" 0 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# Double-quoted with '\\' rather than single-quoted with a trailing '\': the
+# byte wanted is one literal backslash at end of line, and writing it inside
+# single quotes reads to shellcheck as a botched quote escape (SC1003).
+printf '%s\n' "curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \\" \
+  '  | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash' > "$DOCPROBE"
+check "docs: ...and passes the canonical form, wrapped as the README wraps it" 1 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# ...and bin/box's wrap, which is a backslash inside an echo's quotes and not a
+# shell continuation at all. Folding the file to one line is what makes these
+# the same case; a line-oriented rule would have to special-case it, and a rule
+# with a special case per surface is a rule that misses the next surface.
+printf '%s\n' '  echo "  curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \\" >&2' \
+  '  echo "    | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash" >&2' > "$DOCPROBE"
+check "docs: ...and passes bin/box's echo-wrapped copy of the same command" 1 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# ...and box's own installer is out by REPO. It pins with BOX_REF, it is a
+# different contract, and 'rig/' is not in its URL -- so the rule never sees it
+# and needs no exemption to say so. An exemption would be the thing that later
+# gets widened; a scope cannot be.
+printf '%s\n' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | bash' \
+  'curl -fsSL .../install.sh | BOX_REF=0.6.0 bash' > "$DOCPROBE"
+check "docs: ...and never fires on box's own installer, which pins with BOX_REF" 1 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
 rm -f "$DOCPROBE"
 
 # ---------------------------------------------------------------------------
