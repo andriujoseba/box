@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# box — trust-less, isolated Incus VMs with Claude Code, creds-free.
+# box — trust-less, isolated Incus VMs, creds-free.
 # The command surface is the CMDS table below: it is the single source of truth
 # for what exists, what it looks like, what the help says, and what runs. The
 # help cannot drift from the code, because it is rendered from the same rows.
@@ -225,7 +225,7 @@ unknown_command() {
 
 usage() {
   cat <<'EOF'
-box — trust-less, network-isolated Incus VMs with Claude Code, creds-free.
+box — trust-less, network-isolated Incus VMs, creds-free.
 
 USAGE
   box <command> [<args>] [options]
@@ -296,10 +296,12 @@ EXIT STATUS
   2  you asked wrong (unknown command, bad flag, destructive act without --force)
 
 THE MODEL
-  A box carries NO credentials. You authenticate interactively inside it
-  ('claude' then /login; 'gh auth login'); box never stores or injects a
-  secret. A box reaches the public internet and nothing else — there is no
-  inbound path. Destroying a box loses nothing you didn't push.
+  A box carries NO credentials — and a fresh box carries no tooling to hold
+  one either: the seed is thin. You converge what you want from inside
+  'box root <name>', then log that tooling in interactively from inside the
+  box; box never stores or injects a secret. A box reaches the public
+  internet and nothing else — there is no inbound path. Destroying a box
+  loses nothing you didn't push.
 
   box owns a command when it must enforce something Incus cannot see: the
   user.box=1 boundary, the isolation stack, or the creds-free snapshot

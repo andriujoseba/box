@@ -744,7 +744,8 @@ Every clause above is probed live by an end-to-end drill, because the one time
 this contract was reasoned about instead of measured, the reasoning was wrong:
 box→box traffic was "covered" by an L3 drop that L2-switched frames never
 meet — a hole found by probing, not by reading the rules. On a bare host the
-drill installs the whole stack, mints every template cold, snapshots and
+drill installs the whole stack, mints both templates cold — `tenant` and
+`staging-box`, which since #214 is the whole set — snapshots and
 clones, probes every boundary from inside the boxes, opens and shuts the
 `expose` door (and checks the contract survives it), re-homes a faithful
 pre-0.4.0 box through `migrate-host`, and removes what it minted —

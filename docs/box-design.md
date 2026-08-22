@@ -13,9 +13,10 @@ design decisions.
 - **The tool** mints isolated boxes carrying a thin seed and **nothing else** —
   no agent, and since #214 no converger either. It knows nothing about projects,
   secrets, recipes, or memory.
-- **The agent** (Claude Code, Codex, Grok — whichever template, inside the box)
-  reads an optional `.box/` runbook in a cloned repo and acts on it. The recipe's
-  consumer is the reasoning agent, not host machinery.
+- **The agent** — whatever the operator converged inside the box, never
+  something a template shipped — reads an optional `.box/` runbook in a cloned
+  repo and acts on it. The recipe's consumer is the reasoning agent, not host
+  machinery.
 
 ## Boxes are strictly creds-free
 

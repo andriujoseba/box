@@ -159,7 +159,7 @@ about the host in front of you, and whether it is a *failure* is what the
 
 Anything a converger puts on a box. Since #214 box installs no agent, so there
 is no agent CLI for the drill to find and no agent login to rehearse — both are
-downstream of a convergence box does not perform. What the drill asserts is the
+downstream of convergence that box does not perform. What the drill asserts is the
 seed's *own* payload (`tmux`, `shellcheck`), which is what box can still be held
 to. Converging a box, and authenticating what you converged, are yours.
 
