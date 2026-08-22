@@ -6,7 +6,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-remote=""; mode="auto"; name=""; from=""; template=""; role=""; size=""; user=""
+remote=""; mode="auto"; name=""; from=""; template=""; size=""; user=""
 force=0; json=0; want_help=0
 cpu=""; memory=""; disk=""; instance_only=0
 mint_template=""
@@ -25,6 +25,37 @@ usage_error() { echo "box: $*" >&2; echo "try 'box help'." >&2; exit 2; }  # 2 =
 # still name the release that made it long after that release is history.
 box_version() { cat "$root/VERSION" 2>/dev/null || echo unknown; }
 version() { echo "box $(box_version) ($root)"; }
+
+# --role is a HARD CUT (#214, the same shape #76 and #159 gave the retired
+# --template spellings), not an unrecognized flag. box provisions and manages
+# VMs and does not converge them, so the mint hook, the pin, the stamp and the
+# seed's installer are gone — and an operator who typed --role wanted a
+# converged box, which is still available, just not from box. So the refusal
+# hands over the whole replacement path instead of saying "unknown flag".
+#
+# box-strong-form-prose-begin
+# The ONE region of bin/box that names the converger, and it names it as
+# DOCUMENTATION, never as an act: nothing between these sentinels is run by
+# box — it is printed for an operator to run inside their own box. test/cli.sh's
+# strong-form guard strips exactly this region and asserts there is exactly one
+# of it, so widening the exception cannot happen quietly (#214).
+refuse_role() {
+  echo "box: --role is gone (#214). box provisions and manages VMs; it does not" >&2
+  echo "box: converge them. A tenant role is installed and run BY YOU, inside the box:" >&2
+  echo >&2
+  echo "  box new --name work --size medium" >&2
+  echo "  box root work" >&2
+  echo "  # then, inside the box, as root:" >&2
+  echo "  curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \\" >&2
+  echo "    | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash" >&2
+  echo "  rig bootstrap claude-box --user dev" >&2
+  echo >&2
+  echo "box: --size is not optional in that first line: a role never implied a size," >&2
+  echo "box: so omitting it gives 2/2/20 where an agent box used to get 4/8/60." >&2
+  echo "try 'box help new'." >&2
+  exit 2
+}
+# box-strong-form-prose-end
 
 # The SHAPE of the mint stamp, not the box version — an integer that changes
 # only when a key is removed or repurposed, never when one is added (a reader
@@ -101,7 +132,7 @@ box_tier() {
 # doesn't enforce a box invariant, it is incus's job, not ours — that is
 # what `box incus` is for.
 CMDS=(
-  "new^--name <box> [--role <role>] [--size small|medium|large] [--user <user>] [--from <src>[/<snap>]] [--cpu <n>] [--memory <size>] [--disk <size>] [--vm|--container]^^Mint a box for an optional tenant role, or --from an existing box/snapshot^fn:cmd_new^"
+  "new^--name <box> [--size small|medium|large] [--user <user>] [--from <src>[/<snap>]] [--cpu <n>] [--memory <size>] [--disk <size>] [--vm|--container]^^Mint a blank box, or --from an existing box/snapshot^fn:cmd_new^"
   "templates^^^List the templates this install can mint^fn:cmd_templates^"
   "list^[--json]^^List your boxes^fn:cmd_list^"
   "info^<box> [--json]^box^One box: state, type, IP, what minted it, snapshot labels^fn:cmd_info^"
@@ -201,9 +232,8 @@ EOF
 
 OPTIONS
   --name <box>          Name for the new box                  (new, import)
-  --role <role>         Creds-free rig tenant role to converge        (new)
   --size <size>         Named resource bundle: small, medium, large   (new)
-  --user <user>         Tenant user override (requires --role)        (new)
+  --user <user>         Tenant user override (default: dev)           (new)
   --template <t>        Dedicated non-agent template                  (new)
   --from <src>[/<snap>] Clone from box <src>, or from its snapshot    (new)
   --vm                  Force VM mode: the trust-less target          (new)
@@ -221,9 +251,9 @@ OPTIONS
   Options come after the command: 'box list --json', not 'box --json list'.
 
 EXAMPLES
-  # mint a Claude box and log in inside it — the tool never handles your token
-  box new --name work --role claude-box --size medium
-  box shell work                    # then: run 'claude', then /login
+  # mint a box — every box is blank; what it becomes is yours to install
+  box new --name work --size medium
+  box shell work
 
   # operator access uses the host's existing Incus authorization, not guest sudo
   box root work
@@ -281,39 +311,32 @@ help_cmd() {
   echo
   case "$1" in
     new) cat <<'EOF'
-Mint a box. Without --from, launches a fresh small blank box by default, or
-renders one generic tenant seed for --role and lets rig converge that role
-creds-free (~10 min cold). With --from, clones an existing box or
+Mint a box. Without --from, launches a fresh small BLANK box: the unprivileged
+tenant user, a thin toolchain, and nobody home. Box provisions and manages the
+VM; it does not converge it, so what the box becomes is installed inside it, by
+you, after it is up. With --from, clones an existing box or
 one of its snapshots — login state, git creds and clones carry over,
 isolation is preserved, and the clone knows its template's user without
 being told.
 
---role is runtime data, not a box template (#159). Box derives its user by
-stripping a trailing '-box' (overridable with --user), renders the single
-generic unprivileged tenant seed, then auto-runs `rig bootstrap <role> --user
-<user>` after cloud-init. The role installs the agent CLI and agent-context
-file. Box never validates rig's registry: an unknown role fails loudly during
-convergence and the incomplete box is left inspectable with `box rm` printed
-as its cleanup. rig is preinstalled
-from RIG_REPO/RIG_REF in the mint environment — default heavy-duty/rig at
-its LATEST RELEASE, resolved at mint (#150); RIG_REF=<tag> pins another and
-RIG_REF=main tracks the development tip. Anything that joins a tailnet or
-holds a key stays operator-run, never auto-run.
+Every mint is the same shape (#214). There is no role axis and no convergence
+hook: box mints, hands you a box, and stops. To make one into a tenant, open a
+root shell inside it and run the converger there — 'box root <box>' is a login
+shell authorized by the host's Incus socket (#176), so it needs no sudoers
+entry in the guest and no analogue of a HOME workaround. The README carries
+the four-step path verbatim.
 
   --name <box>           Required. The box's name.
-  --role <role>          Optional creds-free rig tenant role. Unknown roles
-                         are deliberately left for rig to refuse at converge.
-  --user <user>          Override the role-derived tenant user; forwarded to
-                         both cloud-init and `rig bootstrap`. Requires --role.
+  --user <user>          The tenant user cloud-init creates, and the one
+                         'box shell' lands in. Default: dev.
   --size <size>          small, medium, or large. Default: small.
   --template <t>         Dedicated non-agent seed; 'box templates' lists it.
-                         Agent and blank spellings are hard-cut to --role or
-                         the argumentless default. A template sets boot
+                         Agent and blank spellings are hard-cut to the
+                         argumentless default. A template sets boot
                          demands (independently: BOX_REQUIRE_VM insists on
                          VM mode, BOX_NO_CONTAINER_FALLBACK insists that any
                          container mode be explicit, BOX_AUTOSTART survives
-                         host reboots) and
-                         a creds-free tenant role (BOX_BOOTSTRAP_ROLE) —
+                         host reboots) —
                          never the network: every template gets the same
                          isolation.
   --from <src>[/<snap>]  Clone src's live state, or its snapshot <snap>.
@@ -340,7 +363,7 @@ a network or a security key, on purpose.
   medium      4     8GiB   60GiB
   large       8    16GiB  120GiB
 
-The argumentless and --role paths default to small. The dedicated
+The default mint path defaults to small. The dedicated
 staging-box seed keeps its existing medium resources when --size is omitted.
 
 Named sizes select fresh-mint bundles. A --from clone instead accepts the
@@ -373,12 +396,12 @@ BOX_LAUNCH_TIMEOUT=<seconds> (default 600) bounds the 'incus launch' call —
 a launch that overruns it fails loudly instead of hanging forever (#93).
 
 Every fresh mint marks a snapshot called 'pristine' (#104) at the one moment
-it is true: after cloud-init, before rig converges anything. That is the
+it is true: after cloud-init, before anything converges it. That is the
 guest as pristine Debian plus box's thin seed, and it is what
 
   box restore <box> pristine
 
-rolls back to — undoing the tenant role and everything done since, without
+rolls back to — undoing everything done to the box since, without
 paying a re-mint. It is an UNDO, not a backup: 'box rm' deletes a box and
 every snapshot it has, so 'box export' remains the only state that outlives
 the box. A --from clone takes no 'pristine' of its own — it has no pristine
@@ -388,30 +411,29 @@ full copy rather than a CoW mark, the mint skips it and says so.
 BOX_SNAPSHOT_PRISTINE=0 skips it anywhere.
 
   box new --name scratch                     # small blank, the default
-  box new --name work --role claude-box --size medium
-  box new --name lean --role claude-box --cpu 2 --memory 3GiB
+  box new --name work --size medium
+  box new --name lean --cpu 2 --memory 3GiB
+  box new --name ada --user ada              # a tenant user other than 'dev'
   box new --name feature --from work/authed
 EOF
 ;;
     templates) cat <<'EOF'
 List the dedicated templates this install can mint, with their descriptions.
-Runtime tenant roles are not listed here: rig/rig-templates is their registry,
-and `box new --role <role>` renders box's internal generic tenant seed (#159).
-A dedicated template is a directory under templates/: a box.env (image, user, resources, boot
-demands, tenant role — parsed against an allowlist, never sourced) and a
-user-data.yaml (cloud-init, passed to Incus verbatim except the rig pin
-tokens @RIG_REPO@/@RIG_REF@, resolved at mint from the environment — the
-ref defaulting to rig's latest release, #150).
+There is no tenant-role axis to list (#214): every ordinary mint renders box's
+one internal tenant seed, and what a box becomes is installed inside it.
+A dedicated template is a directory under templates/: a box.env (image, user,
+resources, boot demands — parsed against an allowlist, never sourced) and a
+user-data.yaml, passed to Incus verbatim.
 Templates cannot touch the network or security flags — the shared box-net
 profile is the placement contract, so every template gets the same isolation.
 
-The argumentless mint is the blank seed. Its retired `--template blank`
-spelling refuses and teaches that form; retired agent template spellings teach
-`--role <agent-box>`.
+The argumentless mint is that tenant seed. Its retired `--template blank`
+spelling refuses and teaches that form; retired agent template spellings do
+the same.
 
   box templates
   box new --name scratch
-  box new --name work --role claude-box --size medium
+  box new --name work --size medium
 EOF
 ;;
     list) cat <<'EOF'
@@ -516,7 +538,7 @@ have.
   box snapshot work authed
 
 One label is taken for you (see 'box help restore'): every fresh mint marks
-'pristine' after cloud-init and before rig's tenant role runs (#104).
+'pristine' after cloud-init and before anything converges the box (#104).
 
 Snapshots do not outlive their box: 'box rm' deletes a box and every
 snapshot it has. They are an undo, not a backup — 'box export' is the
@@ -532,15 +554,15 @@ that snapshot is lost. 'box info <box>' lists the labels.
   box restore work pristine
 
 'pristine' is the one label box takes for you (#104): every fresh mint marks
-it after cloud-init and before rig converges the tenant role, so it is the
+it after cloud-init and before anything converges the box, so it is the
 guest as pristine Debian plus box's thin seed. Restoring it is the answer to
-"I broke this box" for every tenant role — everything 'rig bootstrap
-<tenant>' does is box-local and file-shaped, so a filesystem rollback undoes
-all of it, without a ~10-minute re-mint.
+"I broke this box" — a convergence run inside the box is box-local and
+file-shaped, so a filesystem rollback undoes all of it, without paying a
+re-mint.
 
 What it does NOT undo is anything that left the box: a tailnet join, a
 GitHub runner registration, a pushed commit. Those are off-box records a
-filesystem rollback cannot reach (heavy-duty/rig#62). And 'pristine' is not
+filesystem rollback cannot reach. And 'pristine' is not
 a backup — it dies with the box on 'box rm'; 'box export' is what survives.
 
 A box minted with --from has no 'pristine' of its own unless it inherited
@@ -687,7 +709,7 @@ The in-box server must listen on 0.0.0.0:<port>, not only its own loopback —
 a VM's forwarder connects to the box over the network. Inside an isolated box
 that is safe: nothing but this proxy can reach the port.
 
-  box new --name web --role claude-box --size medium
+  box new --name web --size medium
   box shell web        # inside: run a dev server on 0.0.0.0:3000
   box expose web 3000  # then open http://127.0.0.1:3000 in your browser
 EOF
@@ -971,7 +993,7 @@ while [ $# -gt 0 ]; do
     --name) [ $# -ge 2 ] || usage_error "--name needs a value"; name="$2"; shift 2 ;;
     --from) [ $# -ge 2 ] || usage_error "--from needs a value"; from="$2"; shift 2 ;;
     --template) [ $# -ge 2 ] || usage_error "--template needs a value"; template="$2"; shift 2 ;;
-    --role) [ $# -ge 2 ] || usage_error "--role needs a value"; role="$2"; shift 2 ;;
+    --role) refuse_role ;;
     --size) [ $# -ge 2 ] || usage_error "--size needs a value"; size="$2"; shift 2 ;;
     --user) [ $# -ge 2 ] || usage_error "--user needs a value"; user="$2"; shift 2 ;;
     --cpu) [ $# -ge 2 ] || usage_error "--cpu needs a value"; cpu="$2"; shift 2 ;;
@@ -1345,7 +1367,7 @@ reset_identity() {
   wait_agent "$i"
 }
 
-# Templates set image, user, resources, boot demands, a tenant role and
+# Templates set image, user, resources, boot demands and
 # cloud-init — NOTHING else. The box.env file is parsed against this allowlist,
 # never sourced: sourcing would hand every template arbitrary bash execution on
 # the HOST at mint time. And there is deliberately no key for a network or a
@@ -1357,16 +1379,16 @@ reset_identity() {
 # automatic fallback while preserving an explicit weaker-isolation override
 # (#175); and BOX_AUTOSTART=1 stamps boot.autostart so the box survives a host
 # reboot without an operator.
-# BOX_BOOTSTRAP_ROLE (#81) names the rig role box auto-runs after mint — the
-# thin-template split: the seed is user + tmux + rig, and what the box BECOMES
-# is 'rig bootstrap <role>'. Only creds-free roles belong here, by contract.
+# There is no convergence key. BOX_BOOTSTRAP_ROLE (#81) named a role box
+# auto-ran after mint; #214 cut the hook it fed, so a box.env carrying that
+# key now fails the allowlist by name — loudly, which is the point.
 load_template() {
   local t="$1" dir line key val size_cpu="" size_memory="" size_disk=""
   dir="$root/templates/$t"
   [ -d "$dir" ] || die "no such template: $t (see 'box templates')"
   [ -f "$dir/box.env" ] || die "template '$t' has no box.env"
   T_DESC=""; T_IMAGE=""; T_USER=""; T_CPU=""; T_MEMORY=""; T_DISK=""
-  T_REQUIRE_VM=""; T_NO_CONTAINER_FALLBACK=""; T_AUTOSTART=""; T_BOOTSTRAP_ROLE=""
+  T_REQUIRE_VM=""; T_NO_CONTAINER_FALLBACK=""; T_AUTOSTART=""
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|\#*) continue ;; esac
     case "$line" in
@@ -1391,8 +1413,7 @@ load_template() {
       BOX_REQUIRE_VM)  T_REQUIRE_VM="$val" ;;
       BOX_NO_CONTAINER_FALLBACK) T_NO_CONTAINER_FALLBACK="$val" ;;
       BOX_AUTOSTART)   T_AUTOSTART="$val" ;;
-      BOX_BOOTSTRAP_ROLE) T_BOOTSTRAP_ROLE="$val" ;;
-      *) die "template '$t': unknown key '$key' — a template sets image, user, resources, boot demands and a tenant role, nothing else (there is no key for a network, on purpose)" ;;
+      *) die "template '$t': unknown key '$key' — a template sets image, user, resources and boot demands, nothing else (there is no key for a network, and none for convergence, on purpose)" ;;
     esac
   done <"$dir/box.env"
   # Not 'A && B || die': if T_IMAGE is set but T_USER is not, that idiom still
@@ -1400,12 +1421,6 @@ load_template() {
   # spell the guard out (SC2015).
   if [ -z "$T_IMAGE" ] || [ -z "$T_USER" ]; then
     die "template '$t': BOX_IMAGE and BOX_USER are required"
-  fi
-  # A bootstrap role is a rig role NAME and nothing more — it is handed to
-  # 'incus exec … rig bootstrap <role>' at mint, so anything shell-shaped in
-  # the value must die here, on the host, before a guest ever sees it.
-  if [ -n "$T_BOOTSTRAP_ROLE" ] && ! [[ "$T_BOOTSTRAP_ROLE" =~ ^[a-z][a-z0-9-]*$ ]]; then
-    die "template '$t': BOX_BOOTSTRAP_ROLE is not a sane role name: $T_BOOTSTRAP_ROLE"
   fi
   # One public size table (#159). --size takes the old template-resource rung:
   # explicit resource flag > BOX_* environment > named size > template value
@@ -1426,115 +1441,32 @@ load_template() {
 }
 
 # The ONE substitution a template gets — user-data.yaml is otherwise passed to
-# Incus verbatim. The tenant seeds preinstall rig, which inverts the rig→box
-# install edge (rig#28: rig installs box on hosts; now box guests install rig),
-# and that edge needs a pin point (#81): the seed carries @RIG_REPO@ /
-# @RIG_REF@ tokens, resolved here from the mint environment — RIG_REPO
-# (default heavy-duty/rig) and RIG_REF (default: rig's LATEST RELEASE, #150).
-# The values are allowlist-validated BEFORE touching the YAML: they land
-# inside a runcmd shell line, so a quote, a space or a newline smuggled
-# through the environment must die on the host, never execute in the guest.
-# bash's =~ anchors to the whole string — a multi-line value cannot sneak one
-# clean line past it the way a line-oriented grep would.
-# The rig pin, resolved from the mint environment, in ONE place: render_userdata
-# substitutes it into the seed, and the mint stamp (#103) records it onto the
-# instance. Two spellings of the same default would eventually disagree, and a
-# stamp that disagrees with the seed is worse than no stamp at all.
-rig_repo() { printf '%s\n' "${RIG_REPO:-heavy-duty/rig}"; }
-
-# rig's latest release, resolved the no-API way — the same probe install.sh
-# uses for box's own default channel (#83), taking the repo as an argument
-# rather than off a global, and time-boxed because a mint must not hang on a
-# HEAD request: GitHub answers
-# https://github.com/<repo>/releases/latest with a redirect to
-# .../releases/tag/<tag>, so one HEAD request reads the tag off the Location
-# header. No API, no token, no rate-limit pain. Prints the bare tag; fails
-# where the redirect does not answer or does not name a tag (a repo with no
-# releases redirects to /releases), so the caller can refuse LOUDLY instead of
-# silently minting against main.
-rig_latest_release() {   # <repo> → the tag, or non-zero
-  local repo="$1" loc
-  command -v curl >/dev/null 2>&1 || return 1
-  loc="$(curl -fsSI -m 20 -o /dev/null -w '%{redirect_url}' \
-           "https://github.com/$repo/releases/latest")" || return 1
-  case "$loc" in
-    */releases/tag/?*) printf '%s\n' "${loc##*/releases/tag/}" ;;
-    *) return 1 ;;
-  esac
-}
-
-# RIG_REF unset means THE LATEST RELEASED RIG, not main (#150). A released box
-# whose seeds converge against rig's development tip ships a combination
-# nobody drilled: the drill proves box@X against rig@Y on real hardware, and
-# an unpinned default hands the user box@X against whatever rig's main became
-# in the week since. That is a hole no amount of drilling closes.
-#
-# Resolved rather than written down, which is the choice #150 left to the
-# build. A literal pin in the tree — a constant here, a token in the seeds —
-# has to be rewritten every ceremony, and the release that forgets rots it
-# silently into a lie; this default cannot go stale, and it is the same shape
-# install.sh already gives box's own channels (unset = latest release,
-# <tag> = pinned, main = the development tip), so the two edges of the box↔rig
-# recursion now read the same way.
-#
-# Resolved ONCE per mint, and in the PARENT shell (see cmd_new), for two
-# reasons that are both scars. Two readers ask for the pin — the seed render
-# and the mint stamp (#103) — and a probe per reader could straddle a rig
-# release and stamp a ref the seed did not install. And both readers run
-# inside command substitutions, where a die() exits the subshell and the
-# parent carries on with an empty string: a failure to resolve must end the
-# mint, not silently seed one.
-rig_pin_resolve() {
-  [ -n "${RIG_REF:-}" ] && return 0
-  local repo; repo="$(rig_repo)"
-  RIG_REF="$(rig_latest_release "$repo")" || die "could not resolve rig's latest release (no release tag behind https://github.com/$repo/releases/latest). Check the network, and that $repo has releases — or pick the ref yourself: RIG_REF=<tag> pins a release, RIG_REF=main converges against the development tip."
-  return 0
-}
-rig_ref() { rig_pin_resolve; printf '%s\n' "$RIG_REF"; }
-
+# Incus verbatim. @BOX_USER@ is the whole of it since #214: the seed carried
+# @RIG_REPO@/@RIG_REF@ pin tokens while box installed the converger for you
+# (#81, #150), and with that installer out of the seed there is nothing left to
+# pin. Box does not read RIG_REPO or RIG_REF from the environment at all now —
+# no substitution, no validation, no warning: they are somebody else's names,
+# and box has no standing to comment on them. That also makes a mint OFFLINE
+# again, which the pin probe's HEAD request had quietly taken away.
 render_userdata() {
-  local f="$1" repo data ref package_update
-  # The generic seed has one conditional axis (#159): a runtime role selects
-  # the agent-class blocks; an argumentless mint selects the blank blocks.
-  # Exact comment sentinels keep the source valid YAML and are stripped from
-  # what reaches cloud-init. Source commentary is stripped too, except for the
-  # content-type header: Incus stores user.user-data in its global database,
-  # and the generic source's role-only explanation made the blank payload over
-  # twice its old size. Ubuntu's Incus 6.0.0 then hit cowsql's obsolete
-  # SQLITE_DIRECT_OVERFLOW_READ assertion while stopping the third mint on
-  # PR #209. Comments belong in this source; dead bytes do not belong in every
-  # instance's database row. Seed files therefore may not carry a #-leading
-  # content line inside a YAML block scalar: awk cannot distinguish that
-  # payload from source commentary. Teach this renderer YAML context before
-  # adding one. There is still one file and one renderer.
-  data="$(awk -v role="${T_BOOTSTRAP_ROLE:+1}" '
-    BEGIN { keep = 1 }
-    /^# box-role-only-begin$/  { keep = role; next }
-    /^# box-role-only-end$/    { keep = 1; next }
-    /^# box-blank-only-begin$/ { keep = !role; next }
-    /^# box-blank-only-end$/   { keep = 1; next }
-    keep && (NR == 1 || $0 !~ /^[[:space:]]*#/) { print }
+  local f="$1" data
+  # Source commentary is stripped, except for the content-type header: Incus
+  # stores user.user-data in its global database, and #209's role-only
+  # explanation made the payload over twice its old size. Ubuntu's Incus 6.0.0
+  # then hit cowsql's obsolete SQLITE_DIRECT_OVERFLOW_READ assertion while
+  # stopping the third mint on PR #209. Comments belong in this source; dead
+  # bytes do not belong in every instance's database row. Seed files therefore
+  # may not carry a #-leading content line inside a YAML block scalar: awk
+  # cannot distinguish that payload from source commentary. Teach this renderer
+  # YAML context before adding one.
+  #
+  # The role/blank sentinel arms went with the role axis (#214): the seed
+  # collapses to ONE shape — the agent-class one — so there is no conditional
+  # left to evaluate and nothing selects between two payloads.
+  data="$(awk '
+    NR == 1 || $0 !~ /^[[:space:]]*#/ { print }
   ' "$f")"
   data="${data//@BOX_USER@/${T_USER:-}}"
-  if [ -n "${T_BOOTSTRAP_ROLE:-}" ]; then package_update=true; else package_update=false; fi
-  data="${data//\"@BOX_PACKAGE_UPDATE@\"/$package_update}"
-  repo="$(rig_repo)"
-  [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
-    || die "RIG_REPO must look like owner/repo: $repo"
-  # A seed carrying no pin token wants no pin — and must want no NETWORK
-  # either (#150). The generic seed now carries rig in both its blank and role
-  # shapes (#159); this guard remains for any dedicated tokenless seed.
-  case "$data" in
-    *@RIG_REPO@*|*@RIG_REF@*) ;;
-    *) printf '%s\n' "$data"; return 0 ;;
-  esac
-  # The resolved tag is untrusted input too — it arrives off an HTTP redirect
-  # header — so it passes the same allowlist an operator's RIG_REF does.
-  ref="$(rig_ref)"
-  [[ "$ref" =~ ^[A-Za-z0-9._/-]+$ ]] \
-    || die "RIG_REF must be a plain ref name (letters, digits, . _ / -): $ref"
-  data="${data//@RIG_REPO@/$repo}"
-  data="${data//@RIG_REF@/$ref}"
   printf '%s\n' "$data"
 }
 
@@ -1548,8 +1480,8 @@ cmd_templates() {
     printf '  %-10s %s\n' "$t" "$desc"
   done
   echo
-  echo "runtime role:  box new --name <box> --role <role> [--size <size>]"
-  echo "dedicated seed: box new --name <box> --template <template>"
+  echo "the default mint: box new --name <box> [--size <size>]"
+  echo "dedicated seed:  box new --name <box> --template <template>"
 }
 
 # When this instance came into being. A timestamp in a CONVERGENT file would be
@@ -1684,7 +1616,7 @@ mark_taken() { case " $marks " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # BOX_LAUNCH_TIMEOUT shape — an environment knob, not another flag on 'new'.
 snapshot_pristine() {
   snapshot_mark "$1" "$2" pristine "${BOX_SNAPSHOT_PRISTINE:-1}" \
-    "the guest after cloud-init, before rig converges anything."
+    "the guest after cloud-init, before anything converges it."
 }
 
 # Whether what is about to be copied carries a LOCAL root device — the one
@@ -1896,7 +1828,7 @@ narrate_resources() {   # narrate_resources <instance> <box-name>
 }
 
 # Resolve the public fresh-mint arguments to one internal seed. Kept before the
-# stack preflight so retired spellings and malformed role/user input are usage
+# stack preflight so retired spellings and malformed user input are usage
 # errors on every machine, including one with no Incus client (#159).
 resolve_fresh_intent() {
   mint_template=""
@@ -1904,28 +1836,25 @@ resolve_fresh_intent() {
   if [ -n "$template" ]; then
     case "$template" in
       tenant)
-        usage_error "--template tenant is box's internal generic seed — omit --template for a blank box, or use --role <role>" ;;
+        usage_error "--template tenant is box's internal seed — omit --template, that IS the default mint" ;;
       blank)
         usage_error "--template blank is retired — omit --template for a blank box" ;;
       claude-box|codex-box|grok-box|kimi-box)
-        usage_error "--template $template is retired — use --role $template --size medium" ;;
+        usage_error "--template $template is retired — every box is blank now: 'box new --name <box> --size medium', then converge it yourself inside 'box root <box>'" ;;
     esac
-    [ -z "$role" ] || usage_error "--template and --role choose different mint paths; use one"
-    [ -z "$user" ] || usage_error "--user customizes a runtime --role, not a template"
+    # A dedicated seed carries its own user, declared in its box.env and
+    # created by its own cloud-init. --user has nothing to override there
+    # (#159 review round 1): assigning it would break the declared contract on
+    # one side and leave the seed's own 'users:' block untouched on the other.
+    [ -z "$user" ] || usage_error "--user customizes the default mint, not a dedicated template — '$template' declares its own user"
     mint_template="$template"
     return
   fi
-  if [ -n "$role" ]; then
-    [[ "$role" =~ ^[a-z][a-z0-9-]*$ ]] \
-      || usage_error "--role must be a plain rig role name (lowercase letters, digits and hyphens): $role"
-    if [ -z "$user" ]; then user="${role%-box}"; fi
-    [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] \
-      || usage_error "--user must be a plain Linux user name (lowercase letters, digits, _ and -): $user"
-    mint_template=tenant
-    return
-  fi
-  [ -z "$user" ] || usage_error "--user requires --role"
-  user=dev
+  # --user survives the role cut (#214 D2): the tenant user was never the
+  # role's to derive, and 'dev' is the seed's default with or without one.
+  user="${user:-dev}"
+  [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] \
+    || usage_error "--user must be a plain Linux user name (lowercase letters, digits, _ and -): $user"
   mint_template=tenant
 }
 
@@ -1934,7 +1863,6 @@ cmd_new() {
   refuse_fleet_word "$name"
   if [ -n "$from" ]; then
     [ -z "$template" ] || usage_error "--from clones an existing box; its template rides along (drop --template)"
-    [ -z "$role" ] || usage_error "--from clones an existing box; its tenant role rides along (drop --role)"
     [ -z "$size" ] || usage_error "--from takes explicit --cpu/--memory/--disk overrides, not --size"
     [ -z "$user" ] || usage_error "--from clones an existing box; its user rides along (drop --user)"
   else
@@ -2022,8 +1950,8 @@ cmd_new() {
     #     drawn the inherited one is UNSET rather than kept, the same call
     #     mode.asked makes below — a false identity is worse than none.
     # Deliberately NOT re-stamped, because they are lineage and stay true: the
-    # clone's disk really did come from that image, that template, that user and
-    # that rig role — reading them off the source is the whole point of a clone.
+    # clone's disk really did come from that image, that template and that user
+    # — reading them off the source is the whole point of a clone.
     # ('incus copy' preserves the instance type too, so mode stays true as well.)
     #
     # 'mode.asked' is the one key that sits in NEITHER column, and so it is
@@ -2066,8 +1994,8 @@ cmd_new() {
     wait_agent "$instance"
     reset_identity "$instance"
     echo "box: cloned $srcref — isolation and auth state carry over from the source."
-    # A clone gets NO 'pristine' of its own (#104). It skips cloud-init and
-    # the rig hook entirely, so the pristine MOMENT never happens here —
+    # A clone gets NO 'pristine' of its own (#104). It skips cloud-init
+    # entirely, so the pristine MOMENT never happens here —
     # anything box marked at clone time would be "whatever the source was",
     # converged and worked-in, wearing a label that promises pristine Debian.
     # That is worse than no mark at all, so the mint-path snapshot lives
@@ -2096,13 +2024,12 @@ cmd_new() {
   else
     local t="$mint_template" m extra=()
     load_template "$t"
-    # Runtime intent belongs only to the generic seed. A dedicated template
-    # carries its own user and convergence role; assigning the empty public
-    # --user/--role values here erased staging-box's ops/staging-box contract
-    # after load_template had read it (#159 review round 1).
+    # Runtime intent belongs only to the internal tenant seed. A dedicated
+    # template carries its own user; assigning the public --user value here
+    # erased staging-box's 'ops' contract after load_template had read it
+    # (#159 review round 1).
     if [ "$t" = tenant ]; then
       T_USER="$user"
-      T_BOOTSTRAP_ROLE="$role"
     fi
     m="$(pick_mode)"
     # A server-class template (BOX_REQUIRE_VM, #68) has no weaker mode: the VM
@@ -2142,7 +2069,7 @@ cmd_new() {
     # There is no host-side per-box store — the Incus instance config IS the
     # database — so a fact not written here is simply gone the moment the mint
     # returns. The stamp describes the MINT, not the outcome: it lands before
-    # cloud-init and before rig, and nothing later edits it.
+    # cloud-init, and nothing later edits it.
     #
     #   schema   the stamp's shape, so a future reader knows what it is holding
     #   id       WHICH box this is (#181) — the one fact the name cannot carry,
@@ -2156,9 +2083,6 @@ cmd_new() {
     #   mode     what it minted as, and what was ASKED — a container that fell
     #            back for want of /dev/kvm and one the operator asked for read
     #            identically afterwards, and only the mint knew which
-    #   role      the rig role box auto-runs at the hook below
-    #   rig.*     WHICH rig the seed installed, stamped only for a seed that
-    #            actually carries the pin (the generic blank does since #159)
     #   created   when. See mint_time() for why a timestamp belongs here.
     #   origin    mint. A clone re-stamps it (see the --from branch above).
     #
@@ -2185,19 +2109,6 @@ cmd_new() {
     local bid; bid="$(box_id || true)"
     if [ -n "$bid" ]; then stamp+=(--config user.box.id="$bid")
     else echo "box: note — no host UUID source, so this box gets no stable id (#181)" >&2
-    fi
-    [ -z "$T_BOOTSTRAP_ROLE" ] || stamp+=(--config user.box.role="$T_BOOTSTRAP_ROLE")
-    if grep -q '@RIG_REPO@' "$root/templates/$t/user-data.yaml" 2>/dev/null; then
-      # Resolve the pin HERE, in the parent shell, before either reader asks
-      # for it (#150). Both readers below sit in command substitutions: a
-      # resolve inside one is discarded with its subshell — so the next reader
-      # probes again, and two probes straddling a rig release stamp a ref the
-      # seed did not install — and a die() inside one is a subshell exit the
-      # launch line would carry on past with an empty seed. With RIG_REF set
-      # or already resolved this is a no-op, so the cost is one HEAD request
-      # per mint, and only for a seed that actually installs rig.
-      rig_pin_resolve
-      stamp+=(--config user.box.rig.repo="$(rig_repo)" --config user.box.rig.ref="$(rig_ref)")
     fi
     #
     # The launch is narrated and TIME-BOXED (#93). Twice in the 2026-07-19
@@ -2306,54 +2217,19 @@ cmd_new() {
       echo "  not serving, a VPN resolver the box inherits). Diagnose it:  box doctor" >&2
       die "cloud-init failed — the box is incomplete, so refusing to hand it over"
     fi
-    # The pristine mark (#104, child of rig#62). RIGHT HERE — cloud-init has
-    # finished and rig has not started — the guest is pristine Debian plus
-    # box's seed, and nothing else. That state exists for a few seconds on
-    # every mint and has never been captured; rig#62's "back to pristine
-    # Debian" is exactly this state, so take it while it is true.
+    # The pristine mark (#104). RIGHT HERE — cloud-init has finished and
+    # nothing has converged the guest — it is pristine Debian plus box's seed,
+    # and nothing else. That state exists for a few seconds on every mint and
+    # has never been captured, so take it while it is true.
     #
-    # Unconditional within a fresh mint, not gated on T_BOOTSTRAP_ROLE: a
-    # blank box has no rig hook but it does have the same pristine moment,
-    # and 'box restore <box> pristine' should mean one thing on every box.
+    # Unconditional within a fresh mint, and always was: 'box restore <box>
+    # pristine' means one thing on every box. What changed with #214 is only
+    # what comes AFTER the mark — nothing does, because box hands the box over
+    # here and the convergence is the operator's, run inside it.
     #
     # NEVER fatal. This is an undo, not the mint's product — a mint that
     # worked must not be failed by a checkpoint that didn't.
     snapshot_pristine "$instance" "$name"
-    # The tenant convergence (#81): the seed above is thin — the user, tmux,
-    # rig — and what the box BECOMES is rig's job. A template that names a
-    # bootstrap role gets it auto-run here, as root inside the guest, because
-    # the tenant roles are creds-free and non-interactive BY CONTRACT
-    # (rig#31): no prompts, no tailnet, no keys — nothing that joins or
-    # admits may ever ride this hook. The creds-holding steps (staging's
-    # workload join) stay operator-run through 'box shell', and the role is
-    # idempotent, so a failed or interrupted run is re-runnable as-is.
-    if [ -n "$T_BOOTSTRAP_ROLE" ]; then
-      echo "box: converging the tenant — rig bootstrap $T_BOOTSTRAP_ROLE (rig's own narration follows)..."
-      if ! incus exec "$instance" -- rig bootstrap "$T_BOOTSTRAP_ROLE" --user "$T_USER" </dev/null; then
-        echo >&2
-        echo "box: rig bootstrap $T_BOOTSTRAP_ROLE FAILED in $name." >&2
-        echo "box: the box is up and the seed is intact — the role converges, so re-run it:" >&2
-        # The ROOT path, not 'box shell' + sudo: since #177 the agent seeds
-        # create an unprivileged tenant, so the old hint died with "claude is
-        # not in the sudoers file" on exactly the boxes it was printed for.
-        # 'box root' authorizes through the host's Incus socket and needs no
-        # sudoers entry in the guest (#176), so it is correct for every
-        # template — the two that kept sudo included.
-        echo "  box root $name    # then: rig bootstrap $T_BOOTSTRAP_ROLE --user $T_USER" >&2
-        echo "  box rm $name      # remove the incomplete mint instead" >&2
-        # Only offer the rollback that EXISTS. Three mints reach this line
-        # with no pristine mark, all by this stack's own design: a 'dir' pool
-        # (skipped), BOX_SNAPSHOT_PRISTINE=0, and a refused create (warned,
-        # mint continued). On a 'dir' host that is EVERY hook failure, and an
-        # operator standing at the one moment this message exists for would
-        # copy-paste a restore that errors. Offering a mark the disk does not
-        # have would send the operator toward another error.
-        if mark_taken pristine; then
-          echo "box: 'box restore $name pristine' is still there if you would rather start the role over." >&2
-        fi
-        die "the tenant role did not converge — the box is incomplete, so refusing to call it ready"
-      fi
-    fi
   fi
   # The sizing, said out loud on BOTH paths (#171 D6). It sits after the 'fi'
   # rather than once in each branch on purpose: the parity is then structural
@@ -2372,27 +2248,28 @@ cmd_new() {
   # it knows the profile it WANTED and not what the source carries — only box,
   # here, knows that).
   narrate_resources "$instance" "$name"
-  # The Claude login hint follows either the runtime role or a legacy template
-  # stamp. Read EFFECTIVE metadata so clones keep it and blank boxes are not
-  # told to run a binary they do not have (#159).
+  # The Claude login hint follows a LEGACY template stamp and nothing else
+  # (#159, #214). It is read off the INSTANCE, not off this invocation's
+  # arguments: no mint box performs now lands a box with claude in it, so the
+  # only boxes this fires for are clones of ones minted before #159, whose
+  # user.box.template says so forever. Both spellings match because every box
+  # minted before rig#76's rename carries the bare name and a clone carries it
+  # forward — the same reason user.claudebox is honored everywhere else.
   #
-  # Both spellings match, and that is not an alias for the ROLE. The role
-  # names are a hard cut (rig#76) — 'rig bootstrap claude' is gone, so the
-  # seeds ask for 'claude-box' and nothing here softens that. What these arms
-  # read is user.box.template, a stamp left on an INSTANCE at its own mint
-  # time: every box minted before the rename carries the bare name forever,
-  # and a clone carries it forward. Refusing the old spelling here would not
-  # cut anything over, it would only drop the hint on boxes that predate the
-  # rename — the same reason user.claudebox is honored everywhere else.
-  local eff effrole
+  # The user.box.role arm went with the key (#214): box no longer stamps it,
+  # and it is not box's key to read.
+  local eff
   eff="$(incus config get "$instance" user.box.template 2>/dev/null || true)"
-  effrole="$(incus config get "$instance" user.box.role 2>/dev/null || true)"
   [ -z "$eff" ] && [ "$(incus config get "$instance" user.claudebox 2>/dev/null || true)" = 1 ] && eff=claude-box
-  if [ "$effrole" = claude-box ] || [ "$eff" = claude-box ] || [ "$eff" = claude ]; then
+  if [ "$eff" = claude-box ] || [ "$eff" = claude ]; then
     echo "box: ready — 'box shell $name'. Log into Claude inside: run 'claude' then /login."
   elif [ "$eff" = staging-box ] || [ "$eff" = staging ]; then
-    echo "box: ready — 'box shell $name'. The tailnet join stays operator-run (it holds a key box must never see):"
-    echo "  box shell $name    # then: sudo rig bootstrap workload-server --hostname $name"
+    # Server-CLASS and creds-free: the posture and the tailnet join are both
+    # operator-run now, and the join always was — it holds a key box must
+    # never see. 'box root' is the door (#176); what to run behind it is the
+    # README's, not box's.
+    echo "box: ready — 'box shell $name'. The server posture is yours to converge, from"
+    echo "box: inside the box ('box root $name') — the tailnet join included."
   else
     echo "box: ready — 'box shell $name'."
   fi
@@ -2489,15 +2366,18 @@ box_cfg() { incus config get "$1" "$2" 2>/dev/null || true; }
 # case: a box outlives the release that minted it, which is exactly what the
 # legacy 'user.claudebox' tag already says out loud at resolve_box.
 box_provenance() {
-  local i="$1" schema created ver img fp m asked tpl u role rrepo rref origin from
+  local i="$1" schema created ver img fp m asked tpl u origin from
   local imp impby impl implby impn
   schema="$(box_cfg "$i" user.box.schema)"
   created="$(box_cfg "$i" user.box.created)"; ver="$(box_cfg "$i" user.box.version)"
   img="$(box_cfg "$i" user.box.image)";       fp="$(box_cfg "$i" user.box.image.fingerprint)"
   m="$(box_cfg "$i" user.box.mode)";          asked="$(box_cfg "$i" user.box.mode.asked)"
   tpl="$(box_cfg "$i" user.box.template)";    u="$(box_cfg "$i" user.box.user)"
-  role="$(box_cfg "$i" user.box.role)"
-  rrepo="$(box_cfg "$i" user.box.rig.repo)";  rref="$(box_cfg "$i" user.box.rig.ref)"
+  # user.box.role and user.box.rig.* are NOT read (#214). A box minted before
+  # the cut still carries all three, and box neither rewrites nor migrates
+  # them: they are simply no longer box's keys, so they are no longer box's to
+  # report. The block is optional key by key, so a legacy stamp renders as the
+  # rows box still owns and never as an error.
   origin="$(box_cfg "$i" user.box.origin)";   from="$(box_cfg "$i" user.box.origin.from)"
   # The import event (#131) — a THIRD fact, read from its own keys. 'origin'
   # above still says mint or clone, which is what it has always meant.
@@ -2535,17 +2415,13 @@ box_provenance() {
     fi
   fi
   if [ -n "$tpl" ]; then
-    local paren=""
-    [ -z "$u" ] || paren="user $u"
-    [ -z "$role" ] || paren="${paren:+$paren, }role $role"
-    printf '%-11s%s\n' TEMPLATE "$tpl${paren:+ ($paren)}"
+    printf '%-11s%s\n' TEMPLATE "$tpl${u:+ (user $u)}"
   fi
   [ -z "$img" ] || printf '%-11s%s\n' IMAGE "$img${fp:+ @ ${fp:0:12}…}"
   # The mode is only worth a line alongside what was ASKED: TYPE above already
   # says VM or CT, but only the mint knew whether a container was chosen or
   # fallen back into for want of /dev/kvm.
   [ -z "$asked" ] || printf '%-11s%s\n' MODE "${m:-?} (asked: $asked)"
-  [ -z "$rrepo" ] || printf '%-11s%s\n' RIG "$rrepo@${rref:-?}"
   [ -z "$origin" ] || printf '%-11s%s\n' ORIGIN "$origin${from:+ of $from}"
   # A schema box does not recognise is NEWER than box, not broken: show what is
   # understood and say so, rather than refusing to describe a box that a later
@@ -2883,7 +2759,9 @@ cmd_import() {
   # naming a lineage no key explains any more. The import is a THIRD fact,
   # orthogonal to the first two, so it takes its OWN keys, and every key the
   # artifact carried — origin, origin.from, created, version, template, user,
-  # image, role, rig.* — is left exactly as it arrived.
+  # image, and any key a pre-#214 box was stamped with — is left exactly as it
+  # arrived. Import rewrites nothing, retired keys included: an artifact is a
+  # record of a mint that happened, not a thing to bring up to date.
   #
   # Birth pair + latest pair, the shape heavy-duty/rig#61 settled on for the
   # same repeated-event question. It transfers: a box can make the trip more
