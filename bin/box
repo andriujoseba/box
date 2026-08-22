@@ -520,8 +520,8 @@ is required, or box will read your command's flags as its own.
   box exec work -- tmux ls
   box exec work -- shellcheck --version
 
-A blank box carries the seed and nothing else, so a command you converged onto
-the box is only runnable after you have converged it.
+A blank box carries the seed and nothing else, so anything else — git, gh, an
+agent CLI — runs here only once you have converged it onto the box.
 EOF
 ;;
     tmux) cat <<'EOF'

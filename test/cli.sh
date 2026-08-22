@@ -2036,6 +2036,22 @@ check "mint: the refused pristine snapshot remains a loud warning (#104, #213)" 
 # on a partial stamp, and "which fact was dropped" is the useful failure.
 check "mint: stamps the schema — the stamp's SHAPE, not the box version (#103)" \
   0 "user.box.schema=1" launchline "$MLOG"
+# Still 1 AFTER #214 removed three stamped keys, and that is a decision rather
+# than an oversight — so it is pinned here with its reasoning, or the next
+# remover re-argues it from the constant's comment alone. 'user.box.role',
+# 'user.box.rig.repo' and 'user.box.rig.ref' are gone, and what survives is a
+# strict SUBSET every older reader can still read: a 0.9.x 'box info' on a
+# 0.10.0 box prints no RIG row, exactly as it would for a key that was never
+# set. Bumping to 2 would have fired "stamp schema '2' is newer than this box
+# reads" on every newly minted box, warning every operator about nothing. The
+# rule that DOES bump is repurposing a key, or a removal that leaves a survivor
+# unreadable; bin/box's comment now states all three cases.
+# The three retired keys are asserted absent by their own block below; what is
+# asserted HERE is that their removal did not move the schema.
+check "mint: ...and #214's key REMOVAL did not bump it — a subset is not a new shape" \
+  1 "" launch_has "$MLOG" 'user\.box\.schema=[^1]'
+check "stamp schema: bin/box's rule names the removal case its first wording got wrong (#214)" \
+  0 "" grep -qE '^# .*strict SUBSET of the old shape' "$ROOT/bin/box"
 check "mint: stamps the box version that minted it (#103)" \
   0 "user.box.version=$(cat "$ROOT/VERSION")" launchline "$MLOG"
 check "mint: stamps the base image ALIAS asked for (#103)" \
@@ -4850,6 +4866,22 @@ check "probe ledger: the declared total is 81" 0 "[81]" led 'printf "[%s]" "$(le
 # nothing checking it. If a phase gains probes, both move together or this reds.
 check "probe ledger: ...which is the contract CONTRIBUTING states" 0 "" \
   grep -qF '81-probe' "$ROOT/CONTRIBUTING.md"
+# The README quotes the total too, and it was the ONE copy nothing checked —
+# so it sat at "84 checks, 84 passing" through a cut that moved every other
+# copy to 81. Driven off ledger_declared() like the rest, rather than a
+# literal, so the next phase change moves it or reds here (#214).
+readme_quotes_the_total() {
+  ( set -u
+    # shellcheck disable=SC2034  # skipped() appends to it; the block assumes it
+    findings=()
+    # shellcheck disable=SC1090  # the extracted ledger, written above
+    . "$LEDGERFN"
+    local n; n="$(ledger_declared)"
+    grep -qF "**$n checks, $n passing**" "$ROOT/README.md" \
+      || { echo "README.md does not quote the ledger's own total, $n"; exit 1; } )
+}
+check "probe ledger: ...and the total the README advertises (#214)" 0 "" \
+  readme_quotes_the_total
 
 check "probe ledger: a complete run is short in nothing" 0 "[]" \
   led "$FULL; printf '[%s]' \"\$(ledger_short)\""

@@ -134,7 +134,7 @@ oversight: it seeds a guest that converges *itself*, from the inside.
 by every future template, sudo is selected only for self-converging guests.
 Two traits, two answers. cloud-init is a
 first-boot one-shot, so this reaches **newly minted boxes only**; a running
-agent box keeps the entry it was minted with, and stripping it mid-task is
+box keeps the entry it was minted with, and stripping it mid-task is
 the operator's call through `box root`.
 
 ## The box announces itself to the agent
