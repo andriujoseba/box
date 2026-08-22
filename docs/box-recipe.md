@@ -30,7 +30,8 @@ running inside it. It is not shell that the host executes.
 
 ## How it's consumed
 
-A box with a coding agent on it gets a global agent-context file with it —
+A box the operator has converged with a coding agent gets a global
+agent-context file alongside it —
 `~/.claude/CLAUDE.md` for `claude`, `~/.codex/AGENTS.md` for `codex`,
 `~/.grok/AGENTS.md` for `grok` — telling the agent it is inside a box and to
 treat a repo's `.box/` folder as its bootstrap runbook. **box writes none of
@@ -47,10 +48,11 @@ git clone <repo> && cd <repo>
 claude                              # the agent reads .box/ and brings the project up
 ```
 
-The first three lines are the mint-and-converge path in full, and they are the
-README's, not this page's — [Quick start](../README.md#quick-start) carries the
-`curl … install.sh` line and the pin. They are here because the last three do
-not run without them.
+The first three lines are the mint-and-converge path abbreviated, and they are
+the README's rather than this page's: [Quick start](../README.md#quick-start)
+carries it whole, including the `curl … install.sh` line that puts `rig` on the
+box in the first place. They are here because the last three do not run without
+them.
 
 The operator can also just say: *"set this project up per .box"*.
 
