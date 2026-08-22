@@ -834,38 +834,22 @@ check "agent policy: an automatic mint uses a VM when KVM exists (#175)" \
   0 "" template_request_case "" 1 auto "" yes
 rm -f "$MATRIXFN"
 
-# The auto-run half of #81, grepped the same way (a daemon-free run cannot
-# mint). The seed reaches Incus through render_userdata — the pin point — not
-# through a raw cat; and the tenant convergence must order AFTER the
-# cloud-init wait (rig is installed by the seed's runcmd, so exec'ing the
-# role before cloud-init settles would race its own installer) and sit under
-# the T_BOOTSTRAP_ROLE guard (blank must never auto-run anything).
-check "new: cloud-init user-data goes through render_userdata (the rig pin)" 0 "" bash -c '
+# The seed still reaches Incus through render_userdata and not through a raw
+# cat — that is the one thing the substitution half of #81 leaves behind. The
+# auto-run half is GONE (#214): what used to sit here asserted that the
+# convergence exec ordered after the cloud-init wait, sat under the
+# T_BOOTSTRAP_ROLE guard, and named 'box root' in its failure hint. There is no
+# exec, no guard and no failure hint, so the assertions invert — a mint emits
+# no convergence exec at all, at any position, under any guard.
+check "new: cloud-init user-data goes through render_userdata" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
     | grep -F "cloud-init.user-data" | grep -q "render_userdata"'
-# shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "new: the tenant auto-run orders after the cloud-init wait" 0 "" bash -c '
-  fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
-  wait="$(printf "%s\n" "$fn" | grep -n "cloud-init status --wait" | head -1 | cut -d: -f1)"
-  run="$(printf "%s\n" "$fn" | grep -n "incus exec.*rig bootstrap" | head -1 | cut -d: -f1)"
-  [ -n "$wait" ] && [ -n "$run" ] && [ "$wait" -lt "$run" ]'
-check "new: the auto-run sits under the T_BOOTSTRAP_ROLE guard" 0 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -B2 "incus exec .* rig bootstrap" | grep -q "T_BOOTSTRAP_ROLE"'
-check "new: a failed tenant role names the re-run (the role converges)" 0 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -q "box root .*rig bootstrap"'
-# ...and names it through the ROOT path. Since #177 the agent tenants have no
-# sudoers entry, so a hint of the old shape ('box shell' then 'sudo rig
-# bootstrap <role>') was a recovery path that died on exactly the boxes it was
-# printed for. 'box root' needs no sudoers entry (#176) and is right for all
-# six templates. Pinned per-token so the staging tailnet-join hint below —
-# 'sudo rig bootstrap workload-server', a tenant that KEPT sudo — is untouched
-# by this assertion.
-# shellcheck disable=SC2016  # the $-string is a literal in the target file
-check "new: the re-run hint does not assume tenant sudo (#177)" 1 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -q "sudo rig bootstrap \$T_BOOTSTRAP_ROLE"'
+check "new: no mint path execs a converger in the guest (#214)" 1 "" bash -c '
+  grep -E "^[[:space:]]*[^#]" "'"$ROOT"'/bin/box" | grep "incus exec" | grep -qw "rig"'
+check "new: T_BOOTSTRAP_ROLE is gone from bin/box entirely (#214)" 1 "" \
+  grep -q 'T_BOOTSTRAP_ROLE' "$ROOT/bin/box"
+check "new: BOX_BOOTSTRAP_ROLE is gone from bin/box entirely (#214)" 1 "" \
+  grep -q 'BOX_BOOTSTRAP_ROLE' "$ROOT/bin/box"
 
 # The launch phase, narrated and time-boxed (#93) — grepped the way the other
 # mint-path guards are (a daemon-free run cannot mint). Twice in the
@@ -919,20 +903,24 @@ check "new: the overran-but-registered branch says so (not the wedge story)" 0 "
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "new: BOX_LAUNCH_TIMEOUT is documented in box help new" 0 "" bash -c '
   "'"$ROOT"'/bin/box" help new | grep "BOX_LAUNCH_TIMEOUT" | grep -q 600'
-# staging-box's creds-holding join stays OPERATOR-run: cmd_new may print it as
-# a next step, but no template and no code path auto-runs "rig bootstrap
-# workload-server" — the one absence that keeps box creds-free end to end.
-check "new: the workload join is printed, never exec'd" 1 "" bash -c '
-  grep "rig bootstrap workload-server" "'"$ROOT"'/bin/box" | grep -q "incus exec"'
-check "templates: no template names a creds-holding role" 1 "" bash -c '
-  grep -h "^BOX_BOOTSTRAP_ROLE=" "'"$ROOT"'"/templates/*/box.env | grep -qE "workload|host|custom"'
+# staging-box's creds-holding join stayed OPERATOR-run from #69 onwards, and
+# since #214 so does everything beside it. box neither runs nor prints a
+# convergence command now, so the assertion is the strongest form of the one
+# that was here: no template names a convergence role at all.
+# shellcheck disable=SC2016  # the path expands in the child shell, by design
+check "templates: no template names a convergence role at all (#214)" 1 "" bash -c '
+  grep -h "^BOX_BOOTSTRAP_ROLE=" "'"$ROOT"'"/templates/*/box.env | grep -q .'
+check "new: the ready hint offers 'box root' for a server-class box (#176, #214)" 0 "" bash -c '
+  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
+    | grep -A2 "staging-box" | grep -q "box root"'
 
 # ---------------------------------------------------------------------------
-# The 'pristine' mark (#104, child of heavy-duty/rig#62). The whole feature is
-# a MOMENT: the guest after cloud-init and before rig converges anything. Get
-# the position wrong by one step and the mark is a lie — a 'pristine' taken
-# after 'rig bootstrap' is a converged box wearing the wrong label, and
-# nothing at runtime would ever say so. So the position is pinned by line
+# The 'pristine' mark (#104). The whole feature is a MOMENT: the guest after
+# cloud-init and before anything converges it. Get the position wrong by one
+# step and the mark is a lie — a 'pristine' taken after a convergence run is a
+# converged box wearing the wrong label, and nothing at runtime would ever say
+# so. Since #214 box hands the box over at exactly this point, so the mark is
+# the LAST thing a fresh mint does rather than the second to last. So the position is pinned by line
 # order, the way the other mint-path guards are (a daemon-free run cannot
 # mint), and the policy half is DRIVEN against a stubbed incus.
 # ---------------------------------------------------------------------------
@@ -947,24 +935,26 @@ check "pristine: the mark orders AFTER the cloud-init wait" 0 "" bash -c '
   wait="$(printf "%s\n" "$fn" | grep -n "cloud-init status --wait" | head -1 | cut -d: -f1)"
   snap="$(printf "%s\n" "$fn" | grep -n "snapshot_pristine " | head -1 | cut -d: -f1)"
   [ -n "$wait" ] && [ -n "$snap" ] && [ "$wait" -lt "$snap" ]'
-# BEFORE the rig hook: this is the assertion the whole issue rests on.
+# The mark used to have to order BEFORE the convergence hook — the assertion
+# the whole of #104 rested on. There is no hook to order against since #214, so
+# what replaces it is the fact that produced that ordering: nothing in the
+# fresh-mint branch touches the guest AFTER the mark. A step added below it
+# would converge the box and leave 'pristine' describing a state that no longer
+# existed when it was taken, which is exactly the lie the ordering prevented.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "pristine: the mark orders BEFORE the rig bootstrap hook (the moment)" 0 "" bash -c '
+check "pristine: nothing touches the guest after the mark (#104, #214)" 0 "" bash -c '
   fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
   snap="$(printf "%s\n" "$fn" | grep -n "snapshot_pristine " | head -1 | cut -d: -f1)"
-  run="$(printf "%s\n" "$fn" | grep -n "incus exec.*rig bootstrap.*\$T_BOOTSTRAP_ROLE" | head -1 | cut -d: -f1)"
-  [ -n "$snap" ] && [ -n "$run" ] && [ "$snap" -lt "$run" ]'
-# NOT under the T_BOOTSTRAP_ROLE guard: a blank box has no rig hook but has
-# the same pristine moment, and "box restore <box> pristine" must mean one
-# thing on every box box mints.
+  after="$(printf "%s\n" "$fn" | tail -n "+$((snap + 1))" | grep -c "incus exec")"
+  [ -n "$snap" ] && [ "$after" -eq 0 ]'
+# Unconditional, and now unconditionally so: there is no role to gate it on,
+# and "box restore <box> pristine" means one thing on every box box mints.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "pristine: the mark is unconditional, not gated on a tenant role" 0 "" bash -c '
-  fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
-  snap="$(printf "%s\n" "$fn" | grep -n "snapshot_pristine " | head -1 | cut -d: -f1)"
-  guard="$(printf "%s\n" "$fn" | grep -n "if \[ -n \"\$T_BOOTSTRAP_ROLE\" \]" | head -1 | cut -d: -f1)"
-  [ -n "$snap" ] && [ -n "$guard" ] && [ "$snap" -lt "$guard" ]'
+check "pristine: the mark is gated on nothing at all (#104, #214)" 1 "" bash -c '
+  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
+    | grep -B4 "snapshot_pristine " | grep -qE "^[[:space:]]*if \["'
 
-# THE CLONE TRAP. --from skips cloud-init and the rig hook entirely, so the
+# THE CLONE TRAP. --from skips cloud-init entirely, so the
 # pristine moment never happens on that path. A mark taken there would be
 # "whatever the source was" — converged, worked-in — wearing a label that
 # promises pristine Debian, which is strictly worse than no mark. Pin the
@@ -1866,11 +1856,6 @@ case "$*" in
       echo "incus: snapshot refused" >&2
       exit 1
     fi ;;
-  exec\ *\ --\ rig\ bootstrap\ *)
-    if [ "${FAKE_BOOTSTRAP_FAIL:-0}" = 1 ]; then
-      echo "unknown tenant role: synthetic-box" >&2
-      exit 2
-    fi ;;
   *volatile.base_image) printf '%s\n' "${FAKE_BASE_IMAGE-}" ;;
   # Both 'config get <i> <key>' and its --expanded form (#171 reads what the
   # instance will RUN with, profiles included) — the key is the last word
@@ -1890,13 +1875,12 @@ SHIM
 chmod +x "$MSHIM/incus"
 
 export FAKE_BASE_IMAGE=deadbeefcafe0123456789   # what the alias resolves to
-# The rig pin resolves off the network now (#150), so the mint drive carries
-# the same shim curl the render_userdata drive does — a suite that reached
-# github.com would be a suite that fails when github.com is down, and would
-# assert against whichever rig release happened to be latest that morning.
-# Every mint logs its probes to $log.curl, which is how "exactly one probe per
-# mint" and "no probe at all for a seed with no pin" become assertions.
-export FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9"
+# The mint drive carries the same failing, logging shim curl the
+# render_userdata drive does. It used to serve canned releases/latest redirects
+# because a mint resolved a pin off the network (#150); since #214 a mint
+# resolves nothing, so the shim's job inverted — every call is logged and every
+# call fails, and $log.curl staying empty is how "a mint makes no network
+# request" becomes an assertion instead of a claim.
 # The one host fact box_id() reads (#181), made to fail on demand: a shim 'cat'
 # that refuses ONLY the kernel's uuid file and execs the real one for every
 # other path. A blanket refusal would break box_version() — which reads VERSION
@@ -1916,7 +1900,7 @@ mintbox() {  # mintbox <logfile> <args...> — the real box, shimmed, no TTY
   local log="$1"; shift
   : > "$log"; : > "$log.curl"
   env FAKE_INCUS_LOG="$log" FAKE_CURL_LOG="$log.curl" \
-      PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$MSHIM:$RIGSHIM:$PATH" \
+      PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$MSHIM:$NETSHIM:$PATH" \
       "$BOX" "$@" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
@@ -1934,30 +1918,30 @@ restamp_has() { grep -F 'config set' "$1" | grep -qE "$2"; }
 # --- the write half: a fresh mint ------------------------------------------
 MLOG="$MWORK/mint.log"
 check "mint: a shimmed 'box new' runs to completion" 0 "ready" \
-  mintbox "$MLOG" new --name w1 --role claude-box --container
+  mintbox "$MLOG" new --name w1 --user claude --container
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design.
-check "mint: a role-bearing fresh mint creates exactly one snapshot (#213)" 0 "1" \
+check "mint: a fresh mint creates exactly one snapshot (#213)" 0 "1" \
   bash -c 'grep -c "^incus snapshot create " "$1"' _ "$MLOG"
 check "mint: that sole automatic snapshot is pristine (#213)" 0 "" \
   grep -qE '^incus snapshot create w1 pristine *$' "$MLOG"
 
 PRISTINE_OFF_LOG="$MWORK/pristine-off.log"
-BOX_SNAPSHOT_PRISTINE=0 RIG_REF=main \
-  mintbox "$PRISTINE_OFF_LOG" new --name pristine-off --role claude-box --container >/dev/null 2>&1
+BOX_SNAPSHOT_PRISTINE=0 \
+  mintbox "$PRISTINE_OFF_LOG" new --name pristine-off --container >/dev/null 2>&1
 check "mint: BOX_SNAPSHOT_PRISTINE=0 still suppresses the sole mark (#213)" 1 "" \
   grep -q '^incus snapshot create ' "$PRISTINE_OFF_LOG"
 
 RETIRED_KNOB_LOG="$MWORK/retired-knob.log"
-BOX_SNAPSHOT_BOOTSTRAPPED=0 RIG_REF=main \
-  mintbox "$RETIRED_KNOB_LOG" new --name retired-knob --role claude-box --container >/dev/null 2>&1
+BOX_SNAPSHOT_BOOTSTRAPPED=0 \
+  mintbox "$RETIRED_KNOB_LOG" new --name retired-knob --container >/dev/null 2>&1
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design.
 check "mint: the retired knob cannot change the one-pristine result (#213)" 0 "1" \
   bash -c 'grep -c "^incus snapshot create .* pristine *$" "$1"' _ "$RETIRED_KNOB_LOG"
 
 PRISTINE_FAIL_LOG="$MWORK/pristine-fail.log"
 pristine_failure_mint() {
-  FAKE_PRISTINE_FAIL=1 RIG_REF=main \
-    mintbox "$PRISTINE_FAIL_LOG" new --name pristine-fail --role claude-box --container
+  FAKE_PRISTINE_FAIL=1 \
+    mintbox "$PRISTINE_FAIL_LOG" new --name pristine-fail --container
 }
 check "mint: a refused pristine snapshot still leaves the mint successful (#104, #213)" 0 "ready" \
   pristine_failure_mint
@@ -1977,46 +1961,49 @@ check "mint: stamps the mode it minted as (#103)" \
 # the mint knew whether a container was ASKED for or fallen back into.
 check "mint: stamps the mode that was ASKED, not only the outcome (#103)" \
   0 "user.box.mode.asked=container" launchline "$MLOG"
-check "mint: stamps the rig role box will auto-run (#103)" \
-  0 "user.box.role=claude-box" launchline "$MLOG"
-check "mint: runtime role defaults to the small cpu row (#159)" 0 "" \
+# The three RETIRED keys, asserted by their absence (#214). They are the whole
+# of what the cut removed from the stamp, and an absence assertion is the only
+# shape that catches one creeping back: a positive test for the six survivors
+# would stay green beside a fourth key nobody wanted.
+check "mint: stamps NO tenant role (#214)" 1 "" \
+  launch_has "$MLOG" 'user\.box\.role='
+check "mint: stamps NO converger repo (#214)" 1 "" \
+  launch_has "$MLOG" 'user\.box\.rig\.repo='
+check "mint: stamps NO converger ref (#214)" 1 "" \
+  launch_has "$MLOG" 'user\.box\.rig\.ref='
+check "mint: execs no converger in the guest (#214)" 1 "" \
+  grep -q '^incus exec .* bootstrap' "$MLOG"
+check "mint: the default path takes the small cpu row (#159)" 0 "" \
   launch_has "$MLOG" 'limits\.cpu=2'
-check "mint: runtime role defaults to the small memory row (#159)" 0 "" \
+check "mint: the default path takes the small memory row (#159)" 0 "" \
   launch_has "$MLOG" 'limits\.memory=2GiB'
-check "mint: the role-derived user reaches cloud-init (#159)" 0 "" \
+check "mint: --user reaches cloud-init (#159, #214)" 0 "" \
   launch_has "$MLOG" 'name: "claude"'
-check "mint: the role-derived user reaches rig bootstrap (#159)" 0 "" \
-  grep -qE '^incus exec w1 -- rig bootstrap claude-box --user claude *$' "$MLOG"
-check "mint: stamps which rig converged it — repo (#103)" \
-  0 "user.box.rig.repo=heavy-duty/rig" launchline "$MLOG"
-# The ref is the RESOLVED release, not main (#150). The stamp is the only
-# record of which rig a box was handed, so it has to name the one that was.
-check "mint: stamps which rig converged it — the RESOLVED ref (#103, #150)" \
-  0 "user.box.rig.ref=9.9.9" launchline "$MLOG"
-# ONE probe for the whole mint. Two readers ask for the pin — this stamp and
-# the seed on the same launch line — and both ask inside a command
-# substitution, so a resolution that lived in either would be discarded with
-# its subshell and the other would probe again. Two probes can straddle a rig
-# release and stamp a ref the seed did not install; the count is what proves
-# the resolution happened in the parent.
+check "mint: --user reaches the stamp (#159, #214)" 0 "" \
+  launch_has "$MLOG" 'user\.box\.user=claude'
+# THE OFFLINE PROOF, at the mint rather than at the renderer (#214). A mint of
+# a pin-bearing seed used to make a HEAD request and DIE if it failed; the shim
+# curl fails every call, so a surviving probe would both log a line and take
+# the mint down with it.
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "mint: resolves the pin exactly ONCE, in the parent shell (#150)" 0 "1" \
-  bash -c 'grep -c "releases/latest" "$1"' _ "$MLOG.curl"
-# ...and the seed on that same line carries the same answer the stamp does.
-check "mint: ...and the seed it shipped carries that same resolved ref (#150)" 0 "" \
-  launch_has "$MLOG" 'heavy-duty/rig/9\.9\.9/install\.sh'
+check "mint: makes NO network request of its own (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$MLOG.curl"
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+# The six keys that SURVIVED, named together: the absence block above says what
+# went, and this says what must not have gone with it.
+for k in schema version image mode created origin; do
+  check "mint: still stamps user.box.$k (#103, #214)" 0 "" \
+    launch_has "$MLOG" "user\.box\.$k="
+done
 
 # The one surviving dedicated template must keep the values load_template
 # read from its seed. Runtime role/user variables are empty on this path, so
 # this drive catches any later assignment that erases staging's identity and
 # silently skips convergence (#159 review round 1).
 STAGINGLOG="$MWORK/staging-template.log"
-RIG_REF=main mintbox "$STAGINGLOG" new --name staging --template staging-box --vm >/dev/null 2>&1
+mintbox "$STAGINGLOG" new --name staging --template staging-box --vm >/dev/null 2>&1
 check "mint staging: keeps the seed user stamp (#159)" 0 "" \
   launch_has "$STAGINGLOG" 'user\.box\.user=ops'
-check "mint staging: keeps the seed role stamp (#159)" 0 "" \
-  launch_has "$STAGINGLOG" 'user\.box\.role=staging-box'
 check "mint staging: keeps the server autostart demand (#68, #159)" 0 "" \
   launch_has "$STAGINGLOG" 'boot\.autostart=true'
 check "mint staging: launches as a VM (#68, #159)" 0 "" \
@@ -2025,16 +2012,26 @@ check "mint staging: keeps its 60GiB VM root device (#68, #159)" 0 "" \
   launch_has "$STAGINGLOG" 'root,size=60GiB'
 check "mint staging: disables VM secure boot (#159)" 0 "" \
   launch_has "$STAGINGLOG" 'security\.secureboot=false'
-staging_bootstrap_once() {
-  [ "$(grep -Ec '^incus exec staging -- rig bootstrap staging-box --user ops *$' "$1")" -eq 1 ]
-}
-check "mint staging: converges its role once as the ops user (#159)" 0 "" \
-  staging_bootstrap_once "$STAGINGLOG"
+# The dedicated seed converges NOTHING at mint (#214) — the whole server
+# posture is operator-run now, exactly as its tailnet join always was.
+check "mint staging: execs no converger of its own (#214)" 1 "" \
+  grep -q '^incus exec staging' "$STAGINGLOG"
+check "mint staging: renders no installer line into its seed (#214)" 1 "" \
+  launch_has "$STAGINGLOG" 'install\.sh'
+check "mint staging: keeps the ops sudo line in the rendered seed (#214)" 0 "" \
+  launch_has "$STAGINGLOG" 'NOPASSWD:ALL'
+# The retired keys are absent HERE too: staging-box was the one seed that
+# actually declared BOX_BOOTSTRAP_ROLE, so it is the one whose stamp would
+# still carry a role if the cut had been made only on the tenant path.
+check "mint staging: stamps no tenant role either (#214)" 1 "" \
+  launch_has "$STAGINGLOG" 'user\.box\.role='
+check "mint staging: makes no network request either (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$STAGINGLOG.curl"
 
 # The public size table and its two higher precedence rungs, driven through a
 # real shimmed mint. VM mode makes the disk device visible on the launch argv.
 MEDIUMLOG="$MWORK/medium-size.log"
-RIG_REF=main mintbox "$MEDIUMLOG" new --name medium --role claude-box --size medium --vm >/dev/null 2>&1
+mintbox "$MEDIUMLOG" new --name medium --size medium --vm >/dev/null 2>&1
 check "mint size: medium resolves to 4 cpu (#159)" 0 "" \
   launch_has "$MEDIUMLOG" 'limits\.cpu=4'
 check "mint size: medium resolves to 8GiB memory (#159)" 0 "" \
@@ -2042,7 +2039,7 @@ check "mint size: medium resolves to 8GiB memory (#159)" 0 "" \
 check "mint size: medium resolves to a 60GiB disk (#159)" 0 "" \
   launch_has "$MEDIUMLOG" 'root,size=60GiB'
 LARGELOG="$MWORK/large-size.log"
-RIG_REF=main mintbox "$LARGELOG" new --name large --role claude-box --size large --vm >/dev/null 2>&1
+mintbox "$LARGELOG" new --name large --size large --vm >/dev/null 2>&1
 check "mint size: large resolves to 8 cpu (#159)" 0 "" \
   launch_has "$LARGELOG" 'limits\.cpu=8'
 check "mint size: large resolves to 16GiB memory (#159)" 0 "" \
@@ -2050,40 +2047,39 @@ check "mint size: large resolves to 16GiB memory (#159)" 0 "" \
 check "mint size: large resolves to a 120GiB disk (#159)" 0 "" \
   launch_has "$LARGELOG" 'root,size=120GiB'
 FLAGBEATS="$MWORK/flag-beats-size.log"
-RIG_REF=main mintbox "$FLAGBEATS" new --name flagbeats --role claude-box \
+mintbox "$FLAGBEATS" new --name flagbeats \
   --size medium --cpu 2 --container >/dev/null 2>&1
 check "mint size: --cpu beats --size medium (#159)" 0 "" \
   launch_has "$FLAGBEATS" 'limits\.cpu=2'
 ENVBEATS="$MWORK/env-beats-size.log"
-BOX_CPU=1 RIG_REF=main mintbox "$ENVBEATS" new --name envbeats --role claude-box \
+BOX_CPU=1 mintbox "$ENVBEATS" new --name envbeats \
   --size medium --container >/dev/null 2>&1
 check "mint size: BOX_CPU beats --size medium (#159)" 0 "" \
   launch_has "$ENVBEATS" 'limits\.cpu=1'
 
-# A role that did not exist when this box tree was built takes the same generic
-# path. The arbitrary name is intentionally absent from bin/box and templates/.
-FUTURELOG="$MWORK/future-role.log"
-RIG_REF=main mintbox "$FUTURELOG" new --name future --role synthetic-box \
-  --user builder --container >/dev/null 2>&1
-check "mint: a post-build rig role needs zero box registry change (#159)" 0 "" \
-  launch_has "$FUTURELOG" 'user\.box\.role=synthetic-box'
-check "mint: --user reaches the instance stamp (#159)" 0 "" \
-  launch_has "$FUTURELOG" 'user\.box\.user=builder'
-check "mint: --user reaches cloud-init (#159)" 0 "" \
-  launch_has "$FUTURELOG" 'name: "builder"'
-check "mint: --user is forwarded to rig bootstrap (#159)" 0 "" \
-  grep -qE '^incus exec future -- rig bootstrap synthetic-box --user builder *$' "$FUTURELOG"
-check "mint: the synthetic role is not hardcoded in box or a seed (#159)" 1 "" \
-  grep -Rqs synthetic-box "$ROOT/bin" "$ROOT/templates"
-
-unknown_role_mint() {
-  FAKE_BOOTSTRAP_FAIL=1 RIG_REF=main \
-    mintbox "$MWORK/unknown-role.log" new --name unknown --role synthetic-box --container
-}
-check "mint: rig's unknown-role refusal is surfaced (#159)" 1 \
-  "unknown tenant role: synthetic-box" unknown_role_mint
-check "mint: an incomplete unknown-role box prints its cleanup (#159)" 1 \
-  "box rm unknown" unknown_role_mint
+# --user rides the ordinary mint on its own (#214 D2): the tenant user was
+# never the role's to derive, so removing the role removes nothing from it.
+USERLOG="$MWORK/user-override.log"
+mintbox "$USERLOG" new --name ada --user ada --container >/dev/null 2>&1
+check "mint: --user reaches the instance stamp with no role at all (#214)" 0 "" \
+  launch_has "$USERLOG" 'user\.box\.user=ada'
+check "mint: --user reaches cloud-init with no role at all (#214)" 0 "" \
+  launch_has "$USERLOG" 'name: "ada"'
+check "mint: an unnamed user still defaults to dev (#214)" 0 "" \
+  launch_has "$MEDIUMLOG" 'user\.box\.user=dev'
+# The pin environment is INERT at the mint, not merely at the renderer: box
+# reads neither variable, so neither reaches the seed, the stamp or the network.
+PINENVLOG="$MWORK/pin-env.log"
+RIG_REPO=you/rig RIG_REF=0.3.0 \
+  mintbox "$PINENVLOG" new --name pinned --container >/dev/null 2>&1
+check "mint: a set pin changes nothing about the seed (#214)" 1 "" \
+  launch_has "$PINENVLOG" 'you/rig|0\.3\.0'
+check "mint: a set pin stamps nothing (#214)" 1 "" \
+  launch_has "$PINENVLOG" 'user\.box\.rig'
+check "mint: a set pin probes nothing (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$PINENVLOG.curl"
+check "mint: a set pin warns about nothing (#214)" 1 "" \
+  grep -qiE 'RIG_RE(PO|F)' "$PINENVLOG.out"
 
 # --- the identity (#181) ----------------------------------------------------
 # The SHAPE, not merely the presence: a hostname, the box's own name or a
@@ -2619,7 +2615,7 @@ run_printed_hints() {  # run_printed_hints <output-file> <incus-log>
   while IFS= read -r line; do
     local words; read -r -a words <<<"$line"
     env FAKE_INCUS_LOG="$2" FAKE_CFG="$HINTCFG" \
-        PATH="$MSHIM:$RIGSHIM:$PATH" "$BOX" "${words[@]:1}" </dev/null >/dev/null 2>&1
+        PATH="$MSHIM:$NETSHIM:$PATH" "$BOX" "${words[@]:1}" </dev/null >/dev/null 2>&1
   done < "$MWORK/hints.txt"
 }
 "$BOX" help new > "$MWORK/help-new.out" 2>&1
