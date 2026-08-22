@@ -689,37 +689,48 @@ DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|seed|seeds|template|t
 DOC_PATTERN="$DOC_PATTERN"'\b(has|have|comes? with|includes?|carries|carry|brings?|arrives? with|ships? with|minted[ \t]+with|leaves?[^.]{0,20} with)'
 DOC_PATTERN="$DOC_PATTERN"'[ \t]+(an?|one|the|its|your|another)?[ \t]*([A-Za-z]+[ \t]+)?agents?([^-A-Za-z]|$)'
 #
-# The exemptions, and they read the MATCH and never the line. Two of them:
-# the documented converge, anchored so it has to LEAD the match; and denial,
-# which is what most of this corpus says about agents and which a pattern this
-# broad has to be able to hear. 'A box ships with a thin seed and no
-# credentials — no agent token' (README.md:10) is out of the ships arm's window
-# by gap width alone today — that is the whole of what keeps it green, and it is
-# not a reason. Read on the match, 'no agent' immediately before the noun is a
-# denial and not a claim, while 'ships a coding agent, and no credentials' keeps
-# its claim, because the negation there is not the agent's.
+# The one exemption left, and it reads the MATCH and never the line: the
+# documented converge, anchored so it has to LEAD the match.
 DOC_EXEMPT='^rig[ \t]+bootstrap'
-DOC_EXEMPT="$DOC_EXEMPT"'|\b(no|not|never|neither|nor|without)\b[ \t]+([a-z]+[ \t]+){0,2}agents?\b'
 #
-# ...and the match is TRUNCATED AT ITS FIRST 'agent' before the exemption sees
-# it, which is the difference between the paragraph above being true and being
-# a hope. ERE matching is leftmost-LONGEST, so the ships arm runs its window on
-# to the LAST 'agent' it can reach and swallows any denial in between:
+# DENIAL IS NOT AN EXEMPTION ANY MORE — it is blanked from the text BEFORE the
+# claim arms ever read it, and that is the round-6 fix. Denial is what most of
+# this corpus says about agents, so a pattern this broad has to hear it; the
+# question is only when. Read afterwards it cuts both ways at once and has to be
+# stopped from cutting the wrong one, and two rounds running it was caught
+# cutting the wrong one anyway:
 #
-#   The box ships an agent and no agent token.
-#   emitted match: [box ships an agent and no agent]   -> exempt -> green
+#   round 5, the TRAILING denial. ERE matching is leftmost-LONGEST, so the ships
+#   arm ran its window on to the LAST 'agent' it could reach and swallowed the
+#   denial in between:
+#     The box ships an agent and no agent token.
+#     match [box ships an agent and no agent] -> exempt -> green
+#   Answered by truncating the match at its FIRST 'agent'...
 #
-# That is a live claim laundered by a denial of something else, which is the
-# one direction the exemption's own comment says it must not cut. The claim the
-# arm actually made is the text up to the noun it matched FIRST; everything
-# after it belongs to some other clause, and the exemption has no business
-# reading it. Truncated, 'box ships an agent' carries no denial and reds, while
-# README.md:10 trims to '...and no credentials - no agent' and stays green
-# because its own noun is the negated one -- on its merits now, where before it
-# was green only because the em dash put it outside the arm's 40-char window.
+#   round 6, the LEADING denial, which that truncation left standing and in one
+#   sense created: with the first noun deciding, a denial that PRECEDES the
+#   claim takes the claim away with the discarded tail:
+#     A box with no agent token still ships a coding agent.
+#     match truncated to [box with no agent] -> exempt -> green
+#
+# Both are the same bug: a denial of one noun deciding another noun's claim. No
+# ordering of a post-hoc exemption fixes that, because the exemption is reading
+# a window that contains two nouns and can only vote once. Blanked first, the
+# denied noun is not there to be matched, every 'agents?' the arms can still see
+# is one nothing denies, and the arms decide on their own merits:
+#
+#   A box with [denied] token still ships a coding agent.   -> reds, correctly
+#   A box ships an agent and [denied] token.                -> reds, correctly
+#   A box ships a thin seed and no credentials, [denied].   -> greens, correctly
+#
+# README.md's creds-free line greens because it makes no surviving claim, not
+# because a window was too narrow (round 4) and not because a truncation landed
+# on the right noun (round 5). The exemption stopped cutting one way only by
+# ceasing to be a cut.
+DOC_DENIAL='\b(no|not|never|neither|nor|without)[ \t]+([a-z]+[ \t]+){0,2}agents?\b'
 doc_sells_a_minted_agent() {  # <file>
-  tr '\n' ' ' < "$1" | grep -oEi "$DOC_PATTERN" \
-    | sed -E 's/([Aa][Gg][Ee][Nn][Tt][Ss]?).*$/\1/' \
+  tr '\n' ' ' < "$1" | sed -E "s/$DOC_DENIAL/[denied]/gI" \
+    | grep -oEi "$DOC_PATTERN" \
     | grep -qvEi "$DOC_EXEMPT"
 }
 for rel in $DOC_PAGES; do
@@ -903,23 +914,41 @@ printf 'A mint leaves the box with a coding agent.\n' > "$DOCPROBE"
 check "docs: ...and on 'leaves the box with'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
 printf 'The template includes a coding agent.\n' > "$DOCPROBE"
 check "docs: ...and on 'includes'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
-# The denial exemption cuts one way only: a negation that is the AGENT'S makes
-# the sentence honest, and a negation of something else beside a live claim does
-# not launder it. Both directions, because an exemption nobody bounds is how a
-# rule this broad gets quietly turned off.
+# Denial launders nothing, in either position, and these are the probes that
+# say so. A negation that is the AGENT'S makes the sentence honest; a negation
+# of something else standing beside a live claim does not, wherever it stands.
+# Every one of these was green on some earlier head of this branch, which is
+# why each is written out rather than folded into one case.
 printf 'A box ships a coding agent, and no credentials.\n' > "$DOCPROBE"
-check "docs: ...and the denial exemption does not launder a claim beside it" 0 "" \
+check "docs: ...and a denial beside the claim does not launder it" 0 "" \
   doc_sells_a_minted_agent "$DOCPROBE"
-# ...and the other direction, which is the one the pair above did NOT drive and
-# which was green at 8dcf19c: a denial of the SAME noun, placed after the claim
-# and inside the arm's reach, so leftmost-longest ran the match on to it and the
-# exemption dropped the claim with it. These two are the reason the match is
-# truncated at its first noun; both were live claims reported ok.
+# TRAILING, the round-5 shape: a denial of the SAME noun after the claim and
+# inside the arm's reach, so leftmost-longest ran the match on to it and the
+# exemption dropped the claim with it.
 printf 'The box ships an agent and no agent token.\n' > "$DOCPROBE"
 check "docs: ...and a trailing denial of the same noun does not launder it either" 0 "" \
   doc_sells_a_minted_agent "$DOCPROBE"
 printf 'A minted box ships a coding agent; there is no agent token.\n' > "$DOCPROBE"
 check "docs: ...including across a semicolon, which is not a sentence end here" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# LEADING, the round-6 shape, and the one the truncation that answered the two
+# above could not reach: with the FIRST noun deciding, a denial placed before
+# the claim took the claim away with the discarded tail. Blanking the denial
+# first is what reds these; a post-hoc exemption cannot, whichever noun it is
+# pointed at, because the window holds two nouns and votes once.
+printf 'A box with no agent token still ships a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and a LEADING denial does not launder the claim after it (#214)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'With no agent token and no PAT, a minted box has a coding agent.\n' > "$DOCPROBE"
+check "docs: ...including two leading denials in front of the 'has' arm" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# ...and the boundary that keeps the blanking honest in the other direction: a
+# sentence whose ONLY agent noun is the denied one still greens, because after
+# the blanking there is no claim left for the arms to find. This is
+# README.md's creds-free line reduced to its shape, and it passes on its merits
+# rather than on a window width or a truncation landing well.
+printf 'A box ships with a thin seed and no credentials — no agent token, nothing.\n' > "$DOCPROBE"
+check "docs: ...and a sentence whose only agent noun is denied still passes" 1 "" \
   doc_sells_a_minted_agent "$DOCPROBE"
 # The subject alternation knows the noun this PR's own prose adopted. 'Seed' is
 # what README.md:265 calls what a mint lands, so a guard blind to the word is
