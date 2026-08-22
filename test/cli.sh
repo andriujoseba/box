@@ -463,7 +463,22 @@ check "corpus: 159.md still carries the history clause the sweep excepts (#214)"
 # Every tracked file in the directory, not a *.md glob: the criterion greps
 # changelog.d/ whole, and README.md and shape assemble into nothing but are
 # read by the same people.
+#
+# The walk is 'git ls-files', so it asserts over TRACKED files and a checkout
+# without git would hand it an empty list — and an absence sweep over an empty
+# list passes by having nothing to look at, which is the exact failure mode the
+# exception list above is written to avoid. So the walk proves it reached
+# something before it sweeps, and it proves it by naming the two files the
+# exceptions name: if either is missing from the list, the exceptions are
+# excepting nothing and the sweep is asserting nothing.
+CL_TRACKED="$(git -C "$ROOT" ls-files changelog.d 2>/dev/null)"
+cl_walk_reaches() { printf '%s\n' "$CL_TRACKED" | grep -qxF "$1"; }
+check "corpus: the walk reaches 214.md, which the first exception names (#214)" 0 "" \
+  cl_walk_reaches changelog.d/214.md
+check "corpus: ...and 159.md, which the second names — an empty walk sweeps nothing" 0 "" \
+  cl_walk_reaches changelog.d/159.md
 while read -r rel; do
+  [ -n "$rel" ] || continue
   case "$rel" in
     changelog.d/214.md) continue ;;
     changelog.d/159.md)
@@ -473,7 +488,7 @@ while read -r rel; do
       check "corpus: $rel announces nothing this release removes (#214)" 1 "" \
         cl_announces_removed "$ROOT/$rel" ;;
   esac
-done < <(git -C "$ROOT" ls-files changelog.d 2>/dev/null)
+done <<< "$CL_TRACKED"
 # The guard's own test, on the two shapes it exists to tell apart: a stale
 # SUBJECT — true in substance, naming a seed set #209 collapsed — and the same
 # claim repaired onto the tree that exists. The repair is the ruling's, D1
@@ -5172,8 +5187,14 @@ readme_quotes_the_total() {  # [<file>] — README.md unless a fixture says else
     findings=()
     # shellcheck disable=SC1090  # the extracted ledger, written above
     . "$LEDGERFN"
-    local f="${1:-$ROOT/README.md}" n pair d q
+    local f="${1:-$ROOT/README.md}" n pair d q c
     n="$(ledger_declared)"
+    # Exactly one total, asserted before the one is read. The extraction below
+    # takes 'head -1', so a SECOND '**N checks, N passing**' anywhere in the
+    # file would go unchecked behind the first — a guard that silently reads
+    # one of two copies is the same shape as an absence sweep over an empty
+    # list, and the drift this exists for started with a copy nothing read.
+    c="$(grep -cE '\*\*[0-9]+ checks, [0-9]+ passing\*\*' "$f")"
     # Both numbers out in one pass, split by parameter expansion rather than by
     # 'read': a bare 'read' under 'set -e' is what #111's repo-wide sweep
     # forbids, and it is right to — no match here must be a reported failure,
@@ -5183,6 +5204,8 @@ readme_quotes_the_total() {  # [<file>] — README.md unless a fixture says else
     d="${pair%% *}"; q="${pair##* }"
     [ -n "$pair" ] \
       || { echo "$f quotes no '**N checks, N passing**' total at all"; exit 1; }
+    [ "$c" = 1 ] \
+      || { echo "$f quotes $c totals; only the first is checked"; exit 1; }
     [ "$d" = "$n" ] \
       || { echo "$f advertises $d checks; the ledger declares $n"; exit 1; }
     [ "$q" -le "$n" ] \
@@ -5201,6 +5224,11 @@ check "probe ledger: ...while the drift that started this, 84/84, reds" 1 "adver
   readme_quotes_the_total "$RQPROBE"
 printf 'currently **81 checks, 99 passing**\n' > "$RQPROBE"
 check "probe ledger: ...and so does passing more probes than exist" 1 "more probes than exist" \
+  readme_quotes_the_total "$RQPROBE"
+# The second copy, which 'head -1' would have read straight past: the first
+# total is correct here and the guard must still red.
+printf 'currently **81 checks, 80 passing**\nand elsewhere **84 checks, 84 passing**\n' > "$RQPROBE"
+check "probe ledger: ...and a second total nothing would have read reds too" 1 "quotes 2 totals" \
   readme_quotes_the_total "$RQPROBE"
 rm -f "$RQPROBE"
 
