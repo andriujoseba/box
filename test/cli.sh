@@ -422,6 +422,80 @@ check "strong form: ...and an acting line added INSIDE it reds (the guard's own 
 rm -f "$SFPROBE"
 
 # ---------------------------------------------------------------------------
+# THE CLAIM, not the word (#214). The strong form above matches 'rig' — so it
+# is blind BY CONSTRUCTION to the sentence that survived it:
+#
+#   box — trust-less, network-isolated Incus VMs with Claude Code, creds-free.
+#
+# That line names no converger and no pin, and it stood in bin/box's header and
+# in the FIRST line of 'box --help' through a sweep that went green. It makes
+# the one claim #214 falsifies — that a mint lands an agent on the box — and it
+# is the copy an operator reaches without opening a file. So the claim gets its
+# own guard, in the surface the claim is made in: everything 'box --help' and
+# 'box help <verb>' print, for every verb the help itself lists.
+#
+# Driven, not read. The help is rendered from the CMDS table at runtime, so a
+# text guard over bin/box would be asserting the source of the output instead
+# of the output; this runs the real thing and greps what an operator sees.
+#
+# The rule is word-bounded 'claude|codex|grok', case-insensitively, and the
+# boundary is the whole design. box's legacy surface is full of honest ones —
+# 'user.claudebox=1', the 'claudenet' network, the pre-0.4.0 'claudebox' stack,
+# 'legacy claudebox crumbs' — and every one is an IDENTIFIER of something that
+# exists on a disk somewhere, not a claim about what a mint lands. None is a
+# word 'claude'. What -w catches is the bare product name, and in this surface
+# a bare product name is only ever the claim.
+#
+# Two live places this guard does NOT reach, both deliberate: the mint's ready
+# hint, which fires off a LEGACY template stamp and nothing else (its own
+# comment argues that at the call site), and 'box export's warning that the
+# tarball holds 'agent logins (Claude, Codex, Grok)' — which describes what an
+# operator's own converge may have left on the disk, and stays true precisely
+# because box no longer decides what is there.
+help_verbs() {  # the verbs the help lists, out of the help itself
+  bash "$1" --help | awk '/^COMMANDS$/{c=1;next} c && /^[A-Z]/{c=0} c && /^  [a-z]/{print $1}'
+}
+help_surface() {  # <box> — every line box prints when asked what it is
+  local v
+  bash "$1" --help || return 1
+  for v in $(help_verbs "$1"); do bash "$1" help "$v" || return 1; done
+}
+help_sells_an_agent()   { help_surface "$1" 2>&1 | grep -qwiE 'claude|codex|grok'; }
+header_sells_an_agent() { sed -n '2p' "$1"       | grep -qwiE 'claude|codex|grok'; }
+check "help surface: box's own help sells no agent it does not install (#214)" 1 "" \
+  help_sells_an_agent "$BOX"
+# An absence assertion over an EMPTY surface passes by having nothing to look
+# at, so prove the surface is the whole of it: 'usage: box exec' is printed by
+# a per-verb help and by nothing else, so it is red if the verb walk breaks.
+check "help surface: ...over every verb's help and not just the banner" 0 \
+  "usage: box exec" help_surface "$BOX"
+# The header repeats the same sentence one line above the shebang, where no
+# invocation reaches it. Same claim, same guard, read as text.
+check "help surface: ...and neither does bin/box's header line (#214)" 1 "" \
+  header_sells_an_agent "$BOX"
+# The negative control, and it is the real pre-cut tree rather than a fixture —
+# located by the strong form's own walk, so this cannot rot into a hard-coded
+# SHA. An old bin/box renders its help from its own CMDS table and needs
+# nothing of the tree around it, so it can be run from a temp path: what comes
+# out is exactly what that release printed. Red there, green at HEAD.
+if [ -n "$SFPRECOMMIT" ]; then
+  SFPREBOX="$(mktemp)"; git -C "$ROOT" show "$SFPRECOMMIT:bin/box" > "$SFPREBOX"
+  check "help surface: the guard reds on the real pre-cut help (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
+    help_sells_an_agent "$SFPREBOX"
+  check "help surface: ...and on that tree's header line too" 0 "" \
+    header_sells_an_agent "$SFPREBOX"
+  rm -f "$SFPREBOX"
+fi
+# ...and it does not red the legacy identifiers, which is the boundary doing
+# the work rather than the pattern being lucky. These four are live in the
+# help at HEAD; a substring guard would red every one of them.
+SFPROBE="$(mktemp)"
+printf 'the boxnet/claudenet networks\nuser.claudebox=1 stays honored\nany legacy claudebox crumbs\nthe pre-0.4.0 %s stack\n' "'claudebox'" > "$SFPROBE"
+check "help surface: ...and the legacy claudebox/claudenet names pass (the boundary)" 1 "" \
+  grep -qwiE 'claude|codex|grok' "$SFPROBE"
+rm -f "$SFPROBE"
+
+# ---------------------------------------------------------------------------
 # render_userdata (#81, #214) — the seed's ONE substitution, and after the cut
 # @BOX_USER@ is the whole of it. What used to live here was the pin group: a
 # shim curl serving canned releases/latest redirects, the default-is-latest
@@ -4870,18 +4944,50 @@ check "probe ledger: ...which is the contract CONTRIBUTING states" 0 "" \
 # so it sat at "84 checks, 84 passing" through a cut that moved every other
 # copy to 81. Driven off ledger_declared() like the rest, rather than a
 # literal, so the next phase change moves it or reds here (#214).
-readme_quotes_the_total() {
+#
+# The DENOMINATOR is what drifted and the denominator is what is pinned. The
+# numerator is a RESULT: drills/README.md's own worked example reads 80/81, so
+# a guard demanding N-of-N would forbid the README from ever reporting a run
+# that had a failure — asserting a thing this repo does not believe. It is
+# still bounded: an integer, and never more than the ledger declares, because
+# a run cannot pass more probes than exist (#214).
+readme_quotes_the_total() {  # [<file>] — README.md unless a fixture says else
   ( set -u
     # shellcheck disable=SC2034  # skipped() appends to it; the block assumes it
     findings=()
     # shellcheck disable=SC1090  # the extracted ledger, written above
     . "$LEDGERFN"
-    local n; n="$(ledger_declared)"
-    grep -qF "**$n checks, $n passing**" "$ROOT/README.md" \
-      || { echo "README.md does not quote the ledger's own total, $n"; exit 1; } )
+    local f="${1:-$ROOT/README.md}" n pair d q
+    n="$(ledger_declared)"
+    # Both numbers out in one pass, split by parameter expansion rather than by
+    # 'read': a bare 'read' under 'set -e' is what #111's repo-wide sweep
+    # forbids, and it is right to — no match here must be a reported failure,
+    # never a silent exit.
+    pair="$(sed -n \
+      "s/.*\*\*\([0-9]\{1,\}\) checks, \([0-9]\{1,\}\) passing\*\*.*/\1 \2/p" "$f" | head -1)"
+    d="${pair%% *}"; q="${pair##* }"
+    [ -n "$pair" ] \
+      || { echo "$f quotes no '**N checks, N passing**' total at all"; exit 1; }
+    [ "$d" = "$n" ] \
+      || { echo "$f advertises $d checks; the ledger declares $n"; exit 1; }
+    [ "$q" -le "$n" ] \
+      || { echo "$f claims $q passing out of $n — more probes than exist"; exit 1; } )
 }
 check "probe ledger: ...and the total the README advertises (#214)" 0 "" \
   readme_quotes_the_total
+# The guard's own test, on the axis the round moved it: the denominator is
+# pinned and the numerator is free, so a run that HAD a failure is reportable.
+RQPROBE="$(mktemp)"
+printf 'currently **81 checks, 80 passing**\n' > "$RQPROBE"
+check "probe ledger: ...and a run with a failure is still quotable, 80/81" 0 "" \
+  readme_quotes_the_total "$RQPROBE"
+printf 'currently **84 checks, 84 passing**\n' > "$RQPROBE"
+check "probe ledger: ...while the drift that started this, 84/84, reds" 1 "advertises 84" \
+  readme_quotes_the_total "$RQPROBE"
+printf 'currently **81 checks, 99 passing**\n' > "$RQPROBE"
+check "probe ledger: ...and so does passing more probes than exist" 1 "more probes than exist" \
+  readme_quotes_the_total "$RQPROBE"
+rm -f "$RQPROBE"
 
 check "probe ledger: a complete run is short in nothing" 0 "[]" \
   led "$FULL; printf '[%s]' \"\$(ledger_short)\""

@@ -529,7 +529,7 @@ EOF
     tmux) cat <<'EOF'
 A shell that survives you. 'shell' is a child of the exec connection — if your
 terminal or SSH session drops, everything running in it is SIGHUP'd, and a
-long Claude run dies with it. This attaches a tmux session instead
+long agent run dies with it. This attaches a tmux session instead
 (new-session -A): created if new, reattached if it exists — so starting work
 and resuming after a disconnect are the same command, with no state to
 remember.
@@ -683,8 +683,8 @@ Rename a box. Incus cannot rename a running instance, so stop it first:
   box rename work archive
   box start archive
 
-Snapshots and Claude auth follow the box; anything referring to the old name by
-hand (a --from line, a script) does not.
+Snapshots and whatever you logged in inside the box follow it; anything
+referring to the old name by hand (a --from line, a script) does not.
 
 The box's id does follow it (#181). A name is an alias — mutable, and not even
 unique across tiers — so 'box info' also shows a 'user.box.id' stamped at mint
