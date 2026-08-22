@@ -69,27 +69,38 @@ check "unknown flag on list exits 2"           2 "unknown option"   "$BOX" list 
 # A flag that needs a value and gets none.
 check "--name with no value exits 2"           2 "--name needs a value" "$BOX" new --name
 # #159's hard cut is resolved before the Incus preflight, so every retired
-# spelling teaches the runtime-role form even on a machine with no daemon.
+# spelling teaches its replacement even on a machine with no daemon.
 check "new: --template blank hard-cuts to the argumentless blank mint (#159)" 2 \
   "omit --template" "$BOX" new --name work --template blank
-check "new: --template tenant hard-cuts the internal generic seed (#159)" 2 \
-  "omit --template for a blank box, or use --role <role>" \
+check "new: --template tenant hard-cuts the internal seed (#159)" 2 \
+  "omit --template, that IS the default mint" \
   "$BOX" new --name work --template tenant
 for retired in claude-box codex-box grok-box kimi-box; do
-  check "new: --template $retired hard-cuts to --role (#159)" 2 \
-    "--role $retired --size medium" "$BOX" new --name work --template "$retired"
+  check "new: --template $retired hard-cuts to a blank mint (#159, #214)" 2 \
+    "every box is blank now" "$BOX" new --name work --template "$retired"
 done
-check "new: malformed runtime roles fail before Incus (#159)" 2 \
-  "--role must be a plain rig role name" "$BOX" new --name work --role 'bad role'
-check "new: --user belongs to a runtime role (#159)" 2 \
-  "--user requires --role" "$BOX" new --name work --user dev
-check "new: --from refuses a fresh runtime role (#159)" 2 \
-  "tenant role rides along" "$BOX" new --name copy --from work --role kimi-box
+# --role is a HARD CUT and refuses LOUDLY (#214): unrecognized would be an
+# "unknown option", which teaches nothing to the operator who typed the flag
+# this release removed. Every arm of the message is asserted, because the
+# message IS the replacement path — the issue's criterion names 'box root' and
+# the bootstrap step, and a message missing either sends the operator nowhere.
+check "new: --role is refused, not unrecognized (#214)" 2 \
+  "--role is gone" "$BOX" new --name work --role claude-box
+check "new: --role's refusal names 'box root' (#214)" 2 \
+  "box root work" "$BOX" new --name work --role claude-box
+check "new: --role's refusal names the bootstrap step (#214)" 2 \
+  "rig bootstrap claude-box --user dev" "$BOX" new --name work --role anything-at-all
+check "new: --role's refusal keeps --size in the taught line (#214)" 2 \
+  "box new --name work --size medium" "$BOX" new --name work --role claude-box
+check "new: --role refuses with no value too (#214)" 2 \
+  "--role is gone" "$BOX" new --name work --role
+check "new: --user is a plain Linux user name (#159)" 2 \
+  "--user must be a plain Linux user name" "$BOX" new --name work --user 'bad user'
+check "new: --user rides the default mint, not a dedicated template (#214)" 2 \
+  "declares its own user" "$BOX" new --name work --template staging-box --user dev
 check "new: --from keeps named sizes on the fresh-mint side (#159)" 2 \
   "explicit --cpu/--memory/--disk overrides, not --size" \
   "$BOX" new --name copy --from work --size medium
-check "new: --template and --role are mutually exclusive (#159)" 2 \
-  "choose different mint paths" "$BOX" new --name work --template staging-box --role kimi-box
 check "new: an unknown named size is refused (#159)" 2 \
   "--size must be small, medium, or large" "$BOX" new --name work --size huge
 check "help new: publishes the large size row (#159)" 0 "large       8    16GiB  120GiB" \
@@ -233,9 +244,9 @@ tpl() {
   root="$1" bash -c '
     die() { echo "box: $*" >&2; exit 1; }
     . "$0"; load_template "$1"
-    printf "IMAGE=%s USER=%s REQUIRE_VM=%s NO_FALLBACK=%s AUTOSTART=%s ROLE=%s\n" \
+    printf "IMAGE=%s USER=%s REQUIRE_VM=%s NO_FALLBACK=%s AUTOSTART=%s\n" \
       "$T_IMAGE" "$T_USER" "$T_REQUIRE_VM" "$T_NO_CONTAINER_FALLBACK" \
-      "$T_AUTOSTART" "$T_BOOTSTRAP_ROLE"
+      "$T_AUTOSTART"
   ' "$TPLFN" "$2"
 }
 
@@ -264,194 +275,978 @@ printf 'BOX_IMAGE="images:debian/13/cloud"\nBOX_USER="dev"\nBOX_NO_CONTAINER_FAL
   > "$EVILROOT/templates/tenant-vm-default/box.env"
 check "load_template: NO_CONTAINER_FALLBACK round-trips (accepted + surfaced)" \
   0 "REQUIRE_VM= NO_FALLBACK=1" tpl "$EVILROOT" tenant-vm-default
-# BOX_BOOTSTRAP_ROLE (#81): accepted and surfaced through the real parser —
-# and the value is a rig role NAME, nothing more. It is handed to
-# 'incus exec … rig bootstrap <role>' at mint, so anything shell-shaped in
-# it must die at parse time, on the host, before a guest exists.
+# BOX_BOOTSTRAP_ROLE (#81) named the role box auto-ran after mint. #214 cut the
+# hook it fed, so the key is no longer in the allowlist and a box.env carrying
+# it now dies BY NAME at parse time — the loud shape, not a silently ignored
+# key that would leave an operator believing their template still converges.
 mkdir -p "$EVILROOT/templates/tenant"
 printf 'BOX_IMAGE="images:debian/13/cloud"\nBOX_USER="claude"\nBOX_BOOTSTRAP_ROLE="claude"\n' \
   > "$EVILROOT/templates/tenant/box.env"
-check "load_template: BOX_BOOTSTRAP_ROLE round-trips (accepted + surfaced)" \
-  0 "ROLE=claude" tpl "$EVILROOT" tenant
-printf 'BOX_IMAGE="images:debian/13/cloud"\nBOX_USER="claude"\nBOX_BOOTSTRAP_ROLE="claude; rm -rf /"\n' \
-  > "$EVILROOT/templates/tenant/box.env"
-check "load_template: a shell-shaped BOX_BOOTSTRAP_ROLE dies at the gate" \
-  1 "not a sane role name" tpl "$EVILROOT" tenant
+check "load_template: BOX_BOOTSTRAP_ROLE is refused by name (#214)" \
+  1 "unknown key 'BOX_BOOTSTRAP_ROLE'" tpl "$EVILROOT" tenant
+check "load_template: ...and the refusal says a template does not converge (#214)" \
+  1 "none for convergence" tpl "$EVILROOT" tenant
 rm -rf "$EVILROOT"
 
 # ---------------------------------------------------------------------------
-# render_userdata (#81) — the seed's ONE substitution, driven for real: the
-# rig pin point. RIG_REPO defaults to heavy-duty/rig and RIG_REF to rig's
-# LATEST RELEASE, resolved at mint off the releases/latest redirect (#150);
-# RIG_REPO/RIG_REF override at mint (how a rig branch under review reaches a
-# guest); and a hostile value — the tokens land inside a runcmd shell line —
-# dies on the host before touching the YAML. bash's =~ anchors the WHOLE
-# string, so a multi-line value cannot sneak one clean line past it (the
-# line-oriented grep -q failure mode).
+# THE STRONG FORM (#214). box provisions and manages VMs, and it does not
+# converge them — so after this release bin/box and templates/ name the
+# converger nowhere they ACT, and the four pin helpers do not exist.
 #
-# A shim curl serves canned redirects, the same way test/release.sh drives
-# install.sh's own channel probe: the suite must never depend on github.com
-# being up, or on which rig release is latest the day it runs.
-# ---------------------------------------------------------------------------
-RIGSHIM="$(mktemp -d)"
-cat > "$RIGSHIM/curl" <<'SHIM'
-#!/usr/bin/env bash
-# Fake curl for the rig pin probe. FAKE_REDIRECT is what GitHub's
-# releases/latest answers with; FAKE_CURL_RC makes the request itself fail;
-# FAKE_CURL_LOG records every URL asked for, which is how "how many probes
-# did one mint make?" becomes an assertion.
-url=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -o|--output|-w|--write-out|-m|--max-time) shift 2 ;;
-    -*) shift ;;
-    *) url="$1"; shift ;;
-  esac
+# This guard owns the comment-stripping rule, so it cannot be argued with
+# later. A line is a comment when its first non-blank character is '#'; every
+# other line is checked whole, trailing comments included, because a rule that
+# tried to strip an inline '#' from shell or YAML would have to know which ones
+# are inside a string. Prose may name the converger — that is what the issue
+# blesses — so comments are stripped, and so is exactly ONE region of bin/box:
+# --role's refusal message, which the issue's own criteria require to name
+# 'box root' AND the bootstrap step. That region is delimited by the sentinel
+# pair below and the guard asserts there is exactly one of it, so widening the
+# exception means adding a visible sentinel pair and turning this red.
+#
+# The word boundary is not decoration: 'origin' and 'right' both contain the
+# three letters, and a substring match would red the whole file for saying
+# 'origin=mint'.
+strongform() {   # <file> — the non-comment, non-prose body
+  awk '
+    /^# box-strong-form-prose-begin$/ { prose = 1; next }
+    /^# box-strong-form-prose-end$/   { prose = 0; next }
+    prose { next }
+    $0 ~ /^[[:space:]]*#/ { next }
+    { print }
+  ' "$1"
+}
+# Called from THIS shell, never through 'bash -c': a helper that is not
+# exported comes back 127 from a child, and 127 is a non-zero exit — which is
+# what an absence assertion wants, so the guard would pass by not existing.
+sf_names_converger() { strongform "$1" | grep -qwE 'rig'; }
+sf_names_pin()       { strongform "$1" | grep -qE 'RIG_REPO|RIG_REF'; }
+check "strong form: bin/box carries exactly one prose exception (#214)" 0 "1" \
+  grep -c "^# box-strong-form-prose-begin$" "$ROOT/bin/box"
+check "strong form: ...and it is closed" 0 "1" \
+  grep -c "^# box-strong-form-prose-end$" "$ROOT/bin/box"
+check "strong form: no acting line in bin/box names the converger (#214)" 1 "" \
+  sf_names_converger "$ROOT/bin/box"
+check "strong form: bin/box names no pin variable where it acts (#214)" 1 "" \
+  sf_names_pin "$ROOT/bin/box"
+for f in "$ROOT"/templates/*/box.env "$ROOT"/templates/*/user-data.yaml; do
+  rel="templates/$(basename "$(dirname "$f")")/$(basename "$f")"
+  check "strong form: $rel names the converger nowhere at all (#214)" 1 "" \
+    grep -qwE 'rig|RIG_REPO|RIG_REF' "$f"
+  check "strong form: $rel has no prose exception of its own (#214)" 1 "" \
+    grep -q 'box-strong-form-prose' "$f"
 done
-[ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
-case "$url" in
-  */releases/latest)
-    [ "${FAKE_CURL_RC:-0}" -eq 0 ] || exit "${FAKE_CURL_RC}"
-    printf '%s' "${FAKE_REDIRECT-}"; exit 0 ;;
-  *) exit 22 ;;
-esac
+# The four pin helpers are UNDEFINED, by name. The seed no longer carries a pin
+# to resolve, so nothing reads them — and a resolver left behind is a mint that
+# can still make a HEAD request nobody asked for.
+for h in rig_repo rig_ref rig_latest_release rig_pin_resolve; do
+  check "strong form: $h is undefined in bin/box (#214)" 1 "" \
+    grep -qE "^$h\\(\\)" "$ROOT/bin/box"
+done
+# The guard must FAIL where it is supposed to. Drive it against a fixture that
+# names the converger on an acting line: a guard nobody has watched go red is
+# a guard asserting nothing.
+SFPROBE="$(mktemp)"
+printf '# a comment naming rig is fine\necho "rig bootstrap claude-box"\n' > "$SFPROBE"
+check "strong form: the guard reds on an acting line (the guard's own test)" 0 "" \
+  sf_names_converger "$SFPROBE"
+printf '# box-strong-form-prose-begin\necho "rig bootstrap claude-box"\n# box-strong-form-prose-end\n' > "$SFPROBE"
+check "strong form: ...and passes the same line inside the prose region" 1 "" \
+  sf_names_converger "$SFPROBE"
+# A word boundary, not a substring: 'origin=mint' and 'the right side' both
+# carry the three letters, and a substring guard would red the whole file for
+# saying either.
+printf 'echo "user.box.origin=mint  # the right side to fail on"\n' > "$SFPROBE"
+check "strong form: ...and does not red 'origin' or 'right' (the boundary)" 1 "" \
+  sf_names_converger "$SFPROBE"
+rm -f "$SFPROBE"
+
+# THE PRE-CUT TREE, not a fixture. The three tests above prove the helper can
+# match a line someone invented for it; the issue's test plan asks for the
+# exact guard driven against the ACTUAL tree this PR cut, and observed RED
+# there. The difference is not pedantry: a guard tuned to its own fixture is
+# the failure this repo keeps refusing, and only the real tree can show the
+# guard would have caught the thing it was written for.
+#
+# The pre-cut commit is LOCATED, never named. A hard-coded SHA rots the moment
+# the branch rebases, and a SKIP on "SHA not found" is a guard that silently
+# stops guarding — so this walks back from HEAD and asks the guard itself which
+# ancestor is the pre-cut one. Unreachable history is a FAILURE and not a skip;
+# CI checks out at fetch-depth 0 for exactly this class of check.
+sf_precut_ancestor() {
+  local c out="$1"
+  while read -r c; do
+    git -C "$ROOT" show "$c:bin/box" > "$out" 2>/dev/null || continue
+    if sf_names_converger "$out"; then printf '%s' "$c"; return 0; fi
+  done < <(git -C "$ROOT" rev-list --max-count=500 HEAD 2>/dev/null)
+  return 1
+}
+SFPRE="$(mktemp)"
+SFPRECOMMIT="$(sf_precut_ancestor "$SFPRE" || true)"
+if [ -n "$SFPRECOMMIT" ]; then
+  check "strong form: the guard reds on the real pre-cut tree (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
+    sf_names_converger "$SFPRE"
+  check "strong form: ...and the pin guard reds on that same tree" 0 "" \
+    sf_names_pin "$SFPRE"
+  # The other half of a negative control: the same two helpers, same shell,
+  # green at HEAD. Red-there-and-green-here is the pair that means something;
+  # either alone is satisfied by a guard that is simply broken.
+  check "strong form: ...and both are green at HEAD (the control's other half)" 1 "" \
+    sf_names_converger "$ROOT/bin/box"
+else
+  check "strong form: a pre-cut ancestor is reachable to drive the guard against" 0 \
+    "" false
+fi
+rm -f "$SFPRE"
+
+# The extent of the exception, not just its count. The guard asserts there is
+# exactly ONE prose region, so a SECOND one cannot appear quietly — but it said
+# nothing about the first one GROWING, and an acting line added between the
+# existing sentinels passed silently. Bound it by the property the exception
+# was granted for: box may name the converger where it TEACHES, never where it
+# ACTS, so everything inside the region is a comment, the refusal function's
+# own frame, or a line that only prints or exits. A line count would red on a
+# reformat and pass on a curl; this reds on the curl.
+sf_region_only_prints() {
+  local stray
+  stray="$(awk '/^# box-strong-form-prose-begin$/,/^# box-strong-form-prose-end$/' "$1" \
+    | grep -vE '^#|^[[:space:]]*$|^refuse_role\(\)[[:space:]]*\{$|^\}$|^[[:space:]]+echo([[:space:]]|$)|^[[:space:]]+exit[[:space:]]+[0-9]+$')"
+  [ -z "$stray" ] || { printf 'acting line inside the prose region:\n%s\n' "$stray"; return 1; }
+}
+check "strong form: the prose region only prints and exits (#214)" 0 "" \
+  sf_region_only_prints "$ROOT/bin/box"
+SFPROBE="$(mktemp)"
+printf '# box-strong-form-prose-begin\nrefuse_role() {\n  echo "box: teaching is fine" >&2\n  curl -fsSL https://example.invalid/install.sh | bash\n}\n# box-strong-form-prose-end\n' > "$SFPROBE"
+check "strong form: ...and an acting line added INSIDE it reds (the guard's own test)" 1 "" \
+  sf_region_only_prints "$SFPROBE"
+rm -f "$SFPROBE"
+
+# ---------------------------------------------------------------------------
+# THE CORPUS, not one fragment (#214 §5, amended by triage 2026-08-22).
+#
+# changelog.d/ is assembled WHOLE into a release's section, so the unit that
+# reaches the tag is the DIRECTORY and not the file this PR adds. A fragment
+# already sitting here announcing what this cut removes ships alongside the
+# fragment announcing the removal, however carefully the new one is worded —
+# and a record that reports a fact the tree no longer has is the #153 defect
+# class, in the one directory whose entire output is the release notes.
+#
+# So the rule is the corpus: no surviving fragment announces --role, a pin, a
+# converger, or a seed set that does not exist. Two exceptions, and they are
+# named HERE rather than remembered, because an exception a reviewer has to
+# recall is one nobody can red:
+#
+#   214.md  — this release's own removals. It must name what it removes; a
+#             BREAKING entry that cannot say '--role' is not an entry.
+#   159.md  — one line, 'Retired agent template spellings'. That clause is
+#             HISTORY and is correct as history: those spellings were retired,
+#             and the sentence says so in the past tense about a thing that
+#             happened, not in the present about a thing that exists.
+#
+# Both exceptions are asserted to still HIT below. An absence sweep whose
+# exception list has quietly emptied is asserting nothing, and this one would
+# go green on a directory with no fragments in it at all.
+#
+# The pattern is the acceptance criterion's, verbatim and case-insensitive, so
+# what the suite enforces and what the panel greps cannot drift apart.
+CL_PATTERN='\brig\b|RIG_RE(PO|F)|--role|agent (box|boxes|seed|seeds|template|templates)|blank template'
+cl_announces_removed() {          # <file>
+  grep -qEi "$CL_PATTERN" "$1"
+}
+cl_announces_removed_except() {   # <file> <fixed string the one blessed line carries>
+  grep -vF -- "$2" "$1" | grep -qEi "$CL_PATTERN"
+}
+check "corpus: 214.md still names the removal it announces (#214)" 0 "" \
+  cl_announces_removed "$ROOT/changelog.d/214.md"
+check "corpus: 159.md still carries the history clause the sweep excepts (#214)" 0 "1" \
+  grep -c 'Retired agent template spellings' "$ROOT/changelog.d/159.md"
+# Every tracked file in the directory, not a *.md glob: the criterion greps
+# changelog.d/ whole, and README.md and shape assemble into nothing but are
+# read by the same people.
+#
+# The walk is 'git ls-files', so it asserts over TRACKED files and a checkout
+# without git would hand it an empty list — and an absence sweep over an empty
+# list passes by having nothing to look at, which is the exact failure mode the
+# exception list above is written to avoid. So the walk proves it reached
+# something before it sweeps, and it proves it by naming the two files the
+# exceptions name: if either is missing from the list, the exceptions are
+# excepting nothing and the sweep is asserting nothing.
+CL_TRACKED="$(git -C "$ROOT" ls-files changelog.d 2>/dev/null)"
+cl_walk_reaches() { printf '%s\n' "$CL_TRACKED" | grep -qxF "$1"; }
+check "corpus: the walk reaches 214.md, which the first exception names (#214)" 0 "" \
+  cl_walk_reaches changelog.d/214.md
+check "corpus: ...and 159.md, which the second names — an empty walk sweeps nothing" 0 "" \
+  cl_walk_reaches changelog.d/159.md
+while read -r rel; do
+  [ -n "$rel" ] || continue
+  case "$rel" in
+    changelog.d/214.md) continue ;;
+    changelog.d/159.md)
+      check "corpus: $rel announces nothing removed but its history clause (#214)" 1 "" \
+        cl_announces_removed_except "$ROOT/$rel" 'Retired agent template spellings' ;;
+    *)
+      check "corpus: $rel announces nothing this release removes (#214)" 1 "" \
+        cl_announces_removed "$ROOT/$rel" ;;
+  esac
+done <<< "$CL_TRACKED"
+# The guard's own test, on the two shapes it exists to tell apart: a stale
+# SUBJECT — true in substance, naming a seed set #209 collapsed — and the same
+# claim repaired onto the tree that exists. The repair is the ruling's, D1
+# restated: the hygiene four fragments called an agent-box property is now
+# every ordinary box's, which is why 'Agent boxes' → 'Every ordinary box' and
+# not 'Agent boxes' → 'Tenant boxes'.
+CLPROBE="$(mktemp)"
+printf -- '- Agent boxes cap /tmp at a fixed 1GiB (#178).\n' > "$CLPROBE"
+check "corpus: the guard reds on a stale subject (the guard's own test)" 0 "" \
+  cl_announces_removed "$CLPROBE"
+printf -- '- Every ordinary box caps /tmp at a fixed 1GiB (#178).\n' > "$CLPROBE"
+check "corpus: ...and passes the repaired line" 1 "" \
+  cl_announces_removed "$CLPROBE"
+# A word boundary here too, and it matters more than in bin/box: 'rigid' and
+# 'origin' are both ordinary changelog English.
+printf -- '- A rigid schema, checked at origin, for the right reasons.\n' > "$CLPROBE"
+check "corpus: ...and does not red 'rigid', 'origin' or 'right' (the boundary)" 1 "" \
+  cl_announces_removed "$CLPROBE"
+rm -f "$CLPROBE"
+# The real pre-amendment fragment, not a fixture — the same negative control
+# the strong form gets, and for the same reason: a guard tuned to a line
+# someone invented for it has not shown it would have caught the line that was
+# actually there. 177.md is the one with content to remove rather than a
+# subject to repair, so it is the one worth driving. The ancestor is the strong
+# form's located pre-cut commit; an unreachable one FAILS above and is not
+# re-diagnosed here.
+if [ -n "$SFPRECOMMIT" ]; then
+  CLPRE="$(mktemp)"
+  git -C "$ROOT" show "$SFPRECOMMIT:changelog.d/177.md" > "$CLPRE" 2>/dev/null || true
+  check "corpus: the guard reds on the real pre-amendment 177.md (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
+    cl_announces_removed "$CLPRE"
+  check "corpus: ...and is green on the amended one (the control's other half)" 1 "" \
+    cl_announces_removed "$ROOT/changelog.d/177.md"
+  rm -f "$CLPRE"
+fi
+
+# ---------------------------------------------------------------------------
+# THE CLAIM, not the word (#214). The strong form above matches 'rig' — so it
+# is blind BY CONSTRUCTION to the sentence that survived it:
+#
+#   box — trust-less, network-isolated Incus VMs with Claude Code, creds-free.
+#
+# That line names no converger and no pin, and it stood in bin/box's header and
+# in the FIRST line of 'box --help' through a sweep that went green. It makes
+# the one claim #214 falsifies — that a mint lands an agent on the box — and it
+# is the copy an operator reaches without opening a file. So the claim gets its
+# own guard, in the surface the claim is made in: everything 'box --help' and
+# 'box help <verb>' print, for every verb the help itself lists.
+#
+# Driven, not read. The help is rendered from the CMDS table at runtime, so a
+# text guard over bin/box would be asserting the source of the output instead
+# of the output; this runs the real thing and greps what an operator sees.
+#
+# The rule is word-bounded 'claude|codex|grok', case-insensitively, and the
+# boundary is the whole design. box's legacy surface is full of honest ones —
+# 'user.claudebox=1', the 'claudenet' network, the pre-0.4.0 'claudebox' stack,
+# 'legacy claudebox crumbs' — and every one is an IDENTIFIER of something that
+# exists on a disk somewhere, not a claim about what a mint lands. None is a
+# word 'claude'. What -w catches is the bare product name, and in this surface
+# a bare product name is only ever the claim.
+#
+# Two live places this guard does NOT reach, both deliberate: the mint's ready
+# hint, which fires off a LEGACY template stamp and nothing else (its own
+# comment argues that at the call site), and 'box export's warning that the
+# tarball holds 'agent logins (Claude, Codex, Grok)' — which describes what an
+# operator's own converge may have left on the disk, and stays true precisely
+# because box no longer decides what is there.
+help_verbs() {  # the verbs the help lists, out of the help itself
+  bash "$1" --help | awk '/^COMMANDS$/{c=1;next} c && /^[A-Z]/{c=0} c && /^  [a-z]/{print $1}'
+}
+help_surface() {  # <box> — every line box prints when asked what it is
+  local v
+  bash "$1" --help || return 1
+  for v in $(help_verbs "$1"); do bash "$1" help "$v" || return 1; done
+}
+help_sells_an_agent()   { help_surface "$1" 2>&1 | grep -qwiE 'claude|codex|grok'; }
+header_sells_an_agent() { sed -n '2p' "$1"       | grep -qwiE 'claude|codex|grok'; }
+check "help surface: box's own help sells no agent it does not install (#214)" 1 "" \
+  help_sells_an_agent "$BOX"
+# An absence assertion over an EMPTY surface passes by having nothing to look
+# at, so prove the surface is the whole of it: 'usage: box exec' is printed by
+# a per-verb help and by nothing else, so it is red if the verb walk breaks.
+check "help surface: ...over every verb's help and not just the banner" 0 \
+  "usage: box exec" help_surface "$BOX"
+# The header repeats the same sentence one line above the shebang, where no
+# invocation reaches it. Same claim, same guard, read as text.
+check "help surface: ...and neither does bin/box's header line (#214)" 1 "" \
+  header_sells_an_agent "$BOX"
+# The negative control, and it is the real pre-cut tree rather than a fixture —
+# located by the strong form's own walk, so this cannot rot into a hard-coded
+# SHA. An old bin/box renders its help from its own CMDS table and needs
+# nothing of the tree around it, so it can be run from a temp path: what comes
+# out is exactly what that release printed. Red there, green at HEAD.
+if [ -n "$SFPRECOMMIT" ]; then
+  SFPREBOX="$(mktemp)"; git -C "$ROOT" show "$SFPRECOMMIT:bin/box" > "$SFPREBOX"
+  check "help surface: the guard reds on the real pre-cut help (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
+    help_sells_an_agent "$SFPREBOX"
+  check "help surface: ...and on that tree's header line too" 0 "" \
+    header_sells_an_agent "$SFPREBOX"
+  rm -f "$SFPREBOX"
+fi
+# ...and it does not red the legacy identifiers, which is the boundary doing
+# the work rather than the pattern being lucky. These four are live in the
+# help at HEAD; a substring guard would red every one of them.
+SFPROBE="$(mktemp)"
+printf 'the boxnet/claudenet networks\nuser.claudebox=1 stays honored\nany legacy claudebox crumbs\nthe pre-0.4.0 %s stack\n' "'claudebox'" > "$SFPROBE"
+check "help surface: ...and the legacy claudebox/claudenet names pass (the boundary)" 1 "" \
+  grep -qwiE 'claude|codex|grok' "$SFPROBE"
+rm -f "$SFPROBE"
+
+# ---------------------------------------------------------------------------
+# THE PAGES AN OPERATOR IS SENT TO (#214). Three rounds of this PR have ended
+# the same way: the mechanism cut complete, and one more prose surface still
+# selling the box the cut stops minting. Round 1 was CONTRIBUTING.md, round 2
+# bin/box's header and the first line of 'box --help', round 3
+# docs/box-recipe.md — a file this diff does not otherwise touch, linked by
+# name from README.md's lede, in the paragraph right after the new cold-start
+# promise. Each was invisible to the guards above BY CONSTRUCTION: the strong
+# form reads bin/box and templates/, and the help guard drives the help. A
+# fourth round of the same finding is a guard nobody wrote, so here it is.
+#
+# The set is the CLAIM, not the pages the last three rounds happened to land
+# on — bounding it to those four would be this issue's own defect written into
+# the fixture built to end it. It is every operator-facing page this repo
+# ships: the README, the contributor's page, the file every agent entering the
+# repo reads first, both design pages, and the drill's two. The last of those
+# are not padding — drill/README.md and drills/README.md are pages round 1
+# swept BY HAND for retired agent and role claims, so leaving them out holds
+# two already-failed surfaces with nothing but somebody's memory.
+#
+# Three exclusions, and they stay a comment only because the list is explicit;
+# if this ever becomes a glob they have to be enforced in code. docs/plans/ is
+# out — dated design records, true of the day they were written, the same
+# "history is correct as history" rule that excepts 159.md's one clause in the
+# corpus sweep above. .ceremony/ is out as vendored from another repo.
+# CHANGELOG.md and drills/0.9.*.md are out as released history, which this cut
+# does not reach back into.
+#
+# Two rules, because the defect had two shapes.
+DOC_PAGES="README.md CONTRIBUTING.md AGENTS.md docs/box-recipe.md docs/box-design.md"
+DOC_PAGES="$DOC_PAGES drill/README.md drills/README.md"
+#
+# RULE 0 — EVERY PAGE IN THE CORPUS EXISTS.
+#
+# Both rules below are ABSENCE assertions: they pass when nothing matches. A
+# path that is missing or misspelled matches nothing, so grep exits 1 and awk
+# exits 1 and both rules go green on a file that was never read. That makes the
+# corpus silently shrinkable — rename a page and its guard evaporates with it,
+# reporting ok. This is the same defect the two guards in the commit above had,
+# so the corpus asserts itself first and the absence rules mean something.
+for rel in $DOC_PAGES; do
+  check "docs: $rel is in the corpus and exists to be read (#214)" 0 "" \
+    test -f "$ROOT/$rel"
+done
+#
+# RULE 1 — NO PAGE CLAIMS A BOX SHIPS OR HAS AN AGENT AS A PROPERTY OF THE MINT.
+#
+# The criterion names two verbs and the first draft of this guard built one.
+# 'Ships' is what a mint DELIVERS; 'has' is what a mint LEAVES BEHIND, and the
+# second is the same claim in the tense an operator actually reads it in — 'a
+# freshly minted box has a coding agent', 'every box comes with one', 'the
+# template includes one'. All four of those stayed green against the ships-only
+# pattern, so the fourth arm below is the criterion's other half.
+#
+# The retired seed names are in the pattern: after #209 collapsed those four
+# directories, 'claude-box' in these pages is a box template that does not
+# exist. With exactly one exception — where 'rig bootstrap' LEADS it,
+# '<name>-box' is a RIG ROLE and the text is the four-step path this release
+# documents. That is the boundary doing the work: the same token, told apart by
+# whose noun it is. The prefix is INSIDE the pattern, so the exemption reads the
+# match rather than the line it sits on; filtering whole lines first (which this
+# did) drops any honest-looking line entirely, and a false claim sharing a line
+# with the documented converge went with it.
+#
+# The file is folded to one line before matching, because prose wraps and the
+# sentence that failed round 3 wrapped between 'agent already' and 'installed'.
+#
+# Two boundaries the arms are shaped around, both of them lines triage ruled
+# STANDING and neither of them exempted by name:
+#
+#   - 'gets' is not a verb here, on purpose. What a box SHIPS or HAS is a claim
+#     about the mint; what a CONVERGED box GETS is a claim about that box's
+#     state, which is still true and is how box-design.md:143 states it, four
+#     lines above 'box does not write that file and never did'.
+#   - the ownership arm binds its object TO the verb — determiner, one optional
+#     adjective, then the noun — rather than merely near it. 'A box the operator
+#     HAS CONVERGED WITH a coding agent' (box-recipe.md:33) puts a participle
+#     where the determiner must be, so it does not match, and neither does any
+#     other sentence whose agent arrives by a verb of its own.
+#
+# 'agents?([^-A-Za-z]|$)' and not '\bagent\b': a hyphen is a word boundary, so
+# '\bagent\b' matches inside 'agent-context' and would have reded both of the
+# sentences above for naming the FILE a converged box gets.
+DOC_PATTERN='(rig[ \t]+bootstrap[ \t]+)?\b(claude|codex|grok|kimi)-box\b|whichever template you minted'
+DOC_PATTERN="$DOC_PATTERN"'|\bagent\b[^.]{0,40}already installed|already installed[^.]{0,40}\bagent\b'
+DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|seed|seeds|template|templates)\b[^.]{0,40}\b(ships?|each ship)\b[^.]{0,40}\bagents?\b'
+DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|seed|seeds|template|templates)\b[^.]{0,60}'
+DOC_PATTERN="$DOC_PATTERN"'\b(has|have|comes? with|includes?|carries|carry|brings?|arrives? with|ships? with|minted[ \t]+with|leaves?[^.]{0,20} with)'
+DOC_PATTERN="$DOC_PATTERN"'[ \t]+(an?|one|the|its|your|another)?[ \t]*([A-Za-z]+[ \t]+)?agents?([^-A-Za-z]|$)'
+#
+# The one exemption left, and it reads the MATCH and never the line: the
+# documented converge, anchored so it has to LEAD the match.
+DOC_EXEMPT='^rig[ \t]+bootstrap'
+#
+# DENIAL IS NOT AN EXEMPTION ANY MORE — it is blanked from the text BEFORE the
+# claim arms ever read it, and that is the round-6 fix. Denial is what most of
+# this corpus says about agents, so a pattern this broad has to hear it; the
+# question is only when. Read afterwards it cuts both ways at once and has to be
+# stopped from cutting the wrong one, and two rounds running it was caught
+# cutting the wrong one anyway:
+#
+#   round 5, the TRAILING denial. ERE matching is leftmost-LONGEST, so the ships
+#   arm ran its window on to the LAST 'agent' it could reach and swallowed the
+#   denial in between:
+#     The box ships an agent and no agent token.
+#     match [box ships an agent and no agent] -> exempt -> green
+#   Answered by truncating the match at its FIRST 'agent'...
+#
+#   round 6, the LEADING denial, which that truncation left standing and in one
+#   sense created: with the first noun deciding, a denial that PRECEDES the
+#   claim takes the claim away with the discarded tail:
+#     A box with no agent token still ships a coding agent.
+#     match truncated to [box with no agent] -> exempt -> green
+#
+# Both are the same bug: a denial of one noun deciding another noun's claim. No
+# ordering of a post-hoc exemption fixes that, because the exemption is reading
+# a window that contains two nouns and can only vote once. Blanked first, the
+# denied noun is not there to be matched, every 'agents?' the arms can still see
+# is one nothing denies, and the arms decide on their own merits:
+#
+#   A box with [denied] token still ships a coding agent.   -> reds, correctly
+#   A box ships an agent and [denied] token.                -> reds, correctly
+#   A box ships a thin seed and no credentials, [denied].   -> greens, correctly
+#
+# README.md's creds-free line greens because it makes no surviving claim, not
+# because a window was too narrow (round 4) and not because a truncation landed
+# on the right noun (round 5). The exemption stopped cutting one way only by
+# ceasing to be a cut.
+DOC_DENIAL='\b(no|not|never|neither|nor|without)[ \t]+([a-z]+[ \t]+){0,2}agents?\b'
+doc_sells_a_minted_agent() {  # <file>
+  tr '\n' ' ' < "$1" | sed -E "s/$DOC_DENIAL/[denied]/gI" \
+    | grep -oEi "$DOC_PATTERN" \
+    | grep -qvEi "$DOC_EXEMPT"
+}
+for rel in $DOC_PAGES; do
+  check "docs: $rel claims no agent a mint does not land (#214)" 1 "" \
+    doc_sells_a_minted_agent "$ROOT/$rel"
+done
+#
+# RULE 2 — NO RUNNABLE FLOW MINTS A BOX AND THEN RUNS AN AGENT ON IT.
+#
+# The sharper half, and it survived rule 1 in the very file that failed round
+# 3: a fenced block reading 'box new' / 'box shell' / 'git clone' / 'claude'
+# makes no claim in prose at all, and ends by invoking a binary that is not on
+# the box — the same shape as the Quick start's 'gh auth login', which three
+# reviewers took as blocking in round 1. A block that mints and invokes an
+# agent must converge in between. The discriminator is the FIRST WORD of the
+# line, which is what makes it cheap and exact: 'claude' alone is an
+# invocation, 'rig bootstrap claude-box' is the converge that earns it.
+#
+# The converge arm names the CONVERGER'S installer and not any installer. A
+# bare 'install\.sh' counted box's own — the line at README.md:44 that puts box
+# on the HOST — so a block that curled box's installer, minted, and then ran
+# 'claude' passed on a convergence that never happened. Nothing in the corpus
+# sits in that hole today; the four-step path's installer is rig's and still
+# counts.
+doc_flow_skips_the_converge() {  # <file>
+  awk '
+    /^```/ {
+      if (inb) {
+        if (mint && agent && !conv)
+          { bad = 1; print FILENAME ": a block mints a box, then invokes an agent, and never converges it" }
+        inb = 0; mint = 0; agent = 0; conv = 0
+      } else inb = 1
+      next
+    }
+    inb {
+      if ($0  ~ /box[ \t]+new/)                       mint  = 1
+      if ($1  ~ /^(claude|codex|grok|kimi)$/)         agent = 1
+      if ($0  ~ /rig[ \t]+bootstrap|rig\/[^ ]*install\.sh/) conv = 1
+    }
+    END { exit(bad ? 0 : 1) }
+  ' "$1"
+}
+for rel in $DOC_PAGES; do
+  check "docs: $rel runs no agent on a box it just minted blank (#214)" 1 "" \
+    doc_flow_skips_the_converge "$ROOT/$rel"
+done
+#
+# RULE 3 — NO PAGE CALLS A BOX'S AGENT "THE BOX'S".
+#
+# §4's amendment binds three shapes and the two rules above implement two. The
+# third — 'may call a box's agent "the box's"' — was caught by hand at da6eb05,
+# by a triage grep, on a clause that stood twice in README.md and once here.
+# The possessive is the whole defect: an agent an operator installed is the
+# OPERATOR'S, running in a box that box does not own, and calling it the box's
+# is how the retired promise survives a sweep of every sentence that names a
+# mint. A hand-grep somebody remembers is what this guard exists to replace, so
+# it gets a rule at the same cost as the other two. Widening, and §4 permits it.
+DOC_OWNS="\\bbox['’]?s\\b[^.]{0,20}\\b(coding[ \\t]+)?agents?([^-A-Za-z]|\$)"
+doc_calls_the_agent_the_box_s() {  # <file>
+  tr '\n' ' ' < "$1" | grep -qEi "$DOC_OWNS"
+}
+for rel in $DOC_PAGES; do
+  check "docs: $rel calls no agent the box's (#214)" 1 "" \
+    doc_calls_the_agent_the_box_s "$ROOT/$rel"
+done
+#
+# RULE 4 — A RUNNABLE CONVERGE PINS THE TREE, NOT JUST THE INSTALLER.
+#
+# §4 spells the canonical replacement as 'curl … rig/<ref>/install.sh |
+# RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash' and binds the README to teach it
+# verbatim. The recipe abbreviated it to '| bash' and the page three lines
+# below still called <ref> "a rig release you pin there" — which is the defect:
+# the <ref> in the URL pins WHICH COPY of install.sh executes, and that
+# installer reads REF="${RIG_REF:-}" and resolves an unset value through the
+# latest-release channel. So the abbreviated line downloads an old release's
+# installer and then installs whatever is newest, and the page's own pin claim
+# is false. An operator who pinned deliberately gets an unpinned box, silently.
+#
+# Rules 1-3 could not see it: it makes no claim about a mint, invokes no agent,
+# and owns no agent. It is a claim about the CONVERGE, which is the other half
+# of what this cut moved to the operator — so if box no longer converges, the
+# one thing box's docs still owe is a converge line that does what it says.
+#
+# Scoped to rig's installer BY REPO and not by exemption: box's own installer
+# (README.md:44 and :55-57) pins with BOX_REF and is a different contract, and
+# 'rig/' simply is not in its URL. bin/box joins the corpus here because
+# refuse_role prints this same command and is the surface an operator hits
+# without reading a page at all; changelog.d/214.md teaches it too but is
+# consumed at release, so guarding a file that legitimately disappears would
+# make this rule the silent-skip the corpus rule 0 exists to prevent.
+#
+# Read on the MATCH and not the line — N1's lesson from the round above, and
+# here it also does the wrapping: the canonical form wraps with a trailing '\'
+# in a page and with '\\" >&2' inside bin/box's echo, and folding the file to
+# one line makes both of those the same window instead of two special cases.
+#
+# ...and the match is ANCHORED ON THE PIPE, which is the same lesson one rule
+# further on and the thing 'read the match' does not buy by itself. The claim
+# this rule makes is that the pin rides the pipe the curl FEEDS; a window of
+# 'somewhere in the next 120 characters' of a file folded to one line is a
+# different and weaker claim, because the window crosses fences, sentences and
+# paragraphs freely:
+#
+#   curl … rig/<ref>/install.sh | bash
+#   Set RIG_REPO=heavy-duty/rig RIG_REF=0.3.0 in your environment first.
+#   -> green: an unpinned converge laundered by a sentence ABOUT the pin
+#
+# So the pin must follow the pipe with nothing but whitespace between, and the
+# window before the pipe cannot cross one ('[^|]'). The pipe group is OPTIONAL
+# rather than required, and that is deliberate: made mandatory, a converge that
+# never pipes at all -- 'curl … rig/<ref>/install.sh > /tmp/i.sh' -- emits no
+# match, the inverted grep reads empty input, and the rule reports green on a
+# line carrying no pin whatsoever. Optional, that line matches without a pipe,
+# finds no pin, and reds. A guard must not go quiet on the shape it never
+# anticipated; both halves of this rule are the same rule 0 lesson.
+PIN_PAGES="$DOC_PAGES bin/box"
+doc_curls_rig_without_the_pin() {  # <file>
+  tr '\n' ' ' < "$1" \
+    | grep -oE 'rig/[^ ]*install\.sh[^|]{0,80}(\|[ \t]*[^|]{0,60})?' \
+    | grep -qvE '\|[ \t]*RIG_REPO=[^ ]+[ \t]+RIG_REF='
+}
+for rel in $PIN_PAGES; do
+  check "docs: $rel is in the pin corpus and exists to be read (#214)" 0 "" \
+    test -f "$ROOT/$rel"
+  check "docs: $rel pins the rig tree and not just the installer (#214)" 1 "" \
+    doc_curls_rig_without_the_pin "$ROOT/$rel"
+done
+# The negative control, and it is the real pre-cut docs/box-recipe.md rather
+# than a fixture — the same standard rounds 1 and 2 set for the strong form and
+# the corpus sweep. That file is untouched by this branch until this round, so
+# the located pre-cut ancestor carries exactly the page that shipped: red on
+# both rules there, green on both here.
+if [ -n "$SFPRECOMMIT" ]; then
+  DOCPRE="$(mktemp)"
+  git -C "$ROOT" show "$SFPRECOMMIT:docs/box-recipe.md" > "$DOCPRE" 2>/dev/null || true
+  check "docs: rule 1 reds on the real pre-cut box-recipe.md (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
+    doc_sells_a_minted_agent "$DOCPRE"
+  check "docs: rule 2 reds on that same page's four-line flow (the sharper half)" 0 \
+    "never converges it" doc_flow_skips_the_converge "$DOCPRE"
+  # Rule 3's control is the real pre-cut README.md, which carried the clause
+  # twice — :26 and :799 — and is the page triage's hand-grep caught it on.
+  git -C "$ROOT" show "$SFPRECOMMIT:README.md" > "$DOCPRE" 2>/dev/null || true
+  check "docs: rule 3 reds on the real pre-cut README.md's \"the box's coding agent\"" 0 "" \
+    doc_calls_the_agent_the_box_s "$DOCPRE"
+  rm -f "$DOCPRE"
+fi
+# ...and the boundary, which is where a pattern this broad earns its keep. All
+# seven of these are live at HEAD or in the corpus verbatim, and every one of
+# them is honest: a rig role in the documented converge, two agent-context
+# paths, a legacy stamp key, the one template that still exists, the 'gets'
+# sentence rule 1 must not touch, the 'has converged with' sentence the
+# ownership arm must not touch, and the creds-free line, which is a DENIAL that
+# names both a mint verb and the noun.
+DOCPROBE="$(mktemp)"
+{ printf 'rig bootstrap claude-box --user dev\n'
+  printf 'the file at ~/.claude/CLAUDE.md, or ~/.codex/AGENTS.md\n'
+  printf 'user.claudebox=1 stays honored forever\n'
+  printf 'box new --template staging-box mints the server seed\n'
+  printf 'A box with a coding agent on it gets a global agent-context file.\n'
+  printf 'A box the operator has converged with a coding agent gets a context file.\n'
+  printf 'A box ships with a thin seed and no credentials — no agent token, nothing.\n'; } > "$DOCPROBE"
+check "docs: ...and the rig role, the agent-context paths and staging-box pass (the boundary)" 1 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# The guard's own test on the claim it exists for, in every shape it has been
+# made in, so a green sweep above is a sweep that would have gone red. The four
+# 'has' shapes are the mutations round 4 drove against the ships-only pattern
+# and watched stay green; each is its own probe, so a narrowing of the arm shows
+# up as a named failure rather than one check that used to pass for two reasons.
+printf 'The claude-box template ships a CLI agent, so a fresh box has one.\n' > "$DOCPROBE"
+check "docs: rule 1 reds on the claim itself (the guard's own test)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'box mints VMs with a coding agent already\ninstalled — nothing to do.\n' > "$DOCPROBE"
+check "docs: ...including across the line wrap the round-3 sentence had" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'A freshly minted box has a coding agent.\n' > "$DOCPROBE"
+check "docs: rule 1 reds on 'has' — the criterion's other verb (#214)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'Every box comes with a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on 'comes with'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
+printf 'A mint leaves the box with a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on 'leaves the box with'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
+printf 'The template includes a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on 'includes'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
+# Denial launders nothing, in either position, and these are the probes that
+# say so. A negation that is the AGENT'S makes the sentence honest; a negation
+# of something else standing beside a live claim does not, wherever it stands.
+# Every one of these was green on some earlier head of this branch, which is
+# why each is written out rather than folded into one case.
+printf 'A box ships a coding agent, and no credentials.\n' > "$DOCPROBE"
+check "docs: ...and a denial beside the claim does not launder it" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# TRAILING, the round-5 shape: a denial of the SAME noun after the claim and
+# inside the arm's reach, so leftmost-longest ran the match on to it and the
+# exemption dropped the claim with it.
+printf 'The box ships an agent and no agent token.\n' > "$DOCPROBE"
+check "docs: ...and a trailing denial of the same noun does not launder it either" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'A minted box ships a coding agent; there is no agent token.\n' > "$DOCPROBE"
+check "docs: ...including across a semicolon, which is not a sentence end here" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# LEADING, the round-6 shape, and the one the truncation that answered the two
+# above could not reach: with the FIRST noun deciding, a denial placed before
+# the claim took the claim away with the discarded tail. Blanking the denial
+# first is what reds these; a post-hoc exemption cannot, whichever noun it is
+# pointed at, because the window holds two nouns and votes once.
+printf 'A box with no agent token still ships a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and a LEADING denial does not launder the claim after it (#214)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'With no agent token and no PAT, a minted box has a coding agent.\n' > "$DOCPROBE"
+check "docs: ...including two leading denials in front of the 'has' arm" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# ...and the boundary that keeps the blanking honest in the other direction: a
+# sentence whose ONLY agent noun is the denied one still greens, because after
+# the blanking there is no claim left for the arms to find. This is
+# README.md's creds-free line reduced to its shape, and it passes on its merits
+# rather than on a window width or a truncation landing well.
+printf 'A box ships with a thin seed and no credentials — no agent token, nothing.\n' > "$DOCPROBE"
+check "docs: ...and a sentence whose only agent noun is denied still passes" 1 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# The subject alternation knows the noun this PR's own prose adopted. 'Seed' is
+# what README.md:265 calls what a mint lands, so a guard blind to the word is
+# blind to the page's own vocabulary -- and these three matched NOTHING, which
+# is a different failure from matching and being exempted.
+printf 'The tenant seed includes a coding agent.\n' > "$DOCPROBE"
+check "docs: rule 1 reds on 'seed', the noun the page itself uses (#214)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'The seed carries a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on 'the seed carries'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
+printf 'A fresh box is minted with a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on the passive 'is minted with'" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# ...and the boundary the widening had to keep: README.md:265's own sentence,
+# whose subject IS 'seed' and whose verb IS 'carries', and which is honest
+# because its object is a tenant user. Binding the object to the verb is what
+# keeps it green; if the arm ever drifts back to "noun near verb", this reds.
+printf 'The seed carries a tenant user, a fixed 1GiB /tmp, swap and chrony.\n' > "$DOCPROBE"
+check "docs: ...and passes the real 'seed carries' sentence, whose object is not an agent" 1 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# Rule 1's converge boundary is now anchored to the match, so a false claim
+# sharing a line with the documented converge no longer leaves with it — the
+# hole the old whole-line 'grep -v' had.
+printf 'rig bootstrap claude-box --user dev, because the claude-box template ships an agent.\n' \
+  > "$DOCPROBE"
+check "docs: ...and a claim sharing a line with 'rig bootstrap' still reds (the match, not the line)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# Rule 3, both ways: the retired possessive, and the two shapes that must pass —
+# the agent an operator converged, named as theirs, and the box's own files.
+printf "a runbook that the box's coding agent reads and acts on\n" > "$DOCPROBE"
+check "docs: rule 3 reds on \"the box's coding agent\"" 0 "" \
+  doc_calls_the_agent_the_box_s "$DOCPROBE"
+printf "the coding agent you converged onto the box reads the box's .box/ runbook\n" > "$DOCPROBE"
+check "docs: ...and passes the converged agent named as the operator's" 1 "" \
+  doc_calls_the_agent_the_box_s "$DOCPROBE"
+printf '%s\n' '```' 'box new' 'box shell' 'claude   # brings the project up' '```' > "$DOCPROBE"
+check "docs: rule 2 reds on a mint-then-agent block" 0 "never converges it" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+printf '%s\n' '```' 'box new' 'box root work' 'rig bootstrap claude-box' 'box shell' 'claude' '```' \
+  > "$DOCPROBE"
+check "docs: ...and passes the same block with the converge in it" 1 "" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+printf '%s\n' '```' 'box new' 'box shell' 'git clone <repo>' '```' > "$DOCPROBE"
+check "docs: ...and does not red a block that mints without invoking an agent" 1 "" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+# ...and the converge is the CONVERGER'S installer. Box's own puts box on the
+# host and converges nothing, so a block carrying it is not excused; rig's is
+# the four-step path's third line and still is.
+printf '%s\n' '```' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | bash' \
+  'box new' 'box shell' 'claude' '```' > "$DOCPROBE"
+check "docs: rule 2 reds on a block whose only installer is box's own" 0 "never converges it" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+printf '%s\n' '```' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash' \
+  'box new' 'box shell' 'claude' '```' > "$DOCPROBE"
+check "docs: ...and passes the same block with rig's installer in it" 1 "" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+# Rule 4, both ways, starting with the literal the whole control is anchored on:
+# docs/box-recipe.md:45 exactly as it stood at 8dcf19c, the line round 5 blocked
+# on. It is written once, here, and every assertion below refers to THIS string
+# rather than retyping it, so the fixture and the control cannot drift apart.
+DOC_PRE_FIX_CONVERGE='curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh | bash'
+printf '%s\n' "$DOC_PRE_FIX_CONVERGE" > "$DOCPROBE"
+check "docs: rule 4 reds on a converge that pins the installer but not the tree (#214)" 0 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# Double-quoted with '\\' rather than single-quoted with a trailing '\': the
+# byte wanted is one literal backslash at end of line, and writing it inside
+# single quotes reads to shellcheck as a botched quote escape (SC1003).
+printf '%s\n' "curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \\" \
+  '  | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash' > "$DOCPROBE"
+check "docs: ...and passes the canonical form, wrapped as the README wraps it" 1 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# ...and bin/box's wrap, which is a backslash inside an echo's quotes and not a
+# shell continuation at all. Folding the file to one line is what makes these
+# the same case; a line-oriented rule would have to special-case it, and a rule
+# with a special case per surface is a rule that misses the next surface.
+printf '%s\n' '  echo "  curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \\" >&2' \
+  '  echo "    | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash" >&2' > "$DOCPROBE"
+check "docs: ...and passes bin/box's echo-wrapped copy of the same command" 1 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# ...and box's own installer is out by REPO. It pins with BOX_REF, it is a
+# different contract, and 'rig/' is not in its URL -- so the rule never sees it
+# and needs no exemption to say so. An exemption would be the thing that later
+# gets widened; a scope cannot be.
+printf '%s\n' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | bash' \
+  'curl -fsSL .../install.sh | BOX_REF=0.6.0 bash' > "$DOCPROBE"
+check "docs: ...and never fires on box's own installer, which pins with BOX_REF" 1 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# ...and the two shapes the pipe anchor exists for. The first is the round-6
+# probe: the defect line with a sentence ABOUT the pin after it, which the
+# 120-char window read as a pin and reported green. Written from the same
+# DOC_PRE_FIX_CONVERGE literal as every other assertion here, so it cannot
+# drift away from the line it is supposed to be.
+printf '%s\n' "$DOC_PRE_FIX_CONVERGE" \
+  'Set RIG_REPO=heavy-duty/rig RIG_REF=0.3.0 in your environment first.' > "$DOCPROBE"
+check "docs: rule 4 reds on an unpinned converge laundered by a sentence about the pin (#214)" 0 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+# The second is what makes the pipe group optional rather than required: a
+# converge that never pipes carries no pin either, and a rule that emits no
+# match on it would report green on the loudest possible miss.
+printf '%s\n' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh > /tmp/i.sh' \
+  > "$DOCPROBE"
+check "docs: ...and on a converge that pipes nowhere at all, so the anchor cannot go quiet" 0 "" \
+  doc_curls_rig_without_the_pin "$DOCPROBE"
+rm -f "$DOCPROBE"
+
+# RULE 4'S NEGATIVE CONTROL, and it is a real page rather than a fixture.
+#
+# §4's 2026-08-22 amendment asks for "the same guard run against the real
+# pre-cut docs/box-recipe.md". That object does not exist, and the measurement
+# is the answer rather than an argument: at the pre-cut ancestor the whole tree
+# carries ONE file matching 'rig/[^ ]*install.sh' -- test/cli.sh's pin group,
+# which this branch deletes -- box's own three installer curls pin with BOX_REF
+# and are out by repo, and templates/tenant/user-data.yaml:133 already piped
+# through RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@". The repo has only ever
+# taught the pinned form. The unpinned line was introduced by THIS branch's own
+# prose at da6eb05, when the command moved from a seed box substitutes into a
+# page an operator copies, so no pre-cut object can red this rule.
+#
+# The criterion's STANDARD is satisfiable where its object is not, and the
+# standard is what the other rules actually meet: a real file, located and
+# never hard-coded, red there and green here, loud rather than skipped. So the
+# control MUTATES the live pages -- fold the continuation, strip the pin off
+# the pipe -- and drives the guard at the result. Not a walk to 8dcf19c's blob,
+# which would be more literal and worse: rules 0-3 walk to a commit on
+# permanent history, while 8dcf19c is this branch's own, so that control's
+# survival would depend on how a human merges, and a walk that finds nothing
+# must fail loudly -- a red main for a history reason. A mutation has no
+# history dependency in either direction.
+doc_unpin_the_converge() {  # <file> -> the same page with rig's pin abbreviated off
+  awk '
+    hold != "" {                                  # the pipe under a folded curl
+      sub(/^[ \t]*/, ""); sub(/RIG_REPO=[^ ]+[ \t]+RIG_REF=[^ ]+[ \t]+/, "")
+      print hold " " $0; hold = ""; next
+    }
+    /rig\/[^ ]*install\.sh/ && /\\[ \t]*$/ {      # a page wrap: join it first
+      hold = $0; sub(/[ \t]*\\[ \t]*$/, "", hold); next
+    }
+    /rig\/[^ ]*install\.sh/ { pend = NR + 1 }     # bin/box wraps inside an echo
+    NR <= pend { sub(/RIG_REPO=[^ ]+[ \t]+RIG_REF=[^ ]+[ \t]+/, "") }
+    { print }
+    END { if (hold != "") print hold }
+  ' "$1"
+}
+# The mutation corpus is NAMED, not discovered, and every member is asserted to
+# carry a converge before it is mutated -- rule 0's lesson: a page that silently
+# drops out of a data-driven list takes its own control with it. These are the
+# three PIN_PAGES entries that curl rig's installer at HEAD; the other five make
+# no converge claim, which the loop above already proves by reading them.
+DOCMUT="$(mktemp)"
+for rel in README.md docs/box-recipe.md bin/box; do
+  check "docs: $rel carries a rig converge for the control to mutate (#214)" 0 "" \
+    grep -qE 'rig/[^ ]*install\.sh' "$ROOT/$rel"
+  doc_unpin_the_converge "$ROOT/$rel" > "$DOCMUT"
+  # The half that stops this becoming a fixture with extra steps: if the
+  # canonical form is ever reshaped past the mutation's reach, this reds rather
+  # than quietly no-opping into a control that asserts nothing.
+  check "docs: ...and the control's mutation actually bites $rel" 1 "" \
+    cmp -s "$ROOT/$rel" "$DOCMUT"
+  check "docs: rule 4 reds on the real $rel with its pin abbreviated away (#214)" 0 "" \
+    doc_curls_rig_without_the_pin "$DOCMUT"
+done
+# ...and the assertion that earns the word REAL: on the two prose pages the
+# mutation does not merely produce something the guard dislikes, it reproduces
+# docs/box-recipe.md:45 at 8dcf19c byte for byte -- the exact line round 5
+# blocked on, derived mechanically from the live page. bin/box is excluded here
+# and only here: its copy is wrapped inside an echo, so the abbreviation lands
+# as 'echo "    | bash" >&2' and there is no single line to compare.
+for rel in README.md docs/box-recipe.md; do
+  doc_unpin_the_converge "$ROOT/$rel" > "$DOCMUT"
+  check "docs: ...and $rel's abbreviation is the round-5 line byte for byte" 0 "" \
+    grep -qxF -e "$DOC_PRE_FIX_CONVERGE" "$DOCMUT"
+done
+rm -f "$DOCMUT"
+
+# ---------------------------------------------------------------------------
+# render_userdata (#81, #214) — the seed's ONE substitution, and after the cut
+# @BOX_USER@ is the whole of it. What used to live here was the pin group: a
+# shim curl serving canned releases/latest redirects, the default-is-latest
+# assertions, the hostile-value gates. All of it went with the pin. What
+# replaces it is the opposite assertion, and it is the sharper one: the pin
+# tokens are INERT TEXT now, the pin environment changes nothing, and a mint
+# makes no network request at all — so a box mints on a host that cannot reach
+# github.com, which the pin probe had quietly taken away.
+# ---------------------------------------------------------------------------
+# A curl that cannot be called without saying so. Every invocation is logged
+# and every invocation fails: 'no network call' is then proven twice over, by
+# an empty log and by a render that did not die.
+NETSHIM="$(mktemp -d)"
+NETLOG="$(mktemp)"
+cat > "$NETSHIM/curl" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
+exit 77
 SHIM
-chmod +x "$RIGSHIM/curl"
+chmod +x "$NETSHIM/curl"
 
 RUFN="$(mktemp)"
-# The pin's DEFAULTS live in rig_repo/rig_ref and the resolution behind them in
-# rig_latest_release/rig_pin_resolve (#150) — extract them alongside the
-# function that reads them, or the extracted copy silently renders an empty
-# repo and every assertion below goes green against nothing. The count guards
-# the extraction the way it always has: four helpers, four definitions.
-{ grep -cE '^rig_(repo|ref|latest_release|pin_resolve)\(\)' "$ROOT/bin/box" | grep -qx 4 || echo 'die "the rig pin helpers moved — this extraction is stale"'
-  grep -E '^rig_(repo|ref)\(\)' "$ROOT/bin/box"
-  awk '/^rig_latest_release\(\) \{/,/^\}/' "$ROOT/bin/box"
-  awk '/^rig_pin_resolve\(\) \{/,/^\}/' "$ROOT/bin/box"
-  awk '/^render_userdata\(\) \{/,/^\}/' "$ROOT/bin/box"; } > "$RUFN"
-check "render_userdata: extracted from bin/box (guards the awk)" 0 "RIG_REPO" cat "$RUFN"
-check "render_userdata: the pin's defaults came with it (guards the grep)" 0 "heavy-duty/rig" cat "$RUFN"
-check "render_userdata: the pin's RESOLUTION came with it too (#150)" 0 "releases/latest" cat "$RUFN"
-check "render_userdata: the extracted function is valid bash"    0 "" bash -n "$RUFN"
-# Two probes for two channels — box's own in install.sh (#83) and rig's here
-# (#150) — and they are the same trick, so they must stay the same trick. Not
-# byte-identical (this one takes the repo as an argument and time-boxes the
-# request), so what is asserted is the pair of facts a rewrite of either would
-# break: the redirect they read, and the tag shape they accept from it.
-# shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "the rig pin probe reads the same redirect install.sh does (#83, #150)" 0 "" \
-  bash -c 'for f in "$@"; do grep -q "releases/latest\"" "$f" || exit 1
-             grep -q "\*/releases/tag/?\*" "$f" || exit 1; done' _ "$ROOT/install.sh" "$RUFN"
+awk '/^render_userdata\(\) \{/,/^\}/' "$ROOT/bin/box" > "$RUFN"
+check "render_userdata: extracted from bin/box (guards the awk)" 0 "@BOX_USER@" cat "$RUFN"
+check "render_userdata: the extracted function is valid bash" 0 "" bash -n "$RUFN"
 
 SEED="$(mktemp)"
 printf '#cloud-config\nusers:\n  - name: "@BOX_USER@"\nruncmd:\n  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash\n' > "$SEED"
-# A synthetic seed that installs no rig. It carries no token, so it needs no
-# pin and must therefore need no NETWORK either (#150).
-NORIG="$(mktemp)"
-printf '#cloud-config\npackages:\n  - tmux\n' > "$NORIG"
-RIGLOGF="$(mktemp)"
-SEEDFILE="$SEED"   # which fixture rud renders; the no-token case swaps it
+SEEDFILE="$SEED"
 # shellcheck disable=SC2016  # $0/$1 expand in the child shell, by design
 rud() { # rud [VAR=val ...] — render the fixture seed through the real function
-  : > "$RIGLOGF"
-  env T_USER=fixture FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" \
-      FAKE_CURL_LOG="$RIGLOGF" PATH="$RIGSHIM:$PATH" "$@" \
+  : > "$NETLOG"
+  env T_USER=fixture FAKE_CURL_LOG="$NETLOG" PATH="$NETSHIM:$PATH" "$@" \
       bash -c 'die() { echo "box: $*" >&2; exit 1; }; . "$0"; render_userdata "$1"' "$RUFN" "$SEEDFILE"
 }
-# The default is the LATEST RELEASE, not main: a released box that converged
-# its guests against rig's development tip shipped a combination nobody
-# drilled, which is the whole of #150.
-check "render_userdata: the default pin is rig's LATEST RELEASE (#150)" 0 \
-  "githubusercontent.com/heavy-duty/rig/9.9.9/install.sh" rud
-check "render_userdata: ...and it reached the installer's own env too (#150)" 0 \
-  'RIG_REPO="heavy-duty/rig" RIG_REF="9.9.9"' rud
-check "render_userdata: ...and it was read off the releases/latest redirect (#150)" 0 \
-  "https://github.com/heavy-duty/rig/releases/latest" cat "$RIGLOGF"
-# The dev channel survives as an explicit opt-in — and asks the network
-# nothing, because there is nothing left to resolve.
-check "render_userdata: RIG_REF=main is still the dev channel, explicitly (#150)" 0 \
-  "githubusercontent.com/heavy-duty/rig/main/install.sh" rud RIG_REF=main
-check "render_userdata: ...and an explicit ref probes nothing (#150)" 1 "" \
-  grep -q . "$RIGLOGF"
-check "render_userdata: RIG_REPO/RIG_REF override at mint" 0 "dan-claude-bot/rig/feat/bootstrap-roles/install.sh" \
-  rud RIG_REPO=dan-claude-bot/rig RIG_REF=feat/bootstrap-roles
-check "render_userdata: the runtime user reaches cloud-init (#159)" 0 \
-  'name: "custom"' rud T_USER=custom RIG_REF=main
-# The probe follows the repo, so a fork's own releases are what a fork's seeds
-# get — one default, not a hardcoded heavy-duty/rig channel.
-rud RIG_REPO=you/rig >/dev/null 2>&1
-check "render_userdata: an overridden RIG_REPO is the repo the probe asks (#150)" 0 \
-  "https://github.com/you/rig/releases/latest" cat "$RIGLOGF"
-# A seed with no pin token needs no pin: it must render untouched AND ask the
-# network nothing. 'blank' mints on a host that cannot reach github.com.
-SEEDFILE="$NORIG"
-check "render_userdata: a seed with no pin token renders untouched (#150)" 0 "packages:" rud
-check "render_userdata: ...and never probes for a pin it will not use (#150)" 1 "" \
-  grep -q . "$RIGLOGF"
-SEEDFILE="$SEED"
-# Failing to resolve is LOUD. Falling back to main would reintroduce the exact
-# defect, quietly, on the one host where the probe could not run.
-check "render_userdata: an unresolvable pin dies rather than falling back (#150)" 1 \
-  "could not resolve rig's latest release" rud FAKE_CURL_RC=6
-check "render_userdata: ...and a repo with no releases dies the same way (#150)" 1 \
-  "could not resolve rig's latest release" \
-  rud FAKE_REDIRECT=https://github.com/heavy-duty/rig/releases
-check "render_userdata: ...naming both escape hatches, so the operator can move" 1 \
-  "RIG_REF=main" rud FAKE_CURL_RC=6
-# The resolved tag is untrusted input — it arrives off an HTTP redirect header
-# — so it meets the same allowlist an operator's RIG_REF does.
-check "render_userdata: a hostile RESOLVED tag dies on the host too (#150)" 1 "RIG_REF" \
-  rud 'FAKE_REDIRECT=https://github.com/heavy-duty/rig/releases/tag/v1"; rm -rf /; "'
-# shellcheck disable=SC2016  # $0/$1 expand in the child shells, by design
-check "render_userdata: no token survives the render" 1 "" \
-  bash -c 'env T_USER=fixture FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9" PATH="$3:$PATH" bash -c "die() { echo box: \$*; exit 1; }; . \"\$0\"; render_userdata \"\$1\"" "$1" "$2" | grep -qE "@(RIG|BOX)_"' _ "$RUFN" "$SEED" "$RIGSHIM"
-check "render_userdata: a shell-shaped RIG_REPO dies on the host" 1 "RIG_REPO" \
-  rud 'RIG_REPO=evil"; rm -rf /; "/rig'
-check "render_userdata: a spaced RIG_REF dies on the host" 1 "RIG_REF" \
-  rud 'RIG_REF=main plus junk'
-check "render_userdata: a newline-smuggled RIG_REPO dies (whole-string anchor)" 1 "RIG_REPO" \
-  rud "RIG_REPO=$(printf 'a/b\nevil')"
+check "render_userdata: the tenant user reaches cloud-init (#159)" 0 \
+  'name: "custom"' rud T_USER=custom
+# The token is INERT TEXT (#214). A test that still expected resolution here
+# would be asserting the thing this release removed, so what is asserted is
+# that the seed comes out carrying its own bytes.
+check "render_userdata: @RIG_REPO@ renders into itself — the token is inert (#214)" 0 \
+  '@RIG_REPO@/@RIG_REF@/install.sh' rud
+check "render_userdata: ...and RIG_REF in the environment does not touch it (#214)" 0 \
+  '@RIG_REPO@/@RIG_REF@/install.sh' rud RIG_REF=main
+check "render_userdata: ...nor does a pinned release (#214)" 0 \
+  '@RIG_REPO@/@RIG_REF@/install.sh' rud RIG_REF=0.3.0
+check "render_userdata: ...nor does an overridden repo (#214)" 0 \
+  '@RIG_REPO@/@RIG_REF@/install.sh' rud RIG_REPO=you/rig
+# The pin environment produces no warning either: box has no standing to
+# comment on a variable that is now somebody else's (#214).
+rud_is_silent() { local out; out="$(rud "$@" 2>&1 >/dev/null)"; [ -z "$out" ]; }
+check "render_userdata: a set pin says nothing on stderr (#214)" 0 "" \
+  rud_is_silent RIG_REF=main RIG_REPO=you/rig
+# A value that used to DIE on the host — the tokens landed inside a runcmd
+# shell line, so a smuggled quote had to be refused before it reached the YAML
+# — now cannot die, because nothing reads it. The seed renders, untouched.
+HOSTILE="$(mktemp)"
+printf '#cloud-config\npackages:\n  - tmux\n' > "$HOSTILE"
+rud_hostile() { SEEDFILE="$HOSTILE" rud 'RIG_REPO=evil"; rm -rf /; "/rig'; }
+check "render_userdata: a hostile pin value cannot die on the host any more (#214)" 0 \
+  'packages:' rud_hostile
+rm -f "$HOSTILE"
+check "render_userdata: the render makes NO network call (#214)" 1 "" \
+  grep -q . "$NETLOG"
 
-# The one generic seed renders into two measured shapes (#159): agent-class
-# when a role is present, and today's blank when it is absent. Drive both
-# through the real renderer, then make every assertion against what cloud-init
-# receives rather than against source-only sentinel blocks.
-ROLESEED="$(mktemp)"; BLANKSEED="$(mktemp)"
+# The one seed renders into ONE measured shape (#214): the agent-class hygiene,
+# unconditionally. Drive it through the real renderer, then make every
+# assertion against what cloud-init receives rather than against source.
+SEEDLOG="$(mktemp)"
 SEEDFILE="$ROOT/templates/tenant/user-data.yaml"
-rud T_USER=claude T_BOOTSTRAP_ROLE=claude-box RIG_REF=main > "$ROLESEED"
-rud T_USER=dev T_BOOTSTRAP_ROLE= RIG_REF=main > "$BLANKSEED"
-check "render_userdata: role sentinels never reach cloud-init (#159)" 1 "" \
-  grep -q '^# box-.*-only-' "$ROLESEED"
-check "render_userdata: blank sentinels never reach cloud-init (#159)" 1 "" \
-  grep -q '^# box-.*-only-' "$BLANKSEED"
+rud T_USER=dev > "$SEEDLOG"
+check "render_userdata: the tenant render makes no network call either (#214)" 1 "" \
+  grep -q . "$NETLOG"
+check "render_userdata: no sentinel survives into cloud-init (#159, #214)" 1 "" \
+  grep -q '^# box-.*-only-' "$SEEDLOG"
 check "render_userdata: source-only comments do not inflate Incus user-data (#159, #209)" 1 "" \
-  sed '1d' "$BLANKSEED" | grep -qE '^[[:space:]]*#'
+  sed '1d' "$SEEDLOG" | grep -qE '^[[:space:]]*#'
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "render_userdata: blank payload stays below one 4KiB overflow page (#209)" 0 "" \
-  bash -c '[ "$(wc -c < "$1")" -lt 4096 ]' _ "$BLANKSEED"
-check "generic seed: role tenant has no sudoers entry (#177, #159)" 1 "" \
-  grep -qE '^[[:space:]]*sudo:' "$ROLESEED"
-check "generic seed: blank tenant keeps sudo (#177, #159)" 0 "" \
-  grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$BLANKSEED"
-check "generic seed: blank omits the agent toolchain (#177, #159)" 1 "" \
-  grep -qE '^[[:space:]]*-[[:space:]]+(python3-venv|shellcheck)$' "$BLANKSEED"
-check "generic seed: blank omits the /tmp cap and swap (#178, #159)" 1 "" \
-  grep -qE 'tmp\.mount|swapfile' "$BLANKSEED"
-check "generic seed: blank still preinstalls rig (#159 ruling)" 0 "" \
-  grep -q 'heavy-duty/rig/main/install.sh' "$BLANKSEED"
-rm -f "$RUFN" "$SEED" "$NORIG" "$RIGLOGF"
+check "render_userdata: the payload stays below one 4KiB overflow page (#209)" 0 "" \
+  bash -c '[ "$(wc -c < "$1")" -lt 4096 ]' _ "$SEEDLOG"
+check "render_userdata: no token survives the render (#214)" 1 "" \
+  grep -qE '@(RIG|BOX)_' "$SEEDLOG"
+# The six rows of the seed's one hygiene (#214 section 2), each asserted
+# against the RENDERED payload — the thing cloud-init is handed.
+check "tenant seed: the tenant has no sudoers entry (#177)" 1 "" \
+  grep -qE '^[[:space:]]*sudo:' "$SEEDLOG"
+check "tenant seed: shellcheck ships (#177 decision 3)" 0 "" \
+  grep -qE '^[[:space:]]*-[[:space:]]+shellcheck$' "$SEEDLOG"
+check "tenant seed: python3-venv ships (#177 decision 3)" 0 "" \
+  grep -qE '^[[:space:]]*-[[:space:]]+python3-venv$' "$SEEDLOG"
+check "tenant seed: /tmp is capped at a FIXED 1GiB (#178)" 0 "" \
+  grep -q 'size=1G' "$SEEDLOG"
+check "tenant seed: a 4GiB swapfile is laid on the disk (#178)" 0 "" \
+  grep -q 'fallocate -l 4G /swapfile' "$SEEDLOG"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "tenant seed: chrony and its makestep drop-in ship (#174)" 0 "" \
+  bash -c 'grep -q "box-makestep.conf" "$1" && grep -qE "^[[:space:]]*-[[:space:]]+chrony$" "$1"' _ "$SEEDLOG"
+check "tenant seed: the container-aware chrony start survives (#174)" 0 "" \
+  grep -q 'systemd-detect-virt --quiet --container || systemctl start chrony' "$SEEDLOG"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "tenant seed: tmux, curl and ca-certificates ship (#65, #214)" 0 "" \
+  bash -c 'for pkg in tmux curl ca-certificates; do
+             grep -qE "^[[:space:]]*-[[:space:]]+$pkg\$" "$1" || exit 1; done' _ "$SEEDLOG"
+check "tenant seed: package_update is on — the seed installs packages (#214)" 0 "" \
+  grep -qE '^package_update: true$' "$SEEDLOG"
+# The one default spelled in two files. bin/box needs a user before
+# load_template has read one, so BOX_USER cannot be the single source — which
+# makes 'they agree' something to assert rather than to hope.
+# shellcheck disable=SC2016  # $1/$2 expand in the child shell, by design
+check "tenant seed: BOX_USER and bin/box's default are the same 'dev' (#214)" 0 "" \
+  bash -c 'grep -qx '"'"'BOX_USER="dev"'"'"' "$1" && grep -qF '"'"'user="${user:-dev}"'"'"' "$2"' \
+  _ "$ROOT/templates/tenant/box.env" "$ROOT/bin/box"
+rm -f "$RUFN" "$SEED"
 
 # YAML well-formedness needs python3 + pyyaml; the CI runner has both. Skip
 # gracefully (never silently) where they are missing.
 HAVE_YAML=0
 command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null && HAVE_YAML=1
 if [ "$HAVE_YAML" = 1 ]; then
-  check "generic seed: rendered role payload is well-formed YAML (#159)" 0 "" \
-    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$ROLESEED"
-  check "generic seed: rendered blank payload is well-formed YAML (#159)" 0 "" \
-    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$BLANKSEED"
+  check "tenant seed: the rendered payload is well-formed YAML (#159)" 0 "" \
+    python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$SEEDLOG"
 else
-  echo "skip: rendered generic payload YAML well-formedness (no python3+pyyaml here; CI has both)"
+  echo "skip: rendered payload YAML well-formedness (no python3+pyyaml here; CI has both)"
 fi
 
 for d in "$ROOT"/templates/*/; do
@@ -466,9 +1261,9 @@ for d in "$ROOT"/templates/*/; do
   # deliberate: a new template that forgets the pin must fail this same loop.
   check "template '$t': declares one of the two no-fallback demands (#175)" \
     0 "" grep -Eq '^BOX_(REQUIRE_VM|NO_CONTAINER_FALLBACK)="1"$' "$d/box.env"
-  # cloud-init is passed to Incus verbatim (modulo the two rig pin tokens),
-  # so it must exist, declare itself, and be well-formed — a mint is far too
-  # late to learn about a typo.
+  # cloud-init is passed to Incus verbatim (modulo @BOX_USER@, the one
+  # substitution left after #214), so it must exist, declare itself, and be
+  # well-formed — a mint is far too late to learn about a typo.
   check "template '$t': user-data.yaml exists" 0 "" test -f "$d/user-data.yaml"
   # shellcheck disable=SC2016  # $1 expands in the child shell, by design
   check "template '$t': user-data.yaml begins with #cloud-config" 0 "" \
@@ -489,17 +1284,17 @@ for d in "$ROOT"/templates/*/; do
   # list deliberately — the same fail-closed shape as the absence block below.
   case "$t" in
     staging-box)
-      # Self-converging fleet guests keep root: their tenant's own first act
-      # is 'sudo rig runner install' or 'sudo rig bootstrap workload-server'.
-      # Agents lose root, self-converging guests keep it — two traits, two
-      # answers, and #175's BOX_REQUIRE_VM is the one meant to be inherited.
+      # Self-converging fleet guests keep root: that guest's own first act,
+      # run by its operator from inside, needs it. Tenants lose root,
+      # self-converging guests keep it — two traits, two answers, and #175's
+      # BOX_REQUIRE_VM is the one meant to be inherited.
       check "template '$t': keeps NOPASSWD sudo — a self-converging seed (#177)" 0 "" \
         grep -qE '^[[:space:]]*sudo: "ALL=\(ALL\) NOPASSWD:ALL"$' "$d/user-data.yaml" ;;
     tenant)
-      # The source contains both alternatives; the driven ROLESEED above is
-      # the effective agent shape and is what must be unprivileged.
-      check "template 'tenant': rendered role has NO sudoers entry (#177, #159)" 1 "" \
-        grep -qE '^[[:space:]]*sudo:' "$ROLESEED" ;;
+      # One shape since #214, so the SOURCE is the effective shape: there is no
+      # conditional arm left for a sudo line to hide in.
+      check "template 'tenant': has NO sudoers entry (#177, #214)" 1 "" \
+        grep -qE '^[[:space:]]*sudo:' "$d/user-data.yaml" ;;
     *)
       # shellcheck disable=SC2016  # $1 expands in the child shell, by design
       check "template '$t': the tenant has NO sudoers entry (#177)" 1 "" \
@@ -548,8 +1343,8 @@ for d in "$ROOT"/templates/*/; do
   # listed, so a fifth agent seed inherits the requirement without an edit and
   # a fleet guest that grows a cap goes red until someone lists it deliberately.
   case "$t" in
-    blank|staging-box)
-      # Self-converging fleet guests. A workload server's /tmp at 1GiB is a
+    staging-box)
+      # A self-converging fleet guest. A workload server's /tmp at 1GiB is a
       # decision #178 did not make, and swap on a guest that is not running
       # untrusted agent code is a different question; assert the ABSENCE so
       # the scoping is pinned rather than merely true today.
@@ -577,7 +1372,7 @@ for d in "$ROOT"/templates/*/; do
       done
       # The drop-in is read at the next boot; the remount is what makes the cap
       # true on the mint boot, and it resizes a live tmpfs in place rather than
-      # unmounting /tmp under cloud-init and the rig installer.
+      # unmounting /tmp out from under cloud-init.
       check "template '$t': applies the /tmp cap on the mint boot too (#178)" 0 "" \
         grep -qE '^[[:space:]]*-[[:space:]]+test "\$\(findmnt -no FSTYPE /tmp\)" != tmpfs \|\| mount -o remount,size=1G /tmp$' "$d/user-data.yaml"
       # #178 D2: no swap means every spike is a hard OOM-kill with no grace
@@ -609,10 +1404,10 @@ for d in "$ROOT"/templates/*/; do
       check "template '$t': box.env states the /tmp and swap shape it causes (#178)" 0 "" \
         bash -c 'grep -qE "^#.*/tmp" "$1" && grep -qE "^#.*swap" "$1" && grep -qF "#178" "$1"' _ "$d/box.env" ;;
   esac
-  # Static seeds duplicate BOX_USER into cloud-init. The generic tenant seed
+  # A dedicated seed duplicates BOX_USER into cloud-init. box's own tenant seed
   # instead carries exactly the token render_userdata replaces at mint.
   if [ "$t" = tenant ]; then
-    check "template 'tenant': cloud-init carries the runtime user token (#159)" 0 "" \
+    check "template 'tenant': cloud-init carries the tenant user token (#159)" 0 "" \
       grep -qE '^[[:space:]]*-[[:space:]]+name:[[:space:]]+"@BOX_USER@"$' "$d/user-data.yaml"
   else
     tuser="$(tpl "$ROOT" "$t" | sed -n 's/.*USER=\([^ ]*\).*/\1/p')"
@@ -621,71 +1416,73 @@ for d in "$ROOT"/templates/*/; do
   fi
 
   # ------------------------------------------------------------------------
-  # The thin-template contract (#81), both halves per template:
+  # The thin-template contract (#81, #214). It used to have two halves: a seed
+  # that named a role had to preinstall the converger carrying both pin tokens,
+  # on the installer URL and on the installer's own env. box installs nothing
+  # into a guest now, so that half inverts — NO seed carries an installer line,
+  # and the assertion is its absence.
   #
-  # THE SEED — a template that names a tenant role (BOX_BOOTSTRAP_ROLE) must
-  # preinstall rig carrying BOTH pin tokens, on the installer URL and on the
-  # installer's own env, or the pin is a half-truth: a mint would fetch one
-  # ref's installer and install another ref's tree.
+  # curl and ca-certificates stay, and their reason changed rather than
+  # vanished: they carry the OPERATOR's installer, whose first line is a
+  # 'curl … | bash' run inside the box. A seed that dropped them would break
+  # the path this release replaced the mint hook with — so the packages are
+  # required and the install LINE is refused, which is a narrower assertion
+  # than "no curl" and the only one that is true.
   # ------------------------------------------------------------------------
-  trole="$(tpl "$ROOT" "$t" | sed -n 's/.*ROLE=\([^ ]*\).*/\1/p')"
-  if [ -n "$trole" ] || [ "$t" = tenant ]; then
-    check "template '$t': the seed installs rig (role '$trole')" 0 "" \
-      grep -q 'install.sh' "$d/user-data.yaml"
-    # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-    check "template '$t': the rig install carries the @RIG_REPO@ pin token" 0 "" \
-      bash -c 'grep "install.sh" "$1" | grep -q "@RIG_REPO@/@RIG_REF@"' _ "$d/user-data.yaml"
-    # shellcheck disable=SC2016
-    check "template '$t': the pin reaches the installer's env too" 0 "" \
-      bash -c 'grep "install.sh" "$1" | grep -q "RIG_REPO=\"@RIG_REPO@\" RIG_REF=\"@RIG_REF@\""' _ "$d/user-data.yaml"
-    # HOME=/root: a scar found live — cloud-init's runcmd has no $HOME and
-    # rig's installer (set -u) dies on it (rig#39). The pin must survive
-    # every seed rewrite.
-    # shellcheck disable=SC2016
-    check "template '$t': the rig install pins HOME=/root (runcmd has no \$HOME)" 0 "" \
-      bash -c 'grep "install.sh" "$1" | grep -q "HOME=/root "' _ "$d/user-data.yaml"
-  fi
+  # shellcheck disable=SC2016  # $1 expands in the child shell, by design
+  check "template '$t': the seed installs no converger (#214)" 1 "" \
+    bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -q "install.sh"' _ "$d/user-data.yaml"
+  # shellcheck disable=SC2016
+  check "template '$t': ...and pipes nothing into a shell at all (#214)" 1 "" \
+    bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qE "\\| *(HOME=[^ ]* )?(bash|sh)\\b"' _ "$d/user-data.yaml"
+  for pkg in curl ca-certificates; do
+    check "template '$t': keeps '$pkg' for the operator's installer (#214)" 0 "" \
+      grep -qE "^[[:space:]]*-[[:space:]]+$pkg\$" "$d/user-data.yaml"
+  done
   # ------------------------------------------------------------------------
-  # THE ABSENCE — no tenant content in ANY template, ever again. Everything a
-  # box becomes lives in rig's roles (rig#31); a template that grows an agent
-  # CLI, docker, node, a tailnet join or a context-file heredoc is the
-  # regression this suite exists to refuse. Greps run over EFFECTIVE
+  # THE ABSENCE — no tenant content in ANY template, ever again. What a box
+  # becomes is converged inside it by its operator (#214); a template that
+  # grows an agent CLI, docker, node, a tailnet join or a context-file heredoc
+  # is the regression this suite exists to refuse. Greps run over EFFECTIVE
   # cloud-init lines (comments may name what they refuse — #69's idiom), and
   # they fail CLOSED: the want-exit is 1, so re-adding any of it goes red.
   # ------------------------------------------------------------------------
   # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-  check "template '$t': no agent CLI install (rig's job, rig#31)" 1 "" \
+  check "template '$t': no agent CLI install (not box's job, #214)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "claude\.ai|x\.ai|@openai|npm|nodesource|nodejs"' _ "$d/user-data.yaml"
   # shellcheck disable=SC2016
-  check "template '$t': no docker (rig's job, rig#31)" 1 "" \
+  check "template '$t': no docker (not box's job, #214)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qi docker' _ "$d/user-data.yaml"
   # shellcheck disable=SC2016
   check "template '$t': nothing that joins or admits (no tailscale/authkey/ssh)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "tailscale|authkey|ssh"' _ "$d/user-data.yaml"
   # shellcheck disable=SC2016
-  check "template '$t': no context file (the #80 guard lives in rig's roles)" 1 "" \
+  check "template '$t': no context file (box does not write one, #80, #214)" 1 "" \
     bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qiE "CLAUDE\.md|AGENTS\.md"' _ "$d/user-data.yaml"
 done
 
 # The staging seed's boot demands are part of its contract (#68/#69): the VM
-# is its trust boundary (its guest runs docker, via rig) and a server returns
-# from a host reboot without an operator. Pinned to the FILE so neither can
-# quietly vanish in a rewrite.
+# is its trust boundary (its guest runs docker, once converged) and a server
+# returns from a host reboot without an operator. Pinned to the FILE so neither
+# can quietly vanish in a rewrite.
 check "staging-box: demands VM mode (BOX_REQUIRE_VM=1)" 0 "" \
   grep -qx 'BOX_REQUIRE_VM="1"' "$ROOT/templates/staging-box/box.env"
 check "staging-box: demands autostart (BOX_AUTOSTART=1)" 0 "" \
   grep -qx 'BOX_AUTOSTART="1"' "$ROOT/templates/staging-box/box.env"
-check "staging-box: the tenant role is 'staging-box'" 0 "ROLE=staging-box" tpl "$ROOT" staging-box
-check "staging-box: the seed user is rig's default for the role ('ops')" 0 "USER=ops" tpl "$ROOT" staging-box
+check "staging-box: keeps its 'ops' user (#214 kept the whole server shape)" 0 "USER=ops" tpl "$ROOT" staging-box
+check "staging-box: its ops user still creates itself in cloud-init" 0 "" \
+  grep -qE '^[[:space:]]*-[[:space:]]+name:[[:space:]]+ops$' "$ROOT/templates/staging-box/user-data.yaml"
+check "staging-box: BOX_BOOTSTRAP_ROLE is gone from the file (#214)" 1 "" \
+  grep -q 'BOX_BOOTSTRAP_ROLE' "$ROOT/templates/staging-box/box.env"
 # #175's five softer declarations are pinned separately from the discovery
 # guard above: the loop catches a future unpinned seed, while this catches one
 # of today's seeds accidentally inheriting staging-box's stronger policy.
 check "tenant: permits only an explicit container override (BOX_NO_CONTAINER_FALLBACK=1)" \
   0 "" grep -qx 'BOX_NO_CONTAINER_FALLBACK="1"' "$ROOT/templates/tenant/box.env"
-# The single runtime tenant seed carries the unprivileged agent tool floor;
-# adding another rig role must not add another box directory (#159).
+# box's one tenant seed carries the unprivileged tool floor unconditionally
+# (#214): there is no second shape and no role that could select one.
 for p in python3-venv shellcheck; do
-  check "tenant: ships '$p' — an unprivileged role cannot apt-install it (#177)" 0 "" \
+  check "tenant: ships '$p' — an unprivileged tenant cannot apt-install it (#177)" 0 "" \
     grep -qE "^[[:space:]]*-[[:space:]]+$p\$" "$ROOT/templates/tenant/user-data.yaml"
 done
 for retired in claude-box codex-box grok-box kimi-box; do
@@ -695,7 +1492,7 @@ done
 check "templates: retired 'blank' seed is deleted (#159)" 1 "" \
   test -e "$ROOT/templates/blank"
 
-rm -f "$TPLFN" "$ROLESEED" "$BLANKSEED"
+rm -f "$TPLFN" "$SEEDLOG"
 
 # The keys' cmd_new half, grepped the way the expose guard is (line order —
 # a daemon-free run cannot mint). Both refusals must read the EFFECTIVE mode,
@@ -815,38 +1612,26 @@ check "agent policy: an automatic mint uses a VM when KVM exists (#175)" \
   0 "" template_request_case "" 1 auto "" yes
 rm -f "$MATRIXFN"
 
-# The auto-run half of #81, grepped the same way (a daemon-free run cannot
-# mint). The seed reaches Incus through render_userdata — the pin point — not
-# through a raw cat; and the tenant convergence must order AFTER the
-# cloud-init wait (rig is installed by the seed's runcmd, so exec'ing the
-# role before cloud-init settles would race its own installer) and sit under
-# the T_BOOTSTRAP_ROLE guard (blank must never auto-run anything).
-check "new: cloud-init user-data goes through render_userdata (the rig pin)" 0 "" bash -c '
+# The seed still reaches Incus through render_userdata and not through a raw
+# cat — that is the one thing the substitution half of #81 leaves behind. The
+# auto-run half is GONE (#214): what used to sit here asserted that the
+# convergence exec ordered after the cloud-init wait, sat under the
+# T_BOOTSTRAP_ROLE guard, and named 'box root' in its failure hint. There is no
+# exec, no guard and no failure hint, so the assertions invert — a mint emits
+# no convergence exec at all, at any position, under any guard.
+check "new: cloud-init user-data goes through render_userdata" 0 "" bash -c '
   awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
     | grep -F "cloud-init.user-data" | grep -q "render_userdata"'
-# shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "new: the tenant auto-run orders after the cloud-init wait" 0 "" bash -c '
-  fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
-  wait="$(printf "%s\n" "$fn" | grep -n "cloud-init status --wait" | head -1 | cut -d: -f1)"
-  run="$(printf "%s\n" "$fn" | grep -n "incus exec.*rig bootstrap" | head -1 | cut -d: -f1)"
-  [ -n "$wait" ] && [ -n "$run" ] && [ "$wait" -lt "$run" ]'
-check "new: the auto-run sits under the T_BOOTSTRAP_ROLE guard" 0 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -B2 "incus exec .* rig bootstrap" | grep -q "T_BOOTSTRAP_ROLE"'
-check "new: a failed tenant role names the re-run (the role converges)" 0 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -q "box root .*rig bootstrap"'
-# ...and names it through the ROOT path. Since #177 the agent tenants have no
-# sudoers entry, so a hint of the old shape ('box shell' then 'sudo rig
-# bootstrap <role>') was a recovery path that died on exactly the boxes it was
-# printed for. 'box root' needs no sudoers entry (#176) and is right for all
-# six templates. Pinned per-token so the staging tailnet-join hint below —
-# 'sudo rig bootstrap workload-server', a tenant that KEPT sudo — is untouched
-# by this assertion.
-# shellcheck disable=SC2016  # the $-string is a literal in the target file
-check "new: the re-run hint does not assume tenant sudo (#177)" 1 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -q "sudo rig bootstrap \$T_BOOTSTRAP_ROLE"'
+check "new: no mint path execs a converger in the guest (#214)" 1 "" bash -c '
+  grep -E "^[[:space:]]*[^#]" "'"$ROOT"'/bin/box" | grep "incus exec" | grep -qw "rig"'
+# On ACTING lines, the same rule the strong form uses: the comment that says
+# what BOX_BOOTSTRAP_ROLE was and why it went is exactly the prose a reader
+# arriving at the allowlist needs, and deleting it would delete the record.
+sf_names() { strongform "$1" | grep -q -- "$2"; }
+check "new: T_BOOTSTRAP_ROLE is gone from bin/box's code (#214)" 1 "" \
+  sf_names "$ROOT/bin/box" 'T_BOOTSTRAP_ROLE'
+check "new: BOX_BOOTSTRAP_ROLE is gone from bin/box's code (#214)" 1 "" \
+  sf_names "$ROOT/bin/box" 'BOX_BOOTSTRAP_ROLE'
 
 # The launch phase, narrated and time-boxed (#93) — grepped the way the other
 # mint-path guards are (a daemon-free run cannot mint). Twice in the
@@ -900,20 +1685,25 @@ check "new: the overran-but-registered branch says so (not the wedge story)" 0 "
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "new: BOX_LAUNCH_TIMEOUT is documented in box help new" 0 "" bash -c '
   "'"$ROOT"'/bin/box" help new | grep "BOX_LAUNCH_TIMEOUT" | grep -q 600'
-# staging-box's creds-holding join stays OPERATOR-run: cmd_new may print it as
-# a next step, but no template and no code path auto-runs "rig bootstrap
-# workload-server" — the one absence that keeps box creds-free end to end.
-check "new: the workload join is printed, never exec'd" 1 "" bash -c '
-  grep "rig bootstrap workload-server" "'"$ROOT"'/bin/box" | grep -q "incus exec"'
-check "templates: no template names a creds-holding role" 1 "" bash -c '
-  grep -h "^BOX_BOOTSTRAP_ROLE=" "'"$ROOT"'"/templates/*/box.env | grep -qE "workload|host|custom"'
+# staging-box's creds-holding join stayed OPERATOR-run from #69 onwards, and
+# since #214 so does everything beside it. box neither runs nor prints a
+# convergence command now, so the assertion is the strongest form of the one
+# that was here: no template names a convergence role at all.
+# shellcheck disable=SC2016  # the path expands in the child shell, by design
+check "templates: no template names a convergence role at all (#214)" 1 "" bash -c '
+  grep -h "^BOX_BOOTSTRAP_ROLE=" "'"$ROOT"'"/templates/*/box.env | grep -q .'
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "new: the ready hint offers 'box root' for a server-class box (#176, #214)" 0 "" bash -c '
+  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
+    | grep -A10 "eff. = staging-box" | grep -q "box root \$name"'
 
 # ---------------------------------------------------------------------------
-# The 'pristine' mark (#104, child of heavy-duty/rig#62). The whole feature is
-# a MOMENT: the guest after cloud-init and before rig converges anything. Get
-# the position wrong by one step and the mark is a lie — a 'pristine' taken
-# after 'rig bootstrap' is a converged box wearing the wrong label, and
-# nothing at runtime would ever say so. So the position is pinned by line
+# The 'pristine' mark (#104). The whole feature is a MOMENT: the guest after
+# cloud-init and before anything converges it. Get the position wrong by one
+# step and the mark is a lie — a 'pristine' taken after a convergence run is a
+# converged box wearing the wrong label, and nothing at runtime would ever say
+# so. Since #214 box hands the box over at exactly this point, so the mark is
+# the LAST thing a fresh mint does rather than the second to last. So the position is pinned by line
 # order, the way the other mint-path guards are (a daemon-free run cannot
 # mint), and the policy half is DRIVEN against a stubbed incus.
 # ---------------------------------------------------------------------------
@@ -928,24 +1718,26 @@ check "pristine: the mark orders AFTER the cloud-init wait" 0 "" bash -c '
   wait="$(printf "%s\n" "$fn" | grep -n "cloud-init status --wait" | head -1 | cut -d: -f1)"
   snap="$(printf "%s\n" "$fn" | grep -n "snapshot_pristine " | head -1 | cut -d: -f1)"
   [ -n "$wait" ] && [ -n "$snap" ] && [ "$wait" -lt "$snap" ]'
-# BEFORE the rig hook: this is the assertion the whole issue rests on.
+# The mark used to have to order BEFORE the convergence hook — the assertion
+# the whole of #104 rested on. There is no hook to order against since #214, so
+# what replaces it is the fact that produced that ordering: nothing in the
+# fresh-mint branch touches the guest AFTER the mark. A step added below it
+# would converge the box and leave 'pristine' describing a state that no longer
+# existed when it was taken, which is exactly the lie the ordering prevented.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "pristine: the mark orders BEFORE the rig bootstrap hook (the moment)" 0 "" bash -c '
+check "pristine: nothing touches the guest after the mark (#104, #214)" 0 "" bash -c '
   fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
   snap="$(printf "%s\n" "$fn" | grep -n "snapshot_pristine " | head -1 | cut -d: -f1)"
-  run="$(printf "%s\n" "$fn" | grep -n "incus exec.*rig bootstrap.*\$T_BOOTSTRAP_ROLE" | head -1 | cut -d: -f1)"
-  [ -n "$snap" ] && [ -n "$run" ] && [ "$snap" -lt "$run" ]'
-# NOT under the T_BOOTSTRAP_ROLE guard: a blank box has no rig hook but has
-# the same pristine moment, and "box restore <box> pristine" must mean one
-# thing on every box box mints.
+  after="$(printf "%s\n" "$fn" | tail -n "+$((snap + 1))" | grep -c "incus exec")"
+  [ -n "$snap" ] && [ "$after" -eq 0 ]'
+# Unconditional, and now unconditionally so: there is no role to gate it on,
+# and "box restore <box> pristine" means one thing on every box box mints.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "pristine: the mark is unconditional, not gated on a tenant role" 0 "" bash -c '
-  fn="$(awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
-  snap="$(printf "%s\n" "$fn" | grep -n "snapshot_pristine " | head -1 | cut -d: -f1)"
-  guard="$(printf "%s\n" "$fn" | grep -n "if \[ -n \"\$T_BOOTSTRAP_ROLE\" \]" | head -1 | cut -d: -f1)"
-  [ -n "$snap" ] && [ -n "$guard" ] && [ "$snap" -lt "$guard" ]'
+check "pristine: the mark is gated on nothing at all (#104, #214)" 1 "" bash -c '
+  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
+    | grep -B4 "snapshot_pristine " | grep -qE "^[[:space:]]*if \["'
 
-# THE CLONE TRAP. --from skips cloud-init and the rig hook entirely, so the
+# THE CLONE TRAP. --from skips cloud-init entirely, so the
 # pristine moment never happens on that path. A mark taken there would be
 # "whatever the source was" — converged, worked-in — wearing a label that
 # promises pristine Debian, which is strictly worse than no mark. Pin the
@@ -1135,15 +1927,19 @@ check "rollback: a REFUSED create is not remembered (incus said no)" 0 "ABSENT" 
 # One label's mark must not answer for another's.
 check "rollback: marks do not bleed between labels" 0 "ABSENT" \
   bash -c 'marks=" manual "; . "'"$PRISFN"'"; mark_taken pristine && echo TAKEN || echo ABSENT'
-# The call site itself, pinned statically: the hook-failure message offers the
-# restore only under the guard. On a 'dir' host EVERY hook failure reaches this
-# line with no pristine mark, so an unconditional offer is a copy-pasteable
-# command that errors at the one moment the operator is standing there.
+# The one CALLER of mark_taken was the convergence hook's failure message: on a
+# 'dir' host every hook failure reached that line with no pristine mark, so an
+# unconditional offer was a copy-pasteable command that errored at the one
+# moment the operator was standing there. #214 removed the hook and the message
+# with it, so cmd_new offers no restore at all — and the assertion inverts to
+# that absence, which is what keeps a future offer from shipping ungated.
+# mark_taken() itself stays: it is the honest reader of `marks` (the never-fatal
+# contract makes the exit status unusable), and the next caller needs it.
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
-check "rollback: the hook-failure restore offer is GATED on the mark existing" 0 "" bash -c '
-  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" \
-    | grep -B12 "box restore \$name pristine. is still there" \
-    | grep -q "if mark_taken pristine; then"'
+check "rollback: cmd_new offers no restore it cannot promise (#104, #214)" 1 "" bash -c '
+  awk "/^cmd_new\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "box restore .* pristine. is still there"'
+check "rollback: mark_taken survives for the next caller (#104)" 0 "" \
+  grep -q '^mark_taken()' "$ROOT/bin/box"
 rm -f "$PRISFN"
 
 # ---------------------------------------------------------------------------
@@ -1847,11 +2643,6 @@ case "$*" in
       echo "incus: snapshot refused" >&2
       exit 1
     fi ;;
-  exec\ *\ --\ rig\ bootstrap\ *)
-    if [ "${FAKE_BOOTSTRAP_FAIL:-0}" = 1 ]; then
-      echo "unknown tenant role: synthetic-box" >&2
-      exit 2
-    fi ;;
   *volatile.base_image) printf '%s\n' "${FAKE_BASE_IMAGE-}" ;;
   # Both 'config get <i> <key>' and its --expanded form (#171 reads what the
   # instance will RUN with, profiles included) — the key is the last word
@@ -1871,13 +2662,12 @@ SHIM
 chmod +x "$MSHIM/incus"
 
 export FAKE_BASE_IMAGE=deadbeefcafe0123456789   # what the alias resolves to
-# The rig pin resolves off the network now (#150), so the mint drive carries
-# the same shim curl the render_userdata drive does — a suite that reached
-# github.com would be a suite that fails when github.com is down, and would
-# assert against whichever rig release happened to be latest that morning.
-# Every mint logs its probes to $log.curl, which is how "exactly one probe per
-# mint" and "no probe at all for a seed with no pin" become assertions.
-export FAKE_REDIRECT="https://github.com/heavy-duty/rig/releases/tag/9.9.9"
+# The mint drive carries the same failing, logging shim curl the
+# render_userdata drive does. It used to serve canned releases/latest redirects
+# because a mint resolved a pin off the network (#150); since #214 a mint
+# resolves nothing, so the shim's job inverted — every call is logged and every
+# call fails, and $log.curl staying empty is how "a mint makes no network
+# request" becomes an assertion instead of a claim.
 # The one host fact box_id() reads (#181), made to fail on demand: a shim 'cat'
 # that refuses ONLY the kernel's uuid file and execs the real one for every
 # other path. A blanket refusal would break box_version() — which reads VERSION
@@ -1897,7 +2687,7 @@ mintbox() {  # mintbox <logfile> <args...> — the real box, shimmed, no TTY
   local log="$1"; shift
   : > "$log"; : > "$log.curl"
   env FAKE_INCUS_LOG="$log" FAKE_CURL_LOG="$log.curl" \
-      PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$MSHIM:$RIGSHIM:$PATH" \
+      PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$MSHIM:$NETSHIM:$PATH" \
       "$BOX" "$@" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
@@ -1915,30 +2705,30 @@ restamp_has() { grep -F 'config set' "$1" | grep -qE "$2"; }
 # --- the write half: a fresh mint ------------------------------------------
 MLOG="$MWORK/mint.log"
 check "mint: a shimmed 'box new' runs to completion" 0 "ready" \
-  mintbox "$MLOG" new --name w1 --role claude-box --container
+  mintbox "$MLOG" new --name w1 --user claude --container
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design.
-check "mint: a role-bearing fresh mint creates exactly one snapshot (#213)" 0 "1" \
+check "mint: a fresh mint creates exactly one snapshot (#213)" 0 "1" \
   bash -c 'grep -c "^incus snapshot create " "$1"' _ "$MLOG"
 check "mint: that sole automatic snapshot is pristine (#213)" 0 "" \
   grep -qE '^incus snapshot create w1 pristine *$' "$MLOG"
 
 PRISTINE_OFF_LOG="$MWORK/pristine-off.log"
-BOX_SNAPSHOT_PRISTINE=0 RIG_REF=main \
-  mintbox "$PRISTINE_OFF_LOG" new --name pristine-off --role claude-box --container >/dev/null 2>&1
+BOX_SNAPSHOT_PRISTINE=0 \
+  mintbox "$PRISTINE_OFF_LOG" new --name pristine-off --container >/dev/null 2>&1
 check "mint: BOX_SNAPSHOT_PRISTINE=0 still suppresses the sole mark (#213)" 1 "" \
   grep -q '^incus snapshot create ' "$PRISTINE_OFF_LOG"
 
 RETIRED_KNOB_LOG="$MWORK/retired-knob.log"
-BOX_SNAPSHOT_BOOTSTRAPPED=0 RIG_REF=main \
-  mintbox "$RETIRED_KNOB_LOG" new --name retired-knob --role claude-box --container >/dev/null 2>&1
+BOX_SNAPSHOT_BOOTSTRAPPED=0 \
+  mintbox "$RETIRED_KNOB_LOG" new --name retired-knob --container >/dev/null 2>&1
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design.
 check "mint: the retired knob cannot change the one-pristine result (#213)" 0 "1" \
   bash -c 'grep -c "^incus snapshot create .* pristine *$" "$1"' _ "$RETIRED_KNOB_LOG"
 
 PRISTINE_FAIL_LOG="$MWORK/pristine-fail.log"
 pristine_failure_mint() {
-  FAKE_PRISTINE_FAIL=1 RIG_REF=main \
-    mintbox "$PRISTINE_FAIL_LOG" new --name pristine-fail --role claude-box --container
+  FAKE_PRISTINE_FAIL=1 \
+    mintbox "$PRISTINE_FAIL_LOG" new --name pristine-fail --container
 }
 check "mint: a refused pristine snapshot still leaves the mint successful (#104, #213)" 0 "ready" \
   pristine_failure_mint
@@ -1948,6 +2738,22 @@ check "mint: the refused pristine snapshot remains a loud warning (#104, #213)" 
 # on a partial stamp, and "which fact was dropped" is the useful failure.
 check "mint: stamps the schema — the stamp's SHAPE, not the box version (#103)" \
   0 "user.box.schema=1" launchline "$MLOG"
+# Still 1 AFTER #214 removed three stamped keys, and that is a decision rather
+# than an oversight — so it is pinned here with its reasoning, or the next
+# remover re-argues it from the constant's comment alone. 'user.box.role',
+# 'user.box.rig.repo' and 'user.box.rig.ref' are gone, and what survives is a
+# strict SUBSET every older reader can still read: a 0.9.x 'box info' on a
+# 0.10.0 box prints no RIG row, exactly as it would for a key that was never
+# set. Bumping to 2 would have fired "stamp schema '2' is newer than this box
+# reads" on every newly minted box, warning every operator about nothing. The
+# rule that DOES bump is repurposing a key, or a removal that leaves a survivor
+# unreadable; bin/box's comment now states all three cases.
+# The three retired keys are asserted absent by their own block below; what is
+# asserted HERE is that their removal did not move the schema.
+check "mint: ...and #214's key REMOVAL did not bump it — a subset is not a new shape" \
+  1 "" launch_has "$MLOG" 'user\.box\.schema=[^1]'
+check "stamp schema: bin/box's rule names the removal case its first wording got wrong (#214)" \
+  0 "" grep -qE '^# .*strict SUBSET of the old shape' "$ROOT/bin/box"
 check "mint: stamps the box version that minted it (#103)" \
   0 "user.box.version=$(cat "$ROOT/VERSION")" launchline "$MLOG"
 check "mint: stamps the base image ALIAS asked for (#103)" \
@@ -1958,46 +2764,49 @@ check "mint: stamps the mode it minted as (#103)" \
 # the mint knew whether a container was ASKED for or fallen back into.
 check "mint: stamps the mode that was ASKED, not only the outcome (#103)" \
   0 "user.box.mode.asked=container" launchline "$MLOG"
-check "mint: stamps the rig role box will auto-run (#103)" \
-  0 "user.box.role=claude-box" launchline "$MLOG"
-check "mint: runtime role defaults to the small cpu row (#159)" 0 "" \
+# The three RETIRED keys, asserted by their absence (#214). They are the whole
+# of what the cut removed from the stamp, and an absence assertion is the only
+# shape that catches one creeping back: a positive test for the six survivors
+# would stay green beside a fourth key nobody wanted.
+check "mint: stamps NO tenant role (#214)" 1 "" \
+  launch_has "$MLOG" 'user\.box\.role='
+check "mint: stamps NO converger repo (#214)" 1 "" \
+  launch_has "$MLOG" 'user\.box\.rig\.repo='
+check "mint: stamps NO converger ref (#214)" 1 "" \
+  launch_has "$MLOG" 'user\.box\.rig\.ref='
+check "mint: execs no converger in the guest (#214)" 1 "" \
+  grep -q '^incus exec .* bootstrap' "$MLOG"
+check "mint: the default path takes the small cpu row (#159)" 0 "" \
   launch_has "$MLOG" 'limits\.cpu=2'
-check "mint: runtime role defaults to the small memory row (#159)" 0 "" \
+check "mint: the default path takes the small memory row (#159)" 0 "" \
   launch_has "$MLOG" 'limits\.memory=2GiB'
-check "mint: the role-derived user reaches cloud-init (#159)" 0 "" \
+check "mint: --user reaches cloud-init (#159, #214)" 0 "" \
   launch_has "$MLOG" 'name: "claude"'
-check "mint: the role-derived user reaches rig bootstrap (#159)" 0 "" \
-  grep -qE '^incus exec w1 -- rig bootstrap claude-box --user claude *$' "$MLOG"
-check "mint: stamps which rig converged it — repo (#103)" \
-  0 "user.box.rig.repo=heavy-duty/rig" launchline "$MLOG"
-# The ref is the RESOLVED release, not main (#150). The stamp is the only
-# record of which rig a box was handed, so it has to name the one that was.
-check "mint: stamps which rig converged it — the RESOLVED ref (#103, #150)" \
-  0 "user.box.rig.ref=9.9.9" launchline "$MLOG"
-# ONE probe for the whole mint. Two readers ask for the pin — this stamp and
-# the seed on the same launch line — and both ask inside a command
-# substitution, so a resolution that lived in either would be discarded with
-# its subshell and the other would probe again. Two probes can straddle a rig
-# release and stamp a ref the seed did not install; the count is what proves
-# the resolution happened in the parent.
+check "mint: --user reaches the stamp (#159, #214)" 0 "" \
+  launch_has "$MLOG" 'user\.box\.user=claude'
+# THE OFFLINE PROOF, at the mint rather than at the renderer (#214). A mint of
+# a pin-bearing seed used to make a HEAD request and DIE if it failed; the shim
+# curl fails every call, so a surviving probe would both log a line and take
+# the mint down with it.
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "mint: resolves the pin exactly ONCE, in the parent shell (#150)" 0 "1" \
-  bash -c 'grep -c "releases/latest" "$1"' _ "$MLOG.curl"
-# ...and the seed on that same line carries the same answer the stamp does.
-check "mint: ...and the seed it shipped carries that same resolved ref (#150)" 0 "" \
-  launch_has "$MLOG" 'heavy-duty/rig/9\.9\.9/install\.sh'
+check "mint: makes NO network request of its own (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$MLOG.curl"
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+# The six keys that SURVIVED, named together: the absence block above says what
+# went, and this says what must not have gone with it.
+for k in schema version image mode created origin; do
+  check "mint: still stamps user.box.$k (#103, #214)" 0 "" \
+    launch_has "$MLOG" "user\.box\.$k="
+done
 
 # The one surviving dedicated template must keep the values load_template
 # read from its seed. Runtime role/user variables are empty on this path, so
 # this drive catches any later assignment that erases staging's identity and
 # silently skips convergence (#159 review round 1).
 STAGINGLOG="$MWORK/staging-template.log"
-RIG_REF=main mintbox "$STAGINGLOG" new --name staging --template staging-box --vm >/dev/null 2>&1
+mintbox "$STAGINGLOG" new --name staging --template staging-box --vm >/dev/null 2>&1
 check "mint staging: keeps the seed user stamp (#159)" 0 "" \
   launch_has "$STAGINGLOG" 'user\.box\.user=ops'
-check "mint staging: keeps the seed role stamp (#159)" 0 "" \
-  launch_has "$STAGINGLOG" 'user\.box\.role=staging-box'
 check "mint staging: keeps the server autostart demand (#68, #159)" 0 "" \
   launch_has "$STAGINGLOG" 'boot\.autostart=true'
 check "mint staging: launches as a VM (#68, #159)" 0 "" \
@@ -2006,16 +2815,27 @@ check "mint staging: keeps its 60GiB VM root device (#68, #159)" 0 "" \
   launch_has "$STAGINGLOG" 'root,size=60GiB'
 check "mint staging: disables VM secure boot (#159)" 0 "" \
   launch_has "$STAGINGLOG" 'security\.secureboot=false'
-staging_bootstrap_once() {
-  [ "$(grep -Ec '^incus exec staging -- rig bootstrap staging-box --user ops *$' "$1")" -eq 1 ]
-}
-check "mint staging: converges its role once as the ops user (#159)" 0 "" \
-  staging_bootstrap_once "$STAGINGLOG"
+# The dedicated seed converges NOTHING at mint (#214) — the whole server
+# posture is operator-run now, exactly as its tailnet join always was.
+check "mint staging: execs no converger of its own (#214)" 1 "" \
+  grep -qE '^incus exec staging .* bootstrap' "$STAGINGLOG"
+check "mint staging: renders no installer line into its seed (#214)" 1 "" \
+  launch_has "$STAGINGLOG" 'install\.sh'
+check "mint staging: keeps the ops sudo line in the rendered seed (#214)" 0 "" \
+  launch_has "$STAGINGLOG" 'NOPASSWD:ALL'
+# The retired keys are absent HERE too: staging-box was the one seed that
+# actually declared BOX_BOOTSTRAP_ROLE, so it is the one whose stamp would
+# still carry a role if the cut had been made only on the tenant path.
+check "mint staging: stamps no tenant role either (#214)" 1 "" \
+  launch_has "$STAGINGLOG" 'user\.box\.role='
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "mint staging: makes no network request either (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$STAGINGLOG.curl"
 
 # The public size table and its two higher precedence rungs, driven through a
 # real shimmed mint. VM mode makes the disk device visible on the launch argv.
 MEDIUMLOG="$MWORK/medium-size.log"
-RIG_REF=main mintbox "$MEDIUMLOG" new --name medium --role claude-box --size medium --vm >/dev/null 2>&1
+mintbox "$MEDIUMLOG" new --name medium --size medium --vm >/dev/null 2>&1
 check "mint size: medium resolves to 4 cpu (#159)" 0 "" \
   launch_has "$MEDIUMLOG" 'limits\.cpu=4'
 check "mint size: medium resolves to 8GiB memory (#159)" 0 "" \
@@ -2023,7 +2843,7 @@ check "mint size: medium resolves to 8GiB memory (#159)" 0 "" \
 check "mint size: medium resolves to a 60GiB disk (#159)" 0 "" \
   launch_has "$MEDIUMLOG" 'root,size=60GiB'
 LARGELOG="$MWORK/large-size.log"
-RIG_REF=main mintbox "$LARGELOG" new --name large --role claude-box --size large --vm >/dev/null 2>&1
+mintbox "$LARGELOG" new --name large --size large --vm >/dev/null 2>&1
 check "mint size: large resolves to 8 cpu (#159)" 0 "" \
   launch_has "$LARGELOG" 'limits\.cpu=8'
 check "mint size: large resolves to 16GiB memory (#159)" 0 "" \
@@ -2031,40 +2851,40 @@ check "mint size: large resolves to 16GiB memory (#159)" 0 "" \
 check "mint size: large resolves to a 120GiB disk (#159)" 0 "" \
   launch_has "$LARGELOG" 'root,size=120GiB'
 FLAGBEATS="$MWORK/flag-beats-size.log"
-RIG_REF=main mintbox "$FLAGBEATS" new --name flagbeats --role claude-box \
+mintbox "$FLAGBEATS" new --name flagbeats \
   --size medium --cpu 2 --container >/dev/null 2>&1
 check "mint size: --cpu beats --size medium (#159)" 0 "" \
   launch_has "$FLAGBEATS" 'limits\.cpu=2'
 ENVBEATS="$MWORK/env-beats-size.log"
-BOX_CPU=1 RIG_REF=main mintbox "$ENVBEATS" new --name envbeats --role claude-box \
+BOX_CPU=1 mintbox "$ENVBEATS" new --name envbeats \
   --size medium --container >/dev/null 2>&1
 check "mint size: BOX_CPU beats --size medium (#159)" 0 "" \
   launch_has "$ENVBEATS" 'limits\.cpu=1'
 
-# A role that did not exist when this box tree was built takes the same generic
-# path. The arbitrary name is intentionally absent from bin/box and templates/.
-FUTURELOG="$MWORK/future-role.log"
-RIG_REF=main mintbox "$FUTURELOG" new --name future --role synthetic-box \
-  --user builder --container >/dev/null 2>&1
-check "mint: a post-build rig role needs zero box registry change (#159)" 0 "" \
-  launch_has "$FUTURELOG" 'user\.box\.role=synthetic-box'
-check "mint: --user reaches the instance stamp (#159)" 0 "" \
-  launch_has "$FUTURELOG" 'user\.box\.user=builder'
-check "mint: --user reaches cloud-init (#159)" 0 "" \
-  launch_has "$FUTURELOG" 'name: "builder"'
-check "mint: --user is forwarded to rig bootstrap (#159)" 0 "" \
-  grep -qE '^incus exec future -- rig bootstrap synthetic-box --user builder *$' "$FUTURELOG"
-check "mint: the synthetic role is not hardcoded in box or a seed (#159)" 1 "" \
-  grep -Rqs synthetic-box "$ROOT/bin" "$ROOT/templates"
-
-unknown_role_mint() {
-  FAKE_BOOTSTRAP_FAIL=1 RIG_REF=main \
-    mintbox "$MWORK/unknown-role.log" new --name unknown --role synthetic-box --container
-}
-check "mint: rig's unknown-role refusal is surfaced (#159)" 1 \
-  "unknown tenant role: synthetic-box" unknown_role_mint
-check "mint: an incomplete unknown-role box prints its cleanup (#159)" 1 \
-  "box rm unknown" unknown_role_mint
+# --user rides the ordinary mint on its own (#214 D2): the tenant user was
+# never the role's to derive, so removing the role removes nothing from it.
+USERLOG="$MWORK/user-override.log"
+mintbox "$USERLOG" new --name ada --user ada --container >/dev/null 2>&1
+check "mint: --user reaches the instance stamp with no role at all (#214)" 0 "" \
+  launch_has "$USERLOG" 'user\.box\.user=ada'
+check "mint: --user reaches cloud-init with no role at all (#214)" 0 "" \
+  launch_has "$USERLOG" 'name: "ada"'
+check "mint: an unnamed user still defaults to dev (#214)" 0 "" \
+  launch_has "$MEDIUMLOG" 'user\.box\.user=dev'
+# The pin environment is INERT at the mint, not merely at the renderer: box
+# reads neither variable, so neither reaches the seed, the stamp or the network.
+PINENVLOG="$MWORK/pin-env.log"
+RIG_REPO=you/rig RIG_REF=0.3.0 \
+  mintbox "$PINENVLOG" new --name pinned --container >/dev/null 2>&1
+check "mint: a set pin changes nothing about the seed (#214)" 1 "" \
+  launch_has "$PINENVLOG" 'you/rig|0\.3\.0'
+check "mint: a set pin stamps nothing (#214)" 1 "" \
+  launch_has "$PINENVLOG" 'user\.box\.rig'
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "mint: a set pin probes nothing (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$PINENVLOG.curl"
+check "mint: a set pin warns about nothing (#214)" 1 "" \
+  grep -qiE 'RIG_RE(PO|F)' "$PINENVLOG.out"
 
 # --- the identity (#181) ----------------------------------------------------
 # The SHAPE, not merely the presence: a hostname, the box's own name or a
@@ -2089,7 +2909,7 @@ check "mint: ...and box_id() never asks the box for it (#181)" 0 "" \
 # An id every box shares is not an identity. Two mints, two ids.
 MLOG2="$MWORK/mint2.log"
 check "mint: a second mint runs to completion" 0 "ready" \
-  mintbox "$MLOG2" new --name w1b --role claude-box --container
+  mintbox "$MLOG2" new --name w1b --user claude --container
 stamped_id() { launchline "$1" | grep -oE 'user\.box\.id=[0-9a-f-]+' | head -1 | cut -d= -f2; }
 mint_ids_differ() {
   local a b; a="$(stamped_id "$1")"; b="$(stamped_id "$2")"
@@ -2104,9 +2924,9 @@ check "mint: two boxes minted on one host get DIFFERENT ids (#181)" 0 "" \
 export SHIM_PREFIX="$NOUUID"
 NOIDLOG="$MWORK/noid.log"
 check "mint: a host with no UUID source still mints (#181)" 0 "ready" \
-  mintbox "$NOIDLOG" new --name w7 --role claude-box --container
+  mintbox "$NOIDLOG" new --name w7 --container
 check "mint: ...and says out loud that this box has no stable id (#181)" 0 "no stable id" \
-  mintbox "$NOIDLOG" new --name w7 --role claude-box --container
+  mintbox "$NOIDLOG" new --name w7 --container
 check "mint: ...stamping no id at all, rather than an empty key (#181)" 1 "" \
   launch_has "$NOIDLOG" 'user\.box\.id'
 unset SHIM_PREFIX
@@ -2118,7 +2938,7 @@ check "mint: stamps the mint time as UTC ISO 8601 (#103)" 0 "" \
 # does not rewrite it, and box_user()/the login hint read two of them.
 check "mint: the pre-existing boundary tag still rides the same line" \
   0 "user.box=1" launchline "$MLOG"
-check "mint: stamps the generic tenant seed selected at runtime (#159)" \
+check "mint: stamps the internal tenant seed every mint renders (#159, #214)" \
   0 "user.box.template=tenant" launchline "$MLOG"
 check "mint: the pre-existing user stamp is untouched" \
   0 "user.box.user=claude" launchline "$MLOG"
@@ -2153,51 +2973,37 @@ check "mint: ...and it stamped no empty fingerprint key either (#103)" 1 "" \
   grep -q 'image.fingerprint' "$NOFP"
 FAKE_BASE_IMAGE=deadbeefcafe0123456789
 
-# --- blank and role shapes share the generic seed and rig preinstall --------
-# The #159 ruling keeps the rig pin in both shapes; only the role auto-run and
-# agent-class additions are conditional. The stamp therefore records the rig
-# installed into an argumentless blank, while the role key remains absent.
-check "mint: argumentless blank stamps the preinstalled rig repo (#103, #159)" 0 "" \
-  launch_has "$NOFP" 'user\.box\.rig\.repo=heavy-duty/rig'
-check "mint: argumentless blank stamps the resolved rig ref (#103, #159)" 0 "" \
-  launch_has "$NOFP" 'user\.box\.rig\.ref=9.9.9'
-check "mint: ...and no role either — blank names none (#103)" 1 "" \
+# --- one seed, one shape, no pin --------------------------------------------
+# The #159 ruling kept a pin in both of the seed's shapes and made only the
+# auto-run conditional. #214 removed both the pin and the second shape, so what
+# used to be asserted here — the stamped repo, the stamped resolved ref, the
+# one-probe-per-mint count — has no subject. The argumentless mint is now the
+# ONLY mint, and its stamp carries none of the three retired keys.
+check "mint: an argumentless mint stamps no converger repo (#214)" 1 "" \
+  launch_has "$NOFP" 'user\.box\.rig\.repo'
+check "mint: an argumentless mint stamps no converger ref (#214)" 1 "" \
+  launch_has "$NOFP" 'user\.box\.rig\.ref'
+check "mint: ...and no role either (#103, #214)" 1 "" \
   launch_has "$NOFP" 'user\.box\.role'
 # shellcheck disable=SC2016  # $1 expands in the child shell, by design
-check "mint: argumentless blank resolves its shared rig pin once (#150, #159)" 0 "1" \
-  bash -c 'grep -c "releases/latest" "$1"' _ "$NOFP.curl"
-
-# --- the rig pin has ONE definition, and both readers get the same answer ---
-# The seed substitutes it and the stamp records it. Two spellings of the same
-# default would eventually disagree, and a stamp that disagrees with the seed
-# it shipped alongside is worse than no stamp. Driven through the environment
-# override, so the two are compared on a value neither can have hardcoded.
-RIGLOG="$MWORK/rig.log"
-export RIG_REPO=someone/rig RIG_REF=probe-ref
-mintbox "$RIGLOG" new --name w5 --role claude-box --container >/dev/null 2>&1
-unset RIG_REPO RIG_REF
-check "mint: the rig pin override reaches the STAMP (#103)" 0 "" \
-  launch_has "$RIGLOG" 'user\.box\.rig\.repo=someone/rig'
-check "mint: ...both halves of it (#103)" 0 "" \
-  launch_has "$RIGLOG" 'user\.box\.rig\.ref=probe-ref'
-check "mint: ...and the SEED it shipped with carries the same pin (#103)" 0 "" \
-  launch_has "$RIGLOG" 'someone/rig/probe-ref'
-check "mint: ...and a pinned mint resolves nothing, so it probes nothing (#150)" 1 "" \
-  grep -q . "$RIGLOG.curl"
-
-# --- a pin that cannot be resolved ends the mint ----------------------------
-# The sharp edge of resolving a default at mint: the probe can fail. Falling
-# back to main would reintroduce #150's defect quietly, on the one host where
-# nobody would look — and a die() inside the launch line's own command
-# substitution would exit a SUBSHELL and let incus launch a box seeded with
-# nothing. So the mint must die, before the launch, saying what to pass.
-NORESOLVE="$MWORK/noresolve.log"
-export FAKE_CURL_RC=6
-check "mint: an unresolvable rig pin FAILS the mint (#150)" 1 "could not resolve rig's latest release" \
-  mintbox "$NORESOLVE" new --name w6 --role claude-box --container
-unset FAKE_CURL_RC
-check "mint: ...and nothing was launched — the refusal came first (#150)" 1 "" \
-  grep -q '^incus launch ' "$NORESOLVE"
+check "mint: an argumentless mint probes nothing at all (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$NOFP.curl"
+# The seed it shipped carries no installer line either — the stamp and the
+# payload are two different surfaces, and the cut had to reach both.
+check "mint: ...and the seed it shipped installs nothing (#214)" 1 "" \
+  launch_has "$NOFP" 'install\.sh'
+# THE MINT WITH NO NETWORK, end to end (#214). This is the single clearest
+# proof the pin is gone: with the shim curl failing every call, a mint that
+# still resolved a pin would die where this one succeeds. It deserves its own
+# case rather than riding an assertion about a stamp.
+OFFLINE="$MWORK/offline.log"
+check "mint: a mint with the network down still succeeds (#214)" 0 "ready" \
+  mintbox "$OFFLINE" new --name offline --container
+check "mint: ...having launched a box, not died before the launch (#214)" 0 "" \
+  grep -q '^incus launch ' "$OFFLINE"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "mint: ...and having asked the network nothing (#214)" 0 "0" \
+  bash -c 'grep -c . "$1" || true' _ "$OFFLINE.curl"
 
 # --- the clone: the sharpest edge of the whole stamp ------------------------
 # 'incus copy' carries every user.* key forward (audit B2) — which is what
@@ -2218,7 +3024,7 @@ check "clone: re-stamps a fresh created time (#103)" 0 "" \
   grep -qE 'user\.box\.created=[0-9]{4}-[0-9]{2}-[0-9]{2}T' "$CLONELOG"
 # The other half of the decision, and the reason it is a decision at all: the
 # LINEAGE keys are left alone on purpose. The clone's disk genuinely came from
-# that image, that template, that user, that role — re-stamping them from the
+# that image, that template and that user — re-stamping them from the
 # cloning process's own template lookup would be the actual lie, and would
 # break the login hint that reads user.box.template off the instance.
 check "clone: does NOT re-stamp the template — it is inherited lineage (#103)" 1 "" \
@@ -2227,7 +3033,10 @@ check "clone: does NOT re-stamp the user — box_user() reads the source's (#103
   restamp_has "$CLONELOG" 'user\.box\.user'
 check "clone: does NOT re-stamp the image — the disk really came from it (#103)" 1 "" \
   restamp_has "$CLONELOG" 'user\.box\.image'
-check "clone: does NOT re-stamp the role — the source's rig converged it (#103)" 1 "" \
+# A pre-#214 source still carries user.box.role and user.box.rig.*; the clone
+# neither re-stamps nor strips them. They are not box's keys any more, and an
+# artifact of a mint that happened is not a thing to bring up to date.
+check "clone: does NOT re-stamp a retired role key (#103, #214)" 1 "" \
   restamp_has "$CLONELOG" 'user\.box\.role'
 # The third column, and the one review found: 'mode.asked' is neither lineage
 # nor re-stampable. It is a mint-event fact whose asker was the SOURCE's
@@ -2535,7 +3344,7 @@ check "clone: narrates the resources it actually carries (#171 D6)" \
 SIZEDMINT="$MWORK/sized-mint.log"
 check "mint: narrates them too, from the same helper (#171 D6)" \
   0 "resources, read back from incus: cpu=6 mem=12GiB disk=80GiB" \
-  mintbox "$SIZEDMINT" new --name w14 --role claude-box --container
+  mintbox "$SIZEDMINT" new --name w14 --container
 # One helper, one call site, after the branches rejoin — so the parity is
 # structural and a third way of minting cannot ship silent about its sizing.
 # shellcheck disable=SC2016  # the $-strings are literals inside bash -c
@@ -2569,7 +3378,7 @@ check "clone: an unreadable read-back says so rather than going quiet (#171 D6)"
   mintbox "$MWORK/blind-clone.log" new --name w12 --from work/authed
 check "mint: ...and the mint path degrades the same way (#171 D6)" \
   0 "incus reported no resource figures" \
-  mintbox "$MWORK/blind-mint.log" new --name w15 --role claude-box --container
+  mintbox "$MWORK/blind-mint.log" new --name w15 --container
 
 # D5 — the post-copy handle, where box does print one, carries what incus
 # actually does. 'box new --help' is that place now: the D3 refusal prints no
@@ -2600,7 +3409,7 @@ run_printed_hints() {  # run_printed_hints <output-file> <incus-log>
   while IFS= read -r line; do
     local words; read -r -a words <<<"$line"
     env FAKE_INCUS_LOG="$2" FAKE_CFG="$HINTCFG" \
-        PATH="$MSHIM:$RIGSHIM:$PATH" "$BOX" "${words[@]:1}" </dev/null >/dev/null 2>&1
+        PATH="$MSHIM:$NETSHIM:$PATH" "$BOX" "${words[@]:1}" </dev/null >/dev/null 2>&1
   done < "$MWORK/hints.txt"
 }
 "$BOX" help new > "$MWORK/help-new.out" 2>&1
@@ -2654,11 +3463,25 @@ check "info: surfaces the mint time and the box that minted it (#103)" \
   0 "MINTED     2026-07-19T14:22:07Z by box 0.8.0" infobox "$STAMPED"
 check "info: surfaces the image alias AND what it resolved to (#103)" \
   0 "IMAGE      images:debian/13/cloud @ 8a2f1c9d4e5b" infobox "$STAMPED"
-check "info: surfaces the template with its user and role (#103)" \
-  0 "TEMPLATE   claude (user claude, role claude)" infobox "$STAMPED"
-check "info: surfaces which rig converged it (#103)" \
-  0 "RIG        heavy-duty/rig@main" infobox "$STAMPED"
+check "info: surfaces the template with its user (#103)" \
+  0 "TEMPLATE   claude (user claude)" infobox "$STAMPED"
 check "info: surfaces the origin (#103)" 0 "ORIGIN     mint" infobox "$STAMPED"
+# THE LEGACY STAMP (#214). $STAMPED deliberately still carries user.box.role,
+# user.box.rig.repo and user.box.rig.ref: that is exactly what every box minted
+# before this release has on it, and no migration rewrites them. box must read
+# such a box without error and print none of the three — the keys are simply
+# not box's any more, so they are not box's to report.
+info_shows() { infobox "$1" | grep -qE "$2"; }   # (info_has, defined once, early)
+check "info: a legacy stamp reads without error (#214)" 0 "NAME       work" \
+  infobox "$STAMPED"
+check "info: ...printing its provenance block as usual (#214)" 0 "MINTED     " \
+  infobox "$STAMPED"
+check "info: ...and no RIG row for the retired keys (#214)" 1 "" \
+  info_shows "$STAMPED" '^RIG '
+check "info: ...nor the role in the TEMPLATE parenthesis (#214)" 1 "" \
+  info_shows "$STAMPED" 'role claude'
+check "info: ...and it exits 0 rather than choking (#214)" 0 "" \
+  infobox "$STAMPED"
 
 # The identity reads back in the HEADER, not in the provenance block (#181).
 # The block below answers how this box came to BE; the id answers which box it
@@ -4737,26 +5560,87 @@ check "probe ledger: the extracted block is valid bash" 0 "" bash -n "$LEDGERFN"
 # script around it, so the harness supplies it, exactly as the drill does.
 led() { bash -c "set -u; findings=(); . '$LEDGERFN'; $1"; }
 # A complete run: every phase emits what it declared.
-FULL='PHASE_RAN=([I]=1 [A]=8 [B]=51 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)'
+FULL='PHASE_RAN=([I]=1 [A]=8 [B]=45 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)'
 
 # shellcheck disable=SC2016  # the snippet is evaluated by led(), not here
-check "probe ledger: the declared total is 87" 0 "[87]" led 'printf "[%s]" "$(ledger_declared)"'
+check "probe ledger: the declared total is 81" 0 "[81]" led 'printf "[%s]" "$(ledger_declared)"'
 # The number CONTRIBUTING and drills/README.md have quoted all along with
 # nothing checking it. If a phase gains probes, both move together or this reds.
 check "probe ledger: ...which is the contract CONTRIBUTING states" 0 "" \
-  grep -qF '87-probe' "$ROOT/CONTRIBUTING.md"
+  grep -qF '81-probe' "$ROOT/CONTRIBUTING.md"
+# The README quotes the total too, and it was the ONE copy nothing checked —
+# so it sat at "84 checks, 84 passing" through a cut that moved every other
+# copy to 81. Driven off ledger_declared() like the rest, rather than a
+# literal, so the next phase change moves it or reds here (#214).
+#
+# The DENOMINATOR is what drifted and the denominator is what is pinned. The
+# numerator is a RESULT: drills/README.md's own worked example reads 80/81, so
+# a guard demanding N-of-N would forbid the README from ever reporting a run
+# that had a failure — asserting a thing this repo does not believe. It is
+# still bounded: an integer, and never more than the ledger declares, because
+# a run cannot pass more probes than exist (#214).
+readme_quotes_the_total() {  # [<file>] — README.md unless a fixture says else
+  ( set -u
+    # shellcheck disable=SC2034  # skipped() appends to it; the block assumes it
+    findings=()
+    # shellcheck disable=SC1090  # the extracted ledger, written above
+    . "$LEDGERFN"
+    local f="${1:-$ROOT/README.md}" n pair d q c
+    n="$(ledger_declared)"
+    # Exactly one total, asserted before the one is read. The extraction below
+    # takes 'head -1', so a SECOND '**N checks, N passing**' anywhere in the
+    # file would go unchecked behind the first — a guard that silently reads
+    # one of two copies is the same shape as an absence sweep over an empty
+    # list, and the drift this exists for started with a copy nothing read.
+    c="$(grep -cE '\*\*[0-9]+ checks, [0-9]+ passing\*\*' "$f")"
+    # Both numbers out in one pass, split by parameter expansion rather than by
+    # 'read': a bare 'read' under 'set -e' is what #111's repo-wide sweep
+    # forbids, and it is right to — no match here must be a reported failure,
+    # never a silent exit.
+    pair="$(sed -n \
+      "s/.*\*\*\([0-9]\{1,\}\) checks, \([0-9]\{1,\}\) passing\*\*.*/\1 \2/p" "$f" | head -1)"
+    d="${pair%% *}"; q="${pair##* }"
+    [ -n "$pair" ] \
+      || { echo "$f quotes no '**N checks, N passing**' total at all"; exit 1; }
+    [ "$c" = 1 ] \
+      || { echo "$f quotes $c totals; only the first is checked"; exit 1; }
+    [ "$d" = "$n" ] \
+      || { echo "$f advertises $d checks; the ledger declares $n"; exit 1; }
+    [ "$q" -le "$n" ] \
+      || { echo "$f claims $q passing out of $n — more probes than exist"; exit 1; } )
+}
+check "probe ledger: ...and the total the README advertises (#214)" 0 "" \
+  readme_quotes_the_total
+# The guard's own test, on the axis the round moved it: the denominator is
+# pinned and the numerator is free, so a run that HAD a failure is reportable.
+RQPROBE="$(mktemp)"
+printf 'currently **81 checks, 80 passing**\n' > "$RQPROBE"
+check "probe ledger: ...and a run with a failure is still quotable, 80/81" 0 "" \
+  readme_quotes_the_total "$RQPROBE"
+printf 'currently **84 checks, 84 passing**\n' > "$RQPROBE"
+check "probe ledger: ...while the drift that started this, 84/84, reds" 1 "advertises 84" \
+  readme_quotes_the_total "$RQPROBE"
+printf 'currently **81 checks, 99 passing**\n' > "$RQPROBE"
+check "probe ledger: ...and so does passing more probes than exist" 1 "more probes than exist" \
+  readme_quotes_the_total "$RQPROBE"
+# The second copy, which 'head -1' would have read straight past: the first
+# total is correct here and the guard must still red.
+printf 'currently **81 checks, 80 passing**\nand elsewhere **84 checks, 84 passing**\n' > "$RQPROBE"
+check "probe ledger: ...and a second total nothing would have read reds too" 1 "quotes 2 totals" \
+  readme_quotes_the_total "$RQPROBE"
+rm -f "$RQPROBE"
 
 check "probe ledger: a complete run is short in nothing" 0 "[]" \
   led "$FULL; printf '[%s]' \"\$(ledger_short)\""
-check "probe ledger: a complete run's floor is the declared total" 0 "[87]" \
+check "probe ledger: a complete run's floor is the declared total" 0 "[81]" \
   led "$FULL; printf '[%s]' \"\$(ledger_expected)\""
 
 # THE regression. A phase that never executed used to be invisible: the pass
 # count simply ended lower and exit 0 vouched for it.
 check "probe ledger: a phase that never ran is named, not silently dropped" 0 "C(0/9)" \
   led "$FULL; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_short)\""
-check "probe ledger: ...and one missing probe inside a phase is named too" 0 "B(50/51)" \
-  led "$FULL; PHASE_RAN[B]=50; printf '[%s]' \"\$(ledger_short)\""
+check "probe ledger: ...and one missing probe inside a phase is named too" 0 "B(44/45)" \
+  led "$FULL; PHASE_RAN[B]=44; printf '[%s]' \"\$(ledger_short)\""
 
 # A floor, not an equality: adding a probe must not red the commit that adds it.
 check "probe ledger: overshooting a phase is not a shortfall" 0 "[]" \
@@ -4764,7 +5648,7 @@ check "probe ledger: overshooting a phase is not a shortfall" 0 "[]" \
 
 # A declared skip is honest — it lowers the expectation by exactly its probes
 # and says so. The whole point is that the floor is never tuned down silently.
-check "probe ledger: a declared skip lowers the floor by its probes" 0 "[78]" \
+check "probe ledger: a declared skip lowers the floor by its probes" 0 "[72]" \
   led "$FULL; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_expected)\""
 check "probe ledger: ...so a declared skip is not a shortfall" 0 "[]" \
   led "$FULL; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; printf '[%s]' \"\$(ledger_short)\""
@@ -4786,7 +5670,7 @@ check "probe ledger: tally returns 0 so ok/no still do" 0 "[0][0]" \
 # A verdict emitted outside any ledgered phase means the table has drifted.
 check "probe ledger: an unattributed verdict is surfaced, not swallowed" 0 "unattributed" \
   led "PHASE=-; tally; ledger_line"
-check "probe ledger: the per-phase line is what a single total cannot say" 0 "B 51/51" \
+check "probe ledger: the per-phase line is what a single total cannot say" 0 "B 45/45" \
   led "$FULL; ledger_line"
 
 # The wiring, so the ledger cannot be left correct-but-unused.
@@ -4878,37 +5762,37 @@ summary_lacks() {   # 0 when the composed run does NOT say $1
   local needle="$1"; shift
   ! run_summary "$1" 2>&1 | grep -qF -e "$needle"
 }
-COMPLETE="$FULL; pass=87; fail=0"
+COMPLETE="$FULL; pass=81; fail=0"
 
-check "drill summary: a complete run reports 87/87 and EXITS 0" 0 "87/87 passed, 0 failed" \
+check "drill summary: a complete run reports 81/81 and EXITS 0" 0 "81/81 passed, 0 failed" \
   run_summary "$COMPLETE"
 
-# THE regression, end to end. Phase C never executed: 78 verdicts, none of them
-# failing, and the drill used to leave here 0 with "78 passed, 0 failed" on the
+# THE regression, end to end. Phase C never executed: 72 verdicts, none of them
+# failing, and the drill used to leave here 0 with "72 passed, 0 failed" on the
 # line an operator transcribes into drills/<version>.md as proof.
 check "drill summary: a phase that never ran EXITS NON-ZERO" 1 "the drill ran SHORT:" \
-  run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
+  run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=72"
 check "drill summary: ...naming the short phase, against the full denominator" 1 \
-  "short in: C(0/9)" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
-check "drill summary: ...and the record carries 78/87, not a clean 78" 1 \
-  "78/87 passed, 1 failed" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
+  "short in: C(0/9)" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=72"
+check "drill summary: ...and the record carries 72/81, not a clean 72" 1 \
+  "72/81 passed, 1 failed" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=72"
 # The verdict names both roads to a short phase, not just the commoner one.
 check "drill summary: ...and does not diagnose 'never ran' as the only cause" 1 \
-  "or failed before emitting the rest" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=78"
+  "or failed before emitting the rest" run_summary "$COMPLETE; PHASE_RAN[C]=0; pass=72"
 
-# A DECLARED skip is the line between honest and tuned-down: same 78 verdicts,
+# A DECLARED skip is the line between honest and tuned-down: same 72 verdicts,
 # but the run said which nine it was not going to emit, and why.
 check "drill summary: a declared skip lowers the floor and EXITS 0" 0 \
-  "78/78 passed, 0 failed" \
-  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=78"
+  "72/72 passed, 0 failed" \
+  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=72"
 check "drill summary: ...and the SKIP survives into the findings block" 0 \
   "SKIP: no isolation stack" \
-  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=78"
+  run_summary "$COMPLETE; skipped C 9 'no isolation stack'; PHASE_RAN[C]=0; pass=72"
 
 # The other road to non-zero: nothing short, one thing genuinely failed. Both
 # roads have to work, and the second must not be reported as the first.
 check "drill summary: a complete run with one real FAIL EXITS NON-ZERO" 1 \
-  "86/87 passed, 1 failed" run_summary "$COMPLETE; pass=86; fail=1"
+  "80/81 passed, 1 failed" run_summary "$COMPLETE; pass=80; fail=1"
 check "drill summary: ...and is not mislabelled as a short run" 0 "" \
   summary_lacks "the drill ran SHORT:" "$COMPLETE; pass=86; fail=1"
 
@@ -5087,64 +5971,54 @@ check "drill record: ...and the refusal says why that matters" 2 "destroys the j
 check "drill record: ...while an empty file is not a record and may be used" 0 "" \
   rec "record_check_path '$RECWORK/empty.md'"
 
-# --- the rig pin, read off the mint rather than re-derived -------------------
-# The record must say what the MINT used. It used to re-derive that from the
-# environment, carrying bin/box's `main` default as a second spelling — and
-# #150 made that spelling a lie: RIG_REF unset now resolves rig's latest
-# RELEASE at mint, so an unpinned run would have recorded `main` while the
-# guest was handed a tag, asserting a combination nobody drilled. So the value
-# is read off the mint's own stamp (#103), and where there is no stamp to read
-# the record admits it instead of naming a ref.
+# --- one candidate ref, and no pin to read off a stamp ----------------------
+# What lived here was the converger pin: read off the mint's own stamp (#150,
+# #103) because the environment could no longer answer, driven against a shim
+# incus, and carried into the reproduce-prefix. #214 removed the installation,
+# the stamp and the variable, so the assertions invert — the record names box's
+# ref alone, and reaches for nothing else.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: an unpinned run no longer claims 'main' (#150)" 0 "[heavy-duty/rig][unresolved]" \
-  rec 'record_collect o/r main 0; printf "[%s][%s]" "$REC_RIG_REPO" "$REC_RIG_REF"'
+check "drill record: collects no converger repo (#214)" 0 "[]" \
+  rec 'record_collect o/r main 0; printf "[%s]" "${REC_RIG_REPO:-}"'
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: ...and an overridden rig pin is what lands in the record" 0 "[you/rig][topic]" \
-  rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r main 0; printf "[%s][%s]" "$REC_RIG_REPO" "$REC_RIG_REF"'
-# The stamp read itself, driven against a shim incus: this is what the mint
-# site above fills REC_RIG_* from, and it is the only place the resolved
-# default survives — bin/box resolved it, the environment never saw it.
-STAMPSHIM="$(mktemp -d)"
-cat > "$STAMPSHIM/incus" <<'SHIM'
-#!/usr/bin/env bash
-# Fake incus for the drill's stamp read: 'config get <box> <key>' answers from
-# $FAKE_STAMP ("<key> <value>" lines), and an unset key prints EMPTY, exits 0 —
-# which is what a real incus does (audit B4) and what 'unresolved' guards.
-case "$*" in
-  "config get "*)
-    [ -n "${FAKE_STAMP:-}" ] || exit 0
-    key="$*"; key="${key##* }"
-    awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_STAMP" ;;
-esac
-exit 0
-SHIM
-chmod +x "$STAMPSHIM/incus"
-STAMPF="$(mktemp)"
-printf 'user.box.rig.repo heavy-duty/rig\nuser.box.rig.ref 0.3.1\n' > "$STAMPF"
-stamped() { PATH="$STAMPSHIM:$PATH" FAKE_STAMP="$1" rec "$2"; }
+check "drill record: collects no converger ref (#214)" 0 "[]" \
+  rec 'record_collect o/r main 0; printf "[%s]" "${REC_RIG_REF:-}"'
+# The pin environment cannot reach the record either. It used to be the first
+# fallback record_collect consulted; a run that still honoured it would put a
+# variable box never read into the reproduction of a run that never used it.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: the pin is read off the mint's stamp (#103, #150)" 0 "[0.3.1]" \
-  stamped "$STAMPF" 'printf "[%s]" "$(drill_stamp drill rig.ref)"'
+check "drill record: a set pin in the environment is not collected (#214)" 0 "[]" \
+  rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r main 0; printf "[%s%s]" "${REC_RIG_REPO:-}" "${REC_RIG_REF:-}"'
+# drill_stamp() went with its only caller (#214): a reader with nothing to read
+# is a place for the question to come back.
+# On ACTING lines again: drill.sh's comments record what drill_stamp() was and
+# why the per-role mints left, which is the history the next reader needs.
+check "drill record: drill_stamp is gone from drill.sh's code (#214)" 1 "" \
+  sf_names "$ROOT/drill/drill.sh" 'drill_stamp'
+check "drill record: drill.sh reads no retired stamp at all (#214)" 1 "" \
+  sf_names "$ROOT/drill/drill.sh" 'user\.box\.\(role\|rig\)'
+check "drill record: drill.sh passes no --role (#214)" 1 "" \
+  sf_names "$ROOT/drill/drill.sh" '--role'
+# The invocation still has to reproduce the run, so the flags and DRILL_EXPECT
+# stay; what leaves is the pin, because a prefix naming a variable box does not
+# read would claim a dependency box does not have.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: ...and a box with no stamp is 'unresolved', never blank (#150)" 0 "[unresolved]" \
-  stamped /dev/null 'printf "[%s]" "$(drill_stamp drill rig.ref)"'
-rm -rf "$STAMPSHIM" "$STAMPF"
-# The invocation has to reproduce the run, so the pin belongs in it: the flags
-# alone name a different drill than the one that ran — and after #150 so does
-# the same command left unpinned, which would resolve whatever is latest then.
-# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: the invocation carries the env pins, not just the flags" 0 \
-  "RIG_REF=topic bash drill/drill.sh --repo o/r --ref v1" \
+check "drill record: the invocation carries no converger pin (#214)" 0 \
+  "bash drill/drill.sh --repo o/r --ref v1" \
   rec 'export RIG_REF=topic; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
-# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: ...the ref the MINT resolved, where the environment set none (#150)" 0 \
-  "RIG_REF=0.3.1 bash drill/drill.sh" \
-  rec 'REC_RIG_REF=0.3.1; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
 INVF="$(mktemp)"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-rec 'record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"' > "$INVF" 2>/dev/null
+rec 'export RIG_REPO=you/rig RIG_REF=topic; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"' > "$INVF" 2>/dev/null
+check "drill record: ...not even one set in the environment (#214)" 1 "" \
+  grep -qE 'RIG_RE(PO|F)=' "$INVF"
 check "drill record: ...and 'unresolved' is never put in a command line (#150)" 1 "" \
   grep -q unresolved "$INVF"
+# DRILL_EXPECT is the one env pin left, and it must have survived the removal
+# of the two beside it.
+# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
+check "drill record: DRILL_EXPECT still reaches the invocation (#153)" 0 \
+  "DRILL_EXPECT=90 bash drill/drill.sh" \
+  rec 'export DRILL_EXPECT=90; record_collect o/r v1 0; printf "%s" "$REC_INVOCATION"'
 rm -f "$INVF"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--keep-boxes" \
@@ -5153,17 +6027,16 @@ check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--k
 # --- the record itself ------------------------------------------------------
 # A finished drill, pinned so every field is assertable. record_collect fills
 # only what is not already set, which is what lets a test pin the world away.
-RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=51 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
+RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=45 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
 REC_VERSION=9.9.9; REC_DATE=2026-07-21; REC_HOST='bare Debian 13, Incus 6.0.2'
-REC_RUN_ID=drill-9.9.9-20260721-01; REC_BOX_SHA=abc1234; REC_RIG_SHA=def5678
-REC_RIG_REF=0.3.1
+REC_RUN_ID=drill-9.9.9-20260721-01; REC_BOX_SHA=abc1234
 REC_ELAPSED=2460; record_collect heavy-duty/box release/9.9.9 0"
 emit() {   # emit <state> → the record that state produces, on stdout
   rm -f "$RECOUT"
   rec "$RECSTATE; $1; record_write '$RECOUT'" >/dev/null 2>&1
   cat "$RECOUT" 2>/dev/null
 }
-CLEAN='pass=87; fail=0'
+CLEAN='pass=81; fail=0'
 
 # drills/README.md:34-42 asks for six things. One check each, because a record
 # missing one of them is the hand-transcription this replaces, reintroduced.
@@ -5178,24 +6051,29 @@ check "drill record: dates the run" 0 "**Date:** 2026-07-21" emit "$CLEAN"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: pins box's candidate ref TO A SHA" 0 \
   'box `release/9.9.9` @ `abc1234`' emit "$CLEAN"
-# shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-check "drill record: ...and rig's, which is the other half of the combination" 0 \
-  'rig `0.3.1` @ `def5678`' emit "$CLEAN"
-# The reproduction has to carry the rig pin the run used, not just the flags:
-# an unpinned run resolved a RELEASE at mint (#150), so a reproduction left
-# equally unpinned would resolve whatever is latest the day it is re-run.
+# ...and box's is the ONLY candidate ref the record names now (#214). The
+# second row said which converger the mint had installed; box installs none, so
+# a row there would be a combination nobody drilled being claimed as one.
+# Called from THIS shell: emit() is not exported, and a 127 from a child would
+# satisfy an absence assertion by never having run. Counted rather than
+# absence-grepped, because box's own row has the same shape as the one that
+# left — an absence assertion here would have to exclude 'box' by name and
+# would then go green on any THIRD row somebody adds.
+record_ref_rows() { emit "$1" | grep -cE '^  - [a-z]+ `'; }
+check "drill record: names exactly ONE candidate ref — box's (#214)" 0 "1" \
+  record_ref_rows "$CLEAN"
 check "drill record: says what ran, as a command that reproduces it" 0 \
-  'RIG_REF=0.3.1 bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
+  'bash drill/drill.sh --repo heavy-duty/box --ref release/9.9.9' emit "$CLEAN"
 check "drill record: gives the numbers and the wall clock" 0 \
-  "**87/87 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
+  "**81/81 passed, 0 failed.** 41 minutes wall clock." emit "$CLEAN"
 check "drill record: carries the per-phase ledger a single total cannot say" 0 \
-  "B 51/51" emit "$CLEAN"
+  "B 45/45" emit "$CLEAN"
 check "drill record: states the floor and the table's total as two facts" 0 \
-  "Probe floor: 87 expected this run; the table declares 87." emit "$CLEAN"
+  "Probe floor: 81 expected this run; the table declares 81." emit "$CLEAN"
 # DRILL_EXPECT can raise the floor above the table, and the record must not read
 # that as an error — the operator is deliberately demanding more than the table.
 check "drill record: ...which stays readable when DRILL_EXPECT raises the floor" 0 \
-  "Probe floor: 90 expected this run; the table declares 87." \
+  "Probe floor: 90 expected this run; the table declares 81." \
   emit "DRILL_EXPECT=90; $CLEAN"
 # The record is pasted into a file and read months later. Escape codes in it are
 # the peculiar thing this issue found: every script emitted ANSI unconditionally.
@@ -5215,22 +6093,22 @@ check "drill record: ...and says the judgement is the operator's to write" 0 \
   "a judgement it must not fabricate" emit "$CLEAN"
 
 # THE #153 regression, in the artifact #153 exists to protect. A run that emitted
-# 78 of 87 and failed none is not "78/78 passed" — and the record is precisely
+# 72 of 81 and failed none is not "72/72 passed" — and the record is precisely
 # where that fraction used to get written down as proof a release was drilled.
 check "drill record: a short run's denominator is the FLOOR, not what ran" 0 \
-  "**78/87 passed" emit "pass=78; fail=0; PHASE_RAN[C]=0"
+  "**72/81 passed" emit "pass=72; fail=0; PHASE_RAN[C]=0"
 check "drill record: ...and the short phase is named in it" 0 "C 0/9" \
-  emit "pass=78; fail=0; PHASE_RAN[C]=0"
+  emit "pass=72; fail=0; PHASE_RAN[C]=0"
 # A DECLARED skip is the honest half: the floor moves, and the record says which
 # probes were not expected and why — recorded as skipped, never as passing.
 check "drill record: a declared skip lowers the record's denominator" 0 \
-  "**78/78 passed" emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  "**72/72 passed" emit "pass=72; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: ...and the skip is recorded AS a skip, beside the failures" 0 \
   "- SKIP: no isolation stack" \
-  emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  emit "pass=72; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: ...and the waived probes are visible in the ledger line" 0 \
   "9 waived by declared skips" \
-  emit "pass=78; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
+  emit "pass=72; fail=0; PHASE_RAN[C]=0; skipped C 9 'no isolation stack' >/dev/null"
 check "drill record: failures land in it verbatim, uncoloured" 0 "- FAIL: the boundary held open" \
   emit "pass=86; fail=1; no 'the boundary held open' >/dev/null"
 check "drill record: a clean run says so rather than leaving a bare heading" 0 \
@@ -5270,7 +6148,7 @@ run_emit() {   # run_emit <state> — EXIT STATUS is the drill's own
 }
 check "drill emit: a clean run writes the record and still EXITS 0" 0 \
   "record written:" run_emit "$CLEAN"
-check "drill emit: ...and the file on disk is the record" 0 "**87/87 passed, 0 failed.**" \
+check "drill emit: ...and the file on disk is the record" 0 "**81/81 passed, 0 failed.**" \
   cat "$RECOUT"
 check "drill emit: ...pinned to the run ID the drill announced at install time" 0 \
   "drill-9.9.9-20260721-01" cat "$RECOUT"
@@ -5288,10 +6166,10 @@ check "drill: ...and no phase header sends the operator to the closed audit" 1 "
 # before that `no` fires would put a clean sweep in the record on a short run,
 # which is the defect #153 closed.
 check "drill emit: a short run EXITS NON-ZERO with a record written" 1 \
-  "record written:" run_emit "pass=78; fail=0; PHASE_RAN[C]=0"
+  "record written:" run_emit "pass=72; fail=0; PHASE_RAN[C]=0"
 check "drill emit: ...and the record it wrote carries the shortfall, not a sweep" 0 \
   "FAIL: the drill ran SHORT:" cat "$RECOUT"
-check "drill emit: ...against the full denominator, 78/87" 0 "**78/87 passed" cat "$RECOUT"
+check "drill emit: ...against the full denominator, 72/81" 0 "**72/81 passed" cat "$RECOUT"
 
 # A record that cannot be written must not be able to turn a clean drill red:
 # the exit status is the floor's verdict on the DRILL, and a full disk has no
@@ -5536,6 +6414,36 @@ help_names_every_phase() {
     done )
 }
 check "drill help: it names every phase the ledger declares" 0 "" help_names_every_phase
+# ...and by its NUMBER, not only by its key. The check above compared the two
+# lists of phase LETTERS, so --help could state a per-phase count that the
+# ledger contradicted and stay green — which is what happened: #214 moved B
+# from 51 to 45 and the header kept printing [51], so the drill answered one
+# number when asked directly and asserted another when it ran. Every phase's
+# bracketed integer is compared, not just the one that drifted, because the
+# next drift will be somewhere else. The count trails its phase's block, which
+# is one line for B and four for D, so it is read as "the last [N] before the
+# next phase opens".
+help_counts_match_ledger() {
+  ( set -u
+    # shellcheck disable=SC2034  # skipped() appends to it; the block assumes it
+    findings=()
+    # shellcheck disable=SC1090  # the extracted ledger, written above
+    . "$LEDGERFN"
+    local out k n
+    out="$(bash "$ROOT/drill/drill.sh" --help)" || { echo "--help failed"; exit 1; }
+    for k in "${PHASE_ORDER[@]}"; do
+      n="$(printf '%s\n' "$out" | awk -v k="$k" '
+        $0 ~ "^ *"k"\\. "                                   { inb = 1 }
+        inb && $0 ~ "^ *[A-Z]\\. " && $0 !~ "^ *"k"\\. "     { inb = 0 }
+        inb && match($0, /\[[0-9]+\]/) { v = substr($0, RSTART + 1, RLENGTH - 2) }
+        END { print v }')"
+      [ -n "$n" ] || { echo "--help states no probe count for phase $k"; exit 1; }
+      [ "$n" = "${PHASE_EXPECT[$k]}" ] \
+        || { echo "phase $k: --help says [$n], the ledger declares [${PHASE_EXPECT[$k]}]"; exit 1; }
+    done )
+}
+check "drill help: ...and every phase's COUNT matches the ledger's (#214)" 0 "" \
+  help_counts_match_ledger
 check "drill help: ...including the last one, so the window is not short again" 0 \
   "T. Teardown" bash "$ROOT/drill/drill.sh" --help
 check "drill help: ...and the window reaches the line after the list" 0 \

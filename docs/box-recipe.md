@@ -1,15 +1,18 @@
 # The `.box/` convention
 
-`box` mints trust-less, creds-free, isolated VMs with a coding agent already
-installed (`box new/shell/snapshot/restore/exec/down/start/rm/status`) — the
-`claude-box`, `codex-box`, `grok-box`, and `kimi-box` templates each ship a
-CLI agent. The tool knows **nothing** about your project. There is no `install` step and no
-host-run setup script.
+`box` mints trust-less, creds-free, isolated VMs
+(`box new/shell/snapshot/restore/exec/down/start/rm/status`), and **it does not
+converge them** ([#214](https://github.com/heavy-duty/box/issues/214)): a mint
+lands one thin seed and stops, so a fresh box has no coding agent on it. An
+agent is one of the things the operator installs inside it afterwards — see the
+[README's Quick start](../README.md#quick-start) for the four-step path. The
+tool knows **nothing** about your project either. There is no `install` step
+and no host-run setup script.
 
 A project makes itself easy to stand up inside a box by shipping an optional
-`.box/` folder. This folder is **agent-facing documentation** — read and
-acted on by the box's coding agent (the reasoning agent) running inside the
-box, whichever template you minted. It is not shell that the host executes.
+`.box/` folder. This folder is **agent-facing documentation** — read and acted
+on by the coding agent you converged onto the box (the reasoning agent),
+running inside it. It is not shell that the host executes.
 
 > The folder was named `.claudebox/` before the 0.5.0 rename. Repos that still
 > ship `.claudebox/` keep working — the agent is told to read either — but new
@@ -27,18 +30,35 @@ box, whichever template you minted. It is not shell that the host executes.
 
 ## How it's consumed
 
-Every coding-agent box ships a global agent-context file — `~/.claude/CLAUDE.md`
-for `claude`, `~/.codex/AGENTS.md` for `codex`, `~/.grok/AGENTS.md` for `grok` —
-telling the agent it is inside a box and to treat a repo's `.box/` folder as its
-bootstrap runbook. So the whole flow is (shown with `claude`; the other agents
-follow the same shape):
+A box the operator has converged with a coding agent gets a global
+agent-context file alongside it —
+`~/.claude/CLAUDE.md` for `claude`, `~/.codex/AGENTS.md` for `codex`,
+`~/.grok/AGENTS.md` for `grok` — telling the agent it is inside a box and to
+treat a repo's `.box/` folder as its bootstrap runbook. **box writes none of
+those files and never did**: they are rendered by whatever converges the box
+(#81). So the whole flow is (shown with `claude` and `rig`; another agent or
+another converger follows the same shape):
 
-```
-box new           # get a box
-box shell         # get in
+```sh
+box new --name work --size medium   # a blank box, nothing converged
+box root work                       # root inside it, and converge it:
+curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \
+  | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash
+rig bootstrap claude-box --user dev
+box shell work                      # in as the tenant user, on the box you just converged
 git clone <repo> && cd <repo>
-claude                  # the agent reads .box/ and brings the project up
+claude                              # the agent reads .box/ and brings the project up
 ```
+
+The first five lines are the mint-and-converge path — four steps, the third
+wrapped — and it is the README's rather than this page's: [Quick
+start](../README.md#quick-start) teaches the same command verbatim, with the
+surrounding argument. `<ref>` is a rig release you pin, and **`RIG_REF` on the
+pipe is what pins it**: the one in the URL only decides which copy of
+`install.sh` runs, and that installer resolves an unset `RIG_REF` through
+rig's latest-release channel, so a line without the arguments installs
+whatever is newest no matter which `<ref>` you substituted. These five are here
+because the last three do not run without them.
 
 The operator can also just say: *"set this project up per .box"*.
 

@@ -39,7 +39,7 @@
 #      anything else here touches it (#64).                                 [1]
 #   A. Incus semantics — the assumptions box is built on, probed directly.
 #      These were only ever verified against a stub.                        [8]
-#   B. The box surface — the whole CLI, end to end, including the boundary. [51]
+#   B. The box surface — the whole CLI, end to end, including the boundary. [45]
 #   C. Isolation baseline — does the trust boundary actually hold?
 #      (#15 section A)                                                      [9]
 #   E. box expose — a deliberate loopback door, opened and shut (#55).      [7]
@@ -188,8 +188,12 @@ aud()  { audit+=("$*"); }                       # a measurement, for the record
 # tally against whichever phase is open, and the summary asserts the numbers as
 # a FLOOR — a floor and not an equality, so adding a probe does not turn the
 # commit that adds it red. Bumping the number below is part of adding one,
-# which is also what finally gives CONTRIBUTING's "87-probe contract" and
-# drills/README.md's "86/87" something that checks them.
+# which is also what finally gives CONTRIBUTING's "81-probe contract" and
+# drills/README.md's worked ratio something that checks them. The header block
+# above states each phase's count too, and 'test/cli.sh' asserts the two
+# agree by INTEGER and not merely by phase key — #214 moved B from 51 to 45
+# and left the header saying 51, which is the drift a key-only check reads as
+# green.
 #
 # Phase keys are the letters the phase headers already use; '-' is a phase that
 # emits no verdicts at all (install, host setup, the summary itself). A verdict
@@ -199,8 +203,11 @@ PHASE_ORDER=(I A B C E D M T)
 declare -A PHASE_EXPECT=(
   [I]=1     # install.sh left a complete host stack (#64)
   [A]=8     # A1–A6, A8, A9 — Incus semantics (A7 prints, it does not judge)
-  [B]=51    # the box surface: dedicated seed/version + blank 10 + runtime roles + #171 clone 3
-            # + codex/grok 3×2 + the drill box, its clone and the CLI contract 27
+  [B]=45    # the box surface: dedicated seed/version 5 + blank 10 + #171 clone 3
+            # + the drill box, its clone and the CLI contract 27. It was 51 until
+            # #214 took the role axis out: the two per-role mints proved a payload
+            # box no longer installs (6 probes), and the drill box's own two agent
+            # probes became two seed-payload probes, which is a swap and not a cut.
   [C]=9     # C1–C7, plus archive-is-up and the peer clone
   [E]=7     # box expose: add, list, info, the door, per-port, remove, shut
   [D]=0     # D states the settled contract; it judges only a failed baseline
@@ -432,18 +439,11 @@ record_check_path() {   # <path> — empty path means no record was asked for
   return 0
 }
 
-# One key off a box's mint stamp (#103), or 'unresolved' — the same word
-# record_sha uses for a fact it could not establish, and the same reason: a
-# confident wrong value in a record is worse than an admitted gap. 'incus
-# config get' on an unset key prints EMPTY and exits 0 (audit B4), so a box
-# minted before the stamp existed and a box that is gone arrive identically,
-# and both are 'unresolved' rather than an empty cell.
-drill_stamp() {   # <box> <key-suffix> → the stamped value, or 'unresolved'
-  local v=''
-  command -v incus >/dev/null 2>&1 &&
-    v="$(timeout -k 5 20 incus config get "$1" "user.box.$2" 2>/dev/null </dev/null)"
-  printf '%s' "${v:-unresolved}"
-}
+# drill_stamp() lived here (#150): one key off a box's mint stamp, used to read
+# back WHICH converger the mint had installed into the guest. #214 removed both
+# the installation and the stamp, and it was that function's only caller — a
+# reader with nothing to read is not a helper, it is a place for the question
+# to come back.
 
 # Fill the REC_* set from the world. Every field is ${...:-} against itself, so
 # a caller (the test, or an operator scripting around this) can pin any one of
@@ -457,29 +457,22 @@ record_collect() {   # <box-repo> <box-ref> <keep-boxes:0|1>
   REC_BOX_REPO="${REC_BOX_REPO:-$1}"
   REC_BOX_REF="${REC_BOX_REF:-$2}"
   REC_BOX_SHA="${REC_BOX_SHA:-$(record_sha "$REC_BOX_REPO" "$REC_BOX_REF")}"
-  # The rig pin the MINT actually used. It used to be re-derived here from the
-  # environment, carrying bin/box's default as a second spelling — and #150
-  # made that spelling a lie: RIG_REF unset now resolves rig's LATEST RELEASE
-  # at mint, so an unpinned run would have recorded `main` while the guest was
-  # handed `0.3.1`, asserting a combination nobody drilled. The value is read
-  # off the mint's own stamp instead, at the mint site above, where the box is
-  # certain to exist. Reaching the fallbacks here means no box was minted: the
-  # repo default is knowable without one, the ref is not.
-  REC_RIG_REPO="${REC_RIG_REPO:-${RIG_REPO:-heavy-duty/rig}}"
-  REC_RIG_REF="${REC_RIG_REF:-${RIG_REF:-unresolved}}"
-  REC_RIG_SHA="${REC_RIG_SHA:-$(record_sha "$REC_RIG_REPO" "$REC_RIG_REF")}"
+  # ONE candidate ref, box's own (#214). The record used to carry a second —
+  # the converger the mint installed into every guest, read off the mint's own
+  # stamp — because box pinned it and a drill has to name what it drilled.
+  # Box installs nothing into a guest now, so there is no second ref, no stamp
+  # to read it off, and nothing here to fall back to. The shared RUN ID stays:
+  # it is a cross-repo record convention that lets box's, rig's and cast's
+  # records reassemble into one picture, and it never was a dependency.
   REC_ELAPSED="${REC_ELAPSED:-}"
   if [ -z "$REC_ELAPSED" ] && [ -n "${DRILL_T0:-}" ]; then
     REC_ELAPSED="$(( $(date +%s) - DRILL_T0 ))"
   fi
   # The command that reproduces this run, env pins included — the flags alone
-  # would name a different drill than the one that ran. The pin is taken from
-  # the REC_* set rather than from the environment, which is what keeps that
-  # true after #150: an unpinned run resolved a rig RELEASE at mint, and a
-  # reproduction left equally unpinned would resolve whatever is latest THEN.
-  # 'unresolved' is not a ref and never goes in a command line.
-  [ "$REC_RIG_REPO" != heavy-duty/rig ] && prefix="${prefix}RIG_REPO=$REC_RIG_REPO "
-  [ "$REC_RIG_REF"  != unresolved ]     && prefix="${prefix}RIG_REF=$REC_RIG_REF "
+  # would name a different drill than the one that ran. The converger pin is
+  # gone from this prefix with the thing it pinned (#214): box reads no such
+  # variable at mint, so carrying one here would name an environment that
+  # changes nothing and read as a dependency box no longer has.
   [ -n "${DRILL_EXPECT:-}" ] && prefix="${prefix}DRILL_EXPECT=$DRILL_EXPECT "
   inv="${prefix}bash drill/drill.sh --repo $1 --ref $2"
   [ "$3" = 1 ] && inv="$inv --keep-boxes"
@@ -500,7 +493,6 @@ record_write() {   # <path> — composes the REC_* set and the ledger into a rec
     printf -- '- **Date:** %s\n' "$REC_DATE"
     printf -- '- **Candidate refs:**\n'
     printf -- '  - box `%s` @ `%s` (%s)\n' "$REC_BOX_REF" "$REC_BOX_SHA" "$REC_BOX_REPO"
-    printf -- '  - rig `%s` @ `%s` (%s)\n' "$REC_RIG_REF" "$REC_RIG_SHA" "$REC_RIG_REPO"
     printf '\n## What ran\n\n'
     printf '`%s`\n\n' "$REC_INVOCATION"
     # The denominator is the FLOOR, never pass+fail. #153 is the whole reason:
@@ -1114,55 +1106,18 @@ else
   timeout -k 5 60 incus delete -f tpl >/dev/null 2>&1
 fi
 
-# The generic mechanic (metadata, placement, user, isolation parity) is proven
-# once by blank+claude-box and needs no per-role repeat. What another runtime
-# role still has to prove is its own payload: the CLI installs, lands on the
-# non-interactive exec PATH, and answers --version. One mint each.
-# The box NAME stays the bare agent name — it is what the pre-flight banner
-# announces and what teardown deletes — while the ROLE carries rig#76's family
-# suffix. They are two different namespaces and only one of them moved.
-for t in codex grok; do
-  case "$t" in codex) bin=codex; user=codex ;; grok) bin=grok; user=grok ;; esac
-  printf '\n  minting a %s box (cold — validates the runtime role)…\n' "$t"
-  if mint_box "/tmp/mint-$t.log" --name "$t" --role "$t-box" --size medium; then
-    [ "$(incus config get "$t" user.box.user 2>/dev/null)" = "$user" ] \
-      && ok "$t: role-derived user stamped ($user)" || no "$t: user.box.user not $user"
-    if timeout -k 5 30 box exec "$t" -- "$bin" --version </dev/null >/dev/null 2>&1; then
-      ok "$t: '$bin --version' answers via box exec — installed and on the non-interactive PATH"
-    else
-      no "$t: '$bin --version' FAILED via exec — not installed, or not on exec's PATH (the claude-box template's #15 bug)"
-      inf "PATH as exec sees it: $(timeout -k 5 20 box exec "$t" -- printenv PATH </dev/null 2>/dev/null)"
-      # Do not throw the evidence away — say WHAT the installer actually left.
-      # Do NOT throw the evidence away — say what the installer actually left
-      # behind, and what its own log said. Guessing at an upstream installer's
-      # layout is how this FAILed in the first place.
-      inf "anything named '$t' on disk:"
-      in_box "$t" sh -c "find /home /opt /usr/local /usr/bin -maxdepth 4 \\( -type f -o -type l \\) -iname '*$t*' 2>/dev/null | head -8" \
-        | sed 's/^/          /'
-      inf "what its cloud-init said:"
-      in_box "$t" sh -c "grep -iE '$t|install' /var/log/cloud-init-output.log 2>/dev/null | tail -8" \
-        | sed 's/^/          /'
-    fi
-    box rm "$t" --force >/dev/null 2>&1 && ok "$t box removed" || no "$t: could not remove"
-  else
-    no "$t mint FAILED — tail: $(tail -3 "/tmp/mint-$t.log" | tr '\n' ' ')"
-    timeout -k 5 60 incus delete -f "$t" >/dev/null 2>&1
-  fi
-done
+# The per-role mints lived here (#159): one cold mint each for codex and grok,
+# proving that role's own payload — the CLI installs, lands on the
+# non-interactive exec PATH, and answers --version. #214 removed the role axis
+# and with it box's claim to install anything, so there is no payload of box's
+# left to prove and no --role to pass. The generic mechanic those mints rode
+# on (metadata, placement, user, isolation parity) is proven by the blank mint
+# above and by the drill box below, which is now the same blank shape.
 
-printf '\n  minting a claude-box box (cold, ~10 min)…\n'
+printf '\n  minting the drill box (cold)…\n'
 t0=$SECONDS
-if mint_box /tmp/mint-drill.log --name drill --role claude-box --size medium; then
-  ok "box new --name drill --role claude-box --size medium  ($((SECONDS - t0))s)"
-  # The rig pin the record will name, read off the mint's own stamp (#103) and
-  # read HERE, because the box does not have to survive to the record (#150).
-  # RIG_REF unset no longer means `main` — it means whatever release bin/box
-  # resolved during this mint — so the environment can no longer answer the
-  # question and only the stamp can. An operator pin still wins: record_collect
-  # fills these from RIG_REPO/RIG_REF first, and both are ${...:-} against
-  # themselves, so nothing here overrides a value already set.
-  REC_RIG_REPO="${REC_RIG_REPO:-${RIG_REPO:-$(drill_stamp drill rig.repo)}}"
-  REC_RIG_REF="${REC_RIG_REF:-${RIG_REF:-$(drill_stamp drill rig.ref)}}"
+if mint_box /tmp/mint-drill.log --name drill --size medium; then
+  ok "box new --name drill --size medium  ($((SECONDS - t0))s)"
 else
   no "box new FAILED — tail: $(tail -3 /tmp/mint-drill.log | tr '\n' ' ')"
   timeout -k 5 60 incus delete -f drill >/dev/null 2>&1
@@ -1181,21 +1136,19 @@ fi
 box info drill | grep -q '^IPV4' && ok "info shows an IPv4" || no "info has no IPV4 row"
 box info drill | grep -q 'SNAPSHOTS  (none)' && ok "info: no snapshots yet, offers to take one" || no "info snapshot-empty state wrong"
 
-if box exec drill -- claude --version >/dev/null 2>&1; then
-  ok "Claude Code is installed in the box"
-elif timeout 30 box exec drill -- bash -lc 'claude --version' >/dev/null 2>&1; then
-  no "'claude' is installed but NOT on exec's PATH — repo bug: the help promises 'box exec work -- claude --version'"
-  inf "PATH as exec sees it: $(timeout 30 box exec drill -- printenv PATH 2>/dev/null)"
-else
-  no "'claude --version' failed inside the box"
-  # diag output must skip the hatch's own 'box: incus exec …' announce lines
-  hatch_out() { timeout 30 box incus drill -- exec {} -- "$@" 2>&1 | grep -v '^box:' | tail -1 | cut -c1-120; }
-  inf "cloud-init:   $(hatch_out cloud-init status)"
-  inf "binary runs?  $(hatch_out sudo -u claude /home/claude/.local/bin/claude --version)"
-  inf "exec PATH:    $(timeout 30 box exec drill -- printenv PATH 2>/dev/null | tail -1)"
-fi
-box exec drill -- gh --version >/dev/null 2>&1 \
-  && ok "the GitHub CLI is installed in the box (PR #5)" || no "'gh --version' failed inside the box"
+# The agent-payload probes lived here: 'claude --version' and 'gh --version'
+# inside the drill box, with a PATH diagnosis behind them. Both asked whether
+# what box installed had landed, and box installs neither any more (#214) — a
+# blank box is SUPPOSED to answer no, and the blank mint above already probes
+# that directly ("blank box has no claude — nobody home, as designed"). What
+# the tenant seed itself ships is the thin floor, so probe THAT instead: it is
+# box's own payload, and the one the seed can still be held to.
+box exec drill -- tmux -V >/dev/null 2>&1 \
+  && ok "tmux is installed in the box — 'box tmux' has something to run (#65)" \
+  || no "'tmux -V' failed inside the box — the seed's own payload did not land"
+box exec drill -- shellcheck --version >/dev/null 2>&1 \
+  && ok "the seed's unprivileged toolchain landed (shellcheck, #177 decision 3)" \
+  || no "'shellcheck --version' failed inside the box — the seed's toolchain did not land"
 
 # --- the snapshot → clone workflow, which is the whole point of the tool ---
 box snapshot drill authed 2>&1 | grep -q authed && ok "snapshot drill authed" || no "snapshot failed"
@@ -1385,19 +1338,25 @@ fi
 # ===========================================================================
 phase E "E. box expose — a deliberate loopback door (#55)"
 # ===========================================================================
-# archive is a running claude-box box (node is installed). Start a DETACHED
-# listener on 0.0.0.0 inside it, expose the port, and prove the door works
-# from the HOST's loopback. Then prove removing it closes the door, and that a
-# NON-exposed port still obeys the ingress drop — the feature must not
-# globally weaken A7.
+# archive is a running box. Start a DETACHED listener on 0.0.0.0 inside it,
+# expose the port, and prove the door works from the HOST's loopback. Then
+# prove removing it closes the door, and that a NON-exposed port still obeys
+# the ingress drop — the feature must not globally weaken A7.
+#
+# python3, not node (#214). The listener used to be four lines of node,
+# available because the box had been converged into an agent box; box converges
+# nothing now, so this phase would have died on a missing interpreter. python3
+# is on the guest unconditionally — cloud-init is written in it, so a cloud
+# image that boots has it — and 'http.server' serves the response body out of
+# a file, which is what the probe below greps for.
 EP=8091; EHP=18091
 srv="$(mktemp)"
-printf 'require("http").createServer((q,r)=>r.end("box-expose-ok")).listen(%s,"0.0.0.0")\n' "$EP" >"$srv"
-if incus file push "$srv" archive/tmp/srv.js >/dev/null 2>&1; then
+printf 'box-expose-ok\n' >"$srv"
+if incus file push "$srv" archive/tmp/expose-www/index.html --create-dirs >/dev/null 2>&1; then
   rm -f "$srv"
   # Detached: setsid + all fds redirected so 'incus exec' returns at once and
   # nothing holds its stdout (trap 2/3). The listener outlives the exec.
-  timeout -k 5 20 incus exec archive -- sh -c 'setsid node /tmp/srv.js >/tmp/srv.log 2>&1 </dev/null &' </dev/null
+  timeout -k 5 20 incus exec archive -- sh -c "setsid python3 -m http.server $EP --bind 0.0.0.0 --directory /tmp/expose-www >/tmp/srv.log 2>&1 </dev/null &" </dev/null
   sleep 3
   xlog="$(mktemp)"
   if box expose archive "$EP" "$EHP" >"$xlog" 2>&1; then
@@ -1435,7 +1394,7 @@ if incus file push "$srv" archive/tmp/srv.js >/dev/null 2>&1; then
     rm -f "$srv" 2>/dev/null
   fi
   rm -f "$xlog" 2>/dev/null
-  timeout -k 5 15 incus exec archive -- pkill -f srv.js </dev/null >/dev/null 2>&1
+  timeout -k 5 15 incus exec archive -- pkill -f 'http.server' </dev/null >/dev/null 2>&1
 else
   rm -f "$srv"
   no "could not push the test server into archive — expose phase did not run"

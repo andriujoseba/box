@@ -1,31 +1,36 @@
 # box design
 
 `box` is a CLI that mints and manages **trust-less, network-isolated VMs**.
-An optional runtime rig role installs the coding agent; omitting it produces a
-blank box. It is infrastructure, not a project provisioner.
+Every mint produces a blank box; what one becomes is converged inside it, by
+its operator, afterwards (#214). It is infrastructure, not a project
+provisioner.
 
 See issue #3 for the full reframe and rationale. This doc captures the durable
 design decisions.
 
 ## Principle: separate the tool from the agent
 
-- **The tool** mints isolated boxes with the agent installed but **unauthenticated**.
-  It knows nothing about projects, secrets, recipes, or memory.
-- **The agent** (Claude Code, Codex, Grok — whichever template, inside the box)
-  reads an optional `.box/` runbook in a cloned repo and acts on it. The recipe's
-  consumer is the reasoning agent, not host machinery.
+- **The tool** mints isolated boxes carrying a thin seed and **nothing else** —
+  no agent, and since #214 no converger either. It knows nothing about projects,
+  secrets, recipes, or memory.
+- **The agent** — whatever the operator converged inside the box, never
+  something a template shipped — reads an optional `.box/` runbook in a cloned
+  repo and acts on it. The recipe's consumer is the reasoning agent, not host
+  machinery.
 
 ## Boxes are strictly creds-free
 
-`box new --name <n>` launches a blank box: everything installed, **no**
-git credentials and **no** agent credentials. The operator authenticates
-interactively *inside* the box:
+`box new --name <n>` launches a blank box: the thin seed only, **no**
+git credentials and **no** agent credentials. Since #214 there is no agent to
+authenticate at the mint either — the operator converges one, then authenticates
+it interactively *inside* the box:
 
-- **The coding agent** — e.g. `claude` → `/login` (paste-a-code OAuth: copy the
-  URL, open it in your own browser, paste the code back); `codex` and `grok`
-  have their own login step. Works because the box is outbound-only; the tool
-  never handles a token.
-- **Git** — the operator adds their own PAT / `gh auth login` inside the box.
+- **The coding agent** — whatever the converge installed; e.g. `claude` →
+  `/login` (paste-a-code OAuth: copy the URL, open it in your own browser, paste
+  the code back). Works because the box is outbound-only; the tool never handles
+  a token.
+- **Git** — the operator adds their own PAT / `gh auth login` inside the box,
+  once the converge has put `git` and `gh` there.
 
 The tool stores and injects **no** credentials, ever. This dissolves the
 multi-user problem: nothing shared, nothing committed.
@@ -44,12 +49,11 @@ snapshots, not a secrets store:
 Log in once → snapshot → spin up authed boxes from it.
 
 One checkpoint box takes itself: **`pristine`**, marked on every fresh mint
-after cloud-init and before the `rig bootstrap` hook (#104, child of
-heavy-duty/rig#62). That instant — pristine Debian plus box's thin seed, rig
-installed but not yet run — is the state "back to pristine Debian" names, it
-lasts a few seconds, and nobody is standing there to snapshot it. `box
-restore <n> pristine` undoes a tenant role wholesale, because everything the
-creds-free roles do is box-local and file-shaped. A `--from` clone takes no
+after cloud-init and before anything converges the guest (#104). That instant —
+pristine Debian plus box's thin seed — is the state "back to pristine Debian"
+names, it lasts a few seconds, and nobody is standing there to snapshot it.
+`box restore <n> pristine` undoes a convergence run wholesale, because what one
+installs is box-local and file-shaped. A `--from` clone takes no
 `pristine`: it never has the moment, so it inherits its source's snapshots or
 has none, and box refuses to label a worked-in state as pristine. On a `dir`
 pool the mark would be a full copy rather than a CoW one, so the mint skips
@@ -73,41 +77,41 @@ rides along deliberately — and because scrubbing a disk image is a promise
 tarball surgery cannot keep, export shouts that the file is a credential
 instead of pretending to sanitize it.
 
-## Runtime roles: box mints, rig converges (#81, #159)
+## One seed: box mints, it does not converge (#81, #159, #214)
 
-A runtime tenant uses one **thin, creds-free seed** — base image, the derived
-or overridden tenant user, tmux, and [rig](https://github.com/heavy-duty/rig)
-preinstalled. What the box *becomes* lives in rig's bootstrap roles (rig#31):
-box renders the seed and auto-runs `rig bootstrap <role> --user <user>` after
-cloud-init. Box validates role syntax, not rig's registry; an unknown role is
-rig's loud converge-time refusal. This makes a role added after a box release
-immediately mintable with that released box. The split is deliberate:
-cloud-init is a first-boot one-shot —
-not convergent, not re-runnable, only parse-and-grep testable — while a rig
-role is an idempotent script with effective-state asserts that can also
-converge an *existing* box to a newer spec. Anything that joins a tailnet or
-holds a key (the staging-box tenant's workload join) stays operator-run
-through `box shell`; box prints it as a next step and never sees the key. The
-seed's rig install is pinned by `RIG_REPO`/`RIG_REF` at mint (default
-`heavy-duty/rig` at its latest release, resolved at mint — box#150 closed the
-unpinned `main` edge rig#32's releases had been waiting on),
-and box's seed suite holds the line with fail-closed absence greps: no agent
-CLI, no docker, no tailscale, no context-file heredocs in the generic tenant
-seed.
+Every ordinary mint uses one **thin, creds-free seed** — base image, the tenant
+user (`dev`, or `--user`), tmux, curl, ca-certificates, chrony, and the
+unprivileged tool floor: no sudoers entry, `python3-venv`, `shellcheck`, a
+fixed 1GiB `/tmp` and a 4GiB swapfile in VM mode. There is no role axis and no
+second shape; the seed collapsed to the agent-class hygiene because that is the
+one the fleet measured.
 
-That one seed also backs the argumentless blank mint. Its sole conditional is
-role presence: role mints are unprivileged and add the agent tool floor, fixed
-1GiB `/tmp`, 4GiB swap, and bootstrap role; blank mints keep sudo and omit
-those additions. Both install tmux, curl, ca-certificates, chrony, and pinned
-rig. Resource shape is independent: `small=2/2GiB/20GiB`,
+**What a box becomes is not box's to install.** box provisions and manages VMs
+and does not converge them, so the mint hook, the pin it resolved and the stamp
+that recorded it are all gone: an operator opens `box root <box>` and runs
+their own converger inside the guest. That inverts nothing about the split
+cloud-init was chosen against — a first-boot one-shot is not convergent, not
+re-runnable and only parse-and-grep testable, while a convergence run is an
+idempotent script that can bring an *existing* box to a newer spec — it simply
+moves who runs the second half. It also decouples the release trains
+completely: a converger revision added after a box release needs no box change
+and no box release, and box reads no variable naming one, so a mint makes no
+network request for a pin and works offline.
+
+box's seed suite holds the line with fail-closed absence greps: no agent CLI,
+no docker, no tailscale, no context-file heredocs, and no installer line in any
+seed. `curl` and `ca-certificates` stay, and their reason changed: they carry
+the *operator's* installer, whose first line is a `curl … | bash` inside the
+box.
+
+Resource shape is independent of all of this: `small=2/2GiB/20GiB`,
 `medium=4/8GiB/60GiB`, and `large=8/16GiB/120GiB`, resolved in the order
-explicit flag, `BOX_*` environment, named size, then seed/default. A role never
-implies a size.
+explicit flag, `BOX_*` environment, named size, then seed/default.
 
-## The agent is unprivileged in its own box (#177)
+## The tenant is unprivileged in its own box (#177)
 
-**The agent is unprivileged inside its own box; the operator enters as root
-from the host.** The generic tenant seed creates its runtime user with no sudoers
+**The tenant is unprivileged inside its own box; the operator enters as root
+from the host.** The tenant seed creates its user with no sudoers
 entry, and `box root` — authorized by the host's Incus socket, needing nothing
 from the guest (#176) — is the root path.
 
@@ -124,15 +128,14 @@ still work unprivileged, and `box root` covers the rest. A partial sudoers
 allowlist is refused rather than tuned — `apt` alone installs a package that
 owns the box, so it keeps the risk and loses the property.
 
-The generic seed's blank rendering and `staging-box` keep sudo, and that is a scoping rather than an
-oversight: they seed guests that converge *themselves* (`sudo rig runner
-install`, `sudo rig bootstrap workload-server`). **Agents lose root;
-self-converging fleet guests keep it.** The contrast with #175's
+`staging-box` keeps sudo, and that is a scoping rather than an
+oversight: it seeds a guest that converges *itself*, from the inside.
+**Tenants lose root; self-converging fleet guests keep it.** The contrast with #175's
 `BOX_REQUIRE_VM` is deliberate — the trust boundary is meant to be inherited
 by every future template, sudo is selected only for self-converging guests.
 Two traits, two answers. cloud-init is a
 first-boot one-shot, so this reaches **newly minted boxes only**; a running
-agent box keeps the entry it was minted with, and stripping it mid-task is
+box keeps the entry it was minted with, and stripping it mid-task is
 the operator's call through `box root`.
 
 ## The box announces itself to the agent
@@ -141,8 +144,9 @@ Every coding-agent box gets a global agent-context file
 (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.grok/AGENTS.md`) telling the
 agent it is running in a box (trust-less, ephemeral, creds-free) and to treat a
 repo's `.box/` folder as its bootstrap runbook. No "tell it" step, no host
-execution. The file is rendered by rig's tenant roles from one shared
-template (#81) — including the #80 guard: never run `box setup-host`,
+execution. box does not write that file and never did: it is rendered by
+whatever converges the box, from one shared template (#81) — including the #80
+guard: never run `box setup-host`,
 `box teardown-host` or the drill inside a box; a nested box stack claims the
 guest's own uplink subnet and silently breaks its networking.
 

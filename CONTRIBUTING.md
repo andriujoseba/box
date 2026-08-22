@@ -65,7 +65,7 @@ pure-Bash tree, GitHub’s source tarball for the tag is the package, and
 
 ### What a box drill proves
 
-The box drill is the 87-probe VM isolation contract: it exercises the trust
+The box drill is the 81-probe VM isolation contract: it exercises the trust
 boundary on real hardware. The lighter Incus container rehearsal in CI proves
 the tier mechanics but cannot substitute for that boundary measurement. The
 record format and operating procedure live in [drills/README.md](drills/README.md),
@@ -84,17 +84,19 @@ different artifacts. The former is per-release evidence read by the release
 guard; the latter is the harness’s ongoing run log and lore. Updating one
 never satisfies the purpose of the other.
 
-The family drills are independent and may run in any order. Each pins the
-same fixed candidate refs: rig’s drill uses the candidate box ref, while
-box’s drill mints with the candidate rig ref. Static refs dissolve the
-box↔rig runtime recursion; no repository needs to release first.
+The family drills are independent and may run in any order. rig’s drill pins
+the candidate box ref, because rig converges a box and so consumes one. box’s
+drill pins no ref of rig’s: since box#214 a mint installs no converger, so a
+box run has no second ref to get wrong. The box↔rig runtime recursion is
+dissolved at its source rather than pinned around, and no repository needs to
+release first.
 
-That gap from box#81 — released box templates defaulting `RIG_REF` to `main`,
-so a later mint consumed a rig revision other than the one drilled — is
-closed by box#150. An unset `RIG_REF` now resolves rig’s latest release at
-mint, so the combination a user receives is a released box against a released
-rig. A drill still pins both refs explicitly, because a candidate is a branch
-on a fork and no release names it yet.
+That is what finally closed box#81 — released box templates defaulting
+`RIG_REF` to `main`, so a later mint consumed a rig revision other than the
+one drilled. box#150 had narrowed the gap by resolving an unset `RIG_REF` to
+rig’s latest release; box#214 removed the mint hook, its pin and the record’s
+second ref outright and left `RIG_REF` inert, so the gap has no surface left
+to reopen on. A box drill’s record names one candidate ref, box’s own.
 
 ## Scope labels
 

@@ -1,31 +1,29 @@
 # box
 
 **Headless, trust-less, throwaway dev VMs.** One command mints a fresh,
-network-isolated Incus box for any runtime tenant role known to
-[rig](https://github.com/heavy-duty/rig). `claude-box`, `codex-box`,
-`grok-box`, and `kimi-box` are role values, not box templates: **box mints,
-rig converges**. Box renders one thin tenant seed and the agent tooling lands
-through a creds-free `rig bootstrap` role auto-run at mint
-([#81](https://github.com/heavy-duty/box/issues/81)). The box is the product
-— you log in and work; destroying it loses nothing you didn't push.
+network-isolated Incus box. **box provisions and manages VMs, and it does not
+converge them** ([#214](https://github.com/heavy-duty/box/issues/214)): every
+box comes up blank — one thin tenant seed, an unprivileged user, nobody home —
+and what it becomes is installed inside it, by you, afterwards. The box is the
+product — you log in and work; destroying it loses nothing you didn't push.
 
-**Strictly creds-free.** A box ships with everything installed and **no**
-credentials — no agent token, no git PAT, nothing. You authenticate
-interactively _inside_ the box. The tool never stores or injects a secret. That
+**Strictly creds-free.** A box ships with a thin seed and **no** credentials —
+no agent token, no git PAT, nothing. What converges it is yours to run, and you
+authenticate interactively _inside_ the box. The tool never stores or injects a
+secret. That
 means there's nothing shared or committed, so it's safe for multiple operators
 out of the box.
 
-**Roles say what a tenant becomes; sizes say what it gets.** `--role` is
-runtime data, `--size small|medium|large` is a resource bundle, and explicit
-resource flags win. The network and every security flag live in a shared
-profile neither can touch, so the argumentless blank box has nobody home —
+**Sizes say what a box gets.** `--size small|medium|large` is a resource
+bundle and explicit resource flags win. The network and every security flag
+live in a shared profile neither can touch, so a blank box has nobody home —
 not a box with the safety off.
 
 **The tool knows nothing about your projects.** You just `git clone` inside a
 box. A repo can ship an optional [`.box/`](docs/box-recipe.md)
-runbook that the box's coding agent reads and acts on — there is no `install`
-step and no host-run setup. See [docs/box-design.md](docs/box-design.md) for the
-design rationale.
+runbook that the coding agent you converged onto the box reads and acts on —
+there is no `install` step and no host-run setup. See
+[docs/box-design.md](docs/box-design.md) for the design rationale.
 
 > **0.6.0**: multi-user support.
 
@@ -260,122 +258,118 @@ VM boundary itself is proven on real hardware, like the rest of the drill).
 ## Quick start
 
 ```sh
-box new --name work --role claude-box --size medium  # creds-free agent (~10 min cold)
-box shell work                                      # enter as the role-derived user
+box new --name work --size medium   # a blank box, nothing converged
+box shell work                      # enter as the tenant user (default: dev)
 ```
 
-Pick whichever rig tenant role you like — `claude-box`, `codex-box`,
-`grok-box`, `kimi-box`, or one added after this box release. Omit `--role`
-for a blank box. Inside the box, authenticate as needed; a Claude role looks
-like this, and other agents use their own login step:
+**That box is blank, and blank is literal.** The seed carries a tenant user, a
+fixed 1GiB `/tmp`, swap, chrony, `tmux`, `curl`, `ca-certificates`,
+`python3-venv` and `shellcheck` — that list is the whole of it. There is no
+coding agent on it, and **no `gh`**; the tenant has no sudo, so it cannot
+`apt install` one either. Authenticating is therefore not the first thing you
+do on a fresh box. Converging is.
+
+**Box mints; you converge.** Turning a box into a coding-agent box, a server,
+or anything else is four steps, and box performs none of them
+([#214](https://github.com/heavy-duty/box/issues/214)):
 
 ```sh
-claude                           # then run /login — copy the URL (press c), open it
-                                 #   in YOUR browser, paste the code back. No host CLI needed.
-gh auth login                    # or drop a PAT in — your git credentials, your call
-git clone https://github.com/you/project && cd project
-claude                           # if the repo has .box/, the agent reads it and sets up
+box new --name work --size medium        # a blank box, nothing converged
+box root work                            # root inside it, authorized by the host's Incus socket
+# then, inside the box, as root:
+curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh \
+  | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash
+rig bootstrap claude-box --user dev
 ```
 
-## Runtime roles, sizes, and seeds
+Once your converger has put a toolchain on the box, authenticate inside it —
+box never handles the credential, before or after:
 
-Coding agents are runtime roles. Adding one belongs in rig/rig-templates and
-requires zero box changes or box release. The public mint shapes are:
+```sh
+gh auth login                    # or drop a PAT in — your git credentials, your call
+git clone https://github.com/you/project && cd project
+```
+
+**Read the cold-start promise honestly.** Box used to sell a creds-free
+coding-agent box as one command, ~10 minutes cold. It does not any more: this
+is a four-step path whose convergence you wait through interactively, in a
+shell you opened. What you get for it is a tool with one job — box provisions
+and manages the VM, and the thing that converges it is yours to choose,
+version and run.
+
+Three details in that block are load-bearing:
+
+- **`--size medium` is not decoration.** A role never implied a size, and
+  omitting it gives you 2/2/20 where an agent box used to get 4/8/60.
+- **`box root`, not `box shell` + `sudo`.** The tenant an ordinary mint
+  creates is unprivileged and has no sudoers entry (see below), and `box root`
+  authorizes through the host's Incus socket rather than through anything in
+  the guest ([#176](https://github.com/heavy-duty/box/issues/176)).
+- **`box root` is a login shell**, so `$HOME` is set and a converger that
+  reads it needs no workaround.
+
+## Sizes and seeds
+
+There is no role axis and no `--role` flag. The public mint shapes are:
 
 | Mint shape | Meaning |
 |---|---|
-| no `--role` | Generic blank shape: sudo kept, rig preinstalled, no agent toolchain or auto-run |
-| `--role <role>` | Generic unprivileged tenant seed, then that creds-free rig role |
+| `box new --name <box>` | The tenant seed: an unprivileged user, a thin toolchain, nobody home |
+| `box new --user <name>` | The same seed with a tenant user other than `dev` |
 | `--template staging-box` | Dedicated server seed: VM-only and autostarting |
 
-**Seeds are thin; rig does the becoming**
-([#81](https://github.com/heavy-duty/box/issues/81)). The generic tenant seed
-contains the runtime user, tmux, and rig, with nothing that joins a tailnet or
-admits credentials. Box derives the user by stripping a trailing `-box`, or
-uses `--user`, renders that user into cloud-init, and after cloud-init runs
-`rig bootstrap <role> --user <user>` ([rig#31](https://github.com/heavy-duty/rig/issues/31)).
-Box deliberately does not validate rig's role registry: an unknown role dies
-loudly at converge, leaves the incomplete box inspectable, and prints `box rm`
-as the cleanup. The agent CLI,
-docker, the server posture and the agent-context file all come from that
-role — convergent and idempotent, so the same command re-run later converges
-an *existing* box to a newer spec (`box root <box>` →
-`rig bootstrap <role>`). The agent-context file carries the
-[#80](https://github.com/heavy-duty/box/issues/80) guard — never run
-`box setup-host`, `box teardown-host` or the drill *inside* a box — once,
-from rig's roles, instead of copy-pasted per template.
+**The seed is thin and it is the whole of what box installs.** It carries the
+tenant user, `tmux`, `curl`, `ca-certificates`, `chrony`, `python3-venv` and
+`shellcheck`, caps `/tmp` at a fixed 1GiB and lays a 4GiB swapfile in VM mode
+— and nothing that joins a tailnet or admits a credential. `curl` and
+`ca-certificates` are there for **your** installer, not box's: the first line
+of the converge above is a `curl … | bash` inside the box, and a bare cloud
+image is not guaranteed to ship either.
 
-The seed has exactly one conditional axis. With `--role`, it removes tenant
-sudo, adds `python3-venv` and `shellcheck`, caps `/tmp` at 1GiB, provisions a
-4GiB swapfile in VM mode, and sets the role for box to converge. With no role,
-it keeps sudo and omits those agent-only additions and the auto-run. Both
-shapes install tmux, curl, ca-certificates, chrony, and the pinned rig tree.
-
-**The agent is unprivileged inside its own box; the operator enters as root
+**The tenant is unprivileged inside its own box; the operator enters as root
 from the host** ([#177](https://github.com/heavy-duty/box/issues/177)). The
-generic tenant seed creates the runtime user with no sudoers entry, so `sudo`
-inside an agent box fails — and `box root <box>` still lands as root, authorized by
+seed creates the tenant user with no sudoers entry, so `sudo` inside a box
+fails — and `box root <box>` still lands as root, authorized by
 the host's Incus socket rather than by anything in the guest
 ([#176](https://github.com/heavy-duty/box/issues/176)). Root was never what
-contained the agent; the VM is. What it cost was the ability to add any
+contained a coding agent; the VM is. What it cost was the ability to add any
 control *inside* a box later — an egress allowlist, a read-only mount, an
 audit trail — each of which is one `sudo` away from being switched off while
-the tenant holds it. The seeds ship the toolchain instead, user-local installs
+the tenant holds it. The seed ships the toolchain instead, user-local installs
 still work unprivileged — `python3 -m venv`, `cargo`, `uv`, and
 `npm install --prefix <dir>` (a *global* `npm -g` writes to `/usr`, so point
 it somewhere the tenant owns once: `npm config set prefix ~/.local`) — and
-anything genuinely needing `apt` is one `box root` away. `blank` and
-`staging-box` keep sudo on purpose: they seed guests that converge
-*themselves* (`sudo rig bootstrap workload-server`, `sudo rig runner
-install`). Agents lose root; self-converging fleet guests keep it. This is
-**mint-time only** — cloud-init runs once, so boxes minted before this change
-still have their sudoers entry.
+anything genuinely needing `apt` is one `box root` away. `staging-box` keeps
+sudo on purpose: it seeds a guest that converges *itself*, from the inside.
+This is **mint-time only** — cloud-init runs once, so boxes minted before this
+change still have their sudoers entry.
 
-**Anything that joins or admits stays operator-run.** The `staging-box`
-tenant's tailnet workload join holds a pre-auth key, so box only prints it as the
-next step — `box shell <name>`, then `sudo rig bootstrap workload-server` — and
-never sees the key ([#69](https://github.com/heavy-duty/box/issues/69)'s
-split, kept; that tenant is one of the two that keeps sudo).
-
-**The rig pin point** (`RIG_REPO` / `RIG_REF`). The seeds preinstall rig,
-which inverts the rig→box install edge
-([rig#28](https://github.com/heavy-duty/rig/issues/28): rig installs box on
-host-class machines; box guests now install rig). The seed's install line
-carries `@RIG_REPO@`/`@RIG_REF@` tokens that box resolves at mint from the
-environment:
+**Anything that joins or admits stays yours, and now so does everything
+else.** The `staging-box` tenant's tailnet workload join holds a pre-auth key
+and was always operator-run ([#69](https://github.com/heavy-duty/box/issues/69)'s
+split); since #214 the server posture beside it is too. Both run inside the
+box, through `box root <name>`:
 
 ```sh
-box new --name work --role claude-box                  # heavy-duty/rig @ its LATEST RELEASE
-RIG_REF=0.3.0 box new --name pinned --role claude-box   # a rig release you pick
-RIG_REF=main box new --name tip --role claude-box       # rig's development tip
-RIG_REPO=you/rig RIG_REF=my-branch \
-  box new --name trial --role brand-new-box             # a role branch under review
+box root staging1
+# then, inside the box, as root — after installing your converger as above:
+rig bootstrap staging-box
+rig bootstrap workload-server --hostname staging1
 ```
 
-**`RIG_REF` unset means rig's latest release**, resolved at mint off
-`https://github.com/<repo>/releases/latest` — the same channel shape
-`install.sh` gives box itself (unset = latest release, a tag pins, `main` is
-the development tip), and the same one-`HEAD`-request probe, so no API token
-and no rate limit. It is resolved rather than written into the tree because a
-pin that has to be rewritten every release is a pin that eventually is not
-([#150](https://github.com/heavy-duty/box/issues/150), closing the last step
-of [rig#32](https://github.com/heavy-duty/rig/issues/32) /
-[#83](https://github.com/heavy-duty/box/issues/83)).
-
-A mint that cannot resolve the pin **fails, and says so** — falling back to
-`main` is the defect that rule exists to close, and doing it quietly would
-hide it exactly where nobody looks. Pass `RIG_REF` yourself to move on. The
-generic seed installs rig in both its blank and role shapes, so both resolve
-the pin; a dedicated seed without a pin token performs no such lookup.
-
-The pin covers both the installer fetched and the tree it installs, and the
-values — the resolved tag included, since it arrives off an HTTP header — are
-allowlist-validated on the host before they touch the YAML.
+**Box reads no converger pin.** `RIG_REPO` and `RIG_REF` used to select which
+revision box installed into every guest it minted
+([#81](https://github.com/heavy-duty/box/issues/81),
+[#150](https://github.com/heavy-duty/box/issues/150)). Box installs nothing
+now, so it does not read them: exporting either changes nothing about what is
+rendered or minted, and box says nothing about it — the variables belong to
+the installer you run inside the box, which is where you pass them. A mint
+makes no network request of its own for a pin, so minting works offline.
 
 ```sh
 box templates                    # list dedicated non-agent templates
-box new --name scratch           # the DEFAULT is blank: bare Debian,
-                                 #   same isolation, no role auto-run
+box new --name scratch           # the DEFAULT: bare Debian + the thin seed,
+                                 #   same isolation, nobody home
 ```
 
 A seed **cannot** name a network, a profile, or a `security.*` flag —
@@ -394,12 +388,11 @@ form). Resolution is `--cpu/--memory/--disk` > `BOX_*` environment >
 | `medium` | 4 | 8GiB | 60GiB |
 | `large` | 8 | 16GiB | 120GiB |
 
-The argumentless and runtime-role paths default to `small`. The dedicated
+The default mint path defaults to `small`. The dedicated
 `staging-box` seed keeps its existing medium resources when no size is given.
 Named sizes apply to fresh mints; `--from` clones keep the explicit
 `--cpu`/`--memory`/`--disk` override surface.
-The selected seed,
-runtime role, and resolved user are stamped onto the instance,
+The selected seed and the resolved user are stamped onto the instance,
 so `shell`, `exec` and `tmux` land in the right user — and a clone still
 knows, because `incus copy` carries the metadata.
 
@@ -427,21 +420,19 @@ snapshot labels and the `--from` line to clone one.
 
 Every fresh mint marks a snapshot called `pristine`
 ([#104](https://github.com/heavy-duty/box/issues/104)) at the one moment it
-is true: **after cloud-init, before `rig bootstrap` converges the tenant
-role.** At that instant the guest is pristine Debian plus box's thin seed
-(the user, tmux, rig) and nothing else — the state
-[heavy-duty/rig#62](https://github.com/heavy-duty/rig/issues/62) calls "back
-to pristine Debian". It exists for a few seconds on every mint, so box
-captures it rather than asking you to be quick.
+is true: **after cloud-init, before anything converges the box.** At that
+instant the guest is pristine Debian plus box's thin seed — the tenant user,
+tmux, the toolchain — and nothing else. It exists for a few seconds on every
+mint, so box captures it rather than asking you to be quick.
 
 ```sh
-box restore work pristine   # undo the tenant role and everything since
+box restore work pristine   # undo the convergence and everything since
 ```
 
-That is a complete undo for every tenant role: everything `rig bootstrap
-claude|codex|grok|staging` does — docker, node, the agent CLI, the
-agent-context file, the role marker — is box-local and file-shaped, so a
-filesystem rollback reaches all of it, without paying a ~10-minute re-mint.
+That is a complete undo for a convergence run: what one installs — docker,
+node, an agent CLI, a context file, a role marker — is box-local and
+file-shaped, so a filesystem rollback reaches all of it, without paying a
+re-mint.
 
 Three things it deliberately does not do:
 
@@ -450,9 +441,9 @@ Three things it deliberately does not do:
   that outlives the box — see below.
 - **It cannot reach off-box state.** A tailnet join, a GitHub runner
   registration, a pushed commit: those are records held somewhere else, and
-  no filesystem rollback undoes them (rig#62 covers those separately).
+  no filesystem rollback undoes them.
 - **A `--from` clone gets no `pristine` of its own.** A clone skips
-  cloud-init and rig entirely, so it has no pristine moment to capture, and
+  cloud-init entirely, so it has no pristine moment to capture, and
   box will not label a source's worked-in state as one. Cloning a _box_
   inherits the source's snapshots (a real `pristine` among them, if the
   source had one); cloning a _snapshot_ starts with none. `box new` says
@@ -520,7 +511,7 @@ the door is per-port, punched and removable at runtime.
 ## Commands
 
 ```
-box new --name <box> [--role <role>] [--size small|medium|large] [--user <user>] [--from <src>[/<snap>]] [--cpu <n>] [--memory <size>] [--disk <size>] [--vm|--container]
+box new --name <box> [--size small|medium|large] [--user <user>] [--from <src>[/<snap>]] [--cpu <n>] [--memory <size>] [--disk <size>] [--vm|--container]
 box templates                # list dedicated non-agent templates
 box list                     # list your boxes
 box info <box>               # one box: state, IP, exposures, provenance, snapshots
@@ -532,7 +523,8 @@ box snapshot <box> [label]   # checkpoint (label defaults to manual-<epoch>)
 box restore <box> <snap> [--force]
                              # roll back to a snapshot — destructive, asks first
                              # 'pristine' is auto-marked at mint: back to
-                             # pristine Debian + box's seed, before rig ran
+                             # pristine Debian + box's seed, before anything
+                             # converged it
 box export <box> [<file>] [--instance-only]
                              # one portable file (snapshots incl.) — survives rm & host
 box import <file> [--name <box>]
@@ -577,8 +569,8 @@ as a success: `box down all` reports the ones that were already down and
 the exit status meaningful — non-zero means something went wrong, not that a
 box had nothing to do.
 
-`new` fresh-launches a small blank box by default, renders the generic tenant
-seed when given `--role`, or with `--from` clones an existing box or snapshot.
+`new` fresh-launches a small blank box by default, or with `--from` clones an
+existing box or snapshot.
 VM mode (`--vm`, the default where
 `/dev/kvm` exists) is the trust-less target; container mode (auto-fallback,
 `security.nesting=true`) is for hosts without nested virt — weaker isolation,
@@ -601,10 +593,9 @@ TYPE       VM
 IPV4       10.x.x.x
 
 MINTED     2026-07-19T14:22:07Z by box 0.8.1
-TEMPLATE   claude (user claude, role claude)
+TEMPLATE   tenant (user dev)
 IMAGE      images:debian/13/cloud @ 8a2f1c9d4e5b…
 MODE       vm (asked: auto)
-RIG        heavy-duty/rig@main
 ORIGIN     mint
 ```
 
@@ -647,7 +638,7 @@ not make it stale, it would make it **false**: the clone was not present at that
 mint. `box new --from` therefore re-stamps the four keys that describe _this_
 instance's coming into being (`ORIGIN clone of work/authed`, a fresh time, the
 box version that cloned it) and leaves the lineage keys alone, because the
-clone's disk genuinely did come from that image, template and role. `origin.from`
+clone's disk genuinely did come from that image, template and user. `origin.from`
 records one hop: a clone of a clone names its parent, not its grandparent.
 
 **An import records the trip, and rewrites nothing but the id**
@@ -753,11 +744,12 @@ Every clause above is probed live by an end-to-end drill, because the one time
 this contract was reasoned about instead of measured, the reasoning was wrong:
 box→box traffic was "covered" by an L3 drop that L2-switched frames never
 meet — a hole found by probing, not by reading the rules. On a bare host the
-drill installs the whole stack, mints every template cold, snapshots and
+drill installs the whole stack, mints both templates cold — `tenant` and
+`staging-box`, which since #214 is the whole set — snapshots and
 clones, probes every boundary from inside the boxes, opens and shuts the
 `expose` door (and checks the contract survives it), re-homes a faithful
 pre-0.4.0 box through `migrate-host`, and removes what it minted —
-currently **84 checks, 84 passing**. [drill/RUNS.md](drill/RUNS.md) is the full
+currently **81 checks, 81 passing**. [drill/RUNS.md](drill/RUNS.md) is the full
 history, including every trap that fooled a run into a wrong verdict.
 
 ### Run the drill yourself
@@ -796,9 +788,9 @@ inherit.
 ## Recipes: the `.box/` convention
 
 A repo that wants to be easy to stand up in a box ships an optional `.box/`
-folder — a runbook the box's coding agent reads and follows (install deps,
-start services, template env, seed data, smoke-test). It is agent-facing
-documentation, not a host-executed script. See
+folder — a runbook the agent you converged onto the box reads and follows
+(install deps, start services, template env, seed data, smoke-test). It is
+agent-facing documentation, not a host-executed script. See
 [docs/box-recipe.md](docs/box-recipe.md).
 
 ## Uninstall

@@ -1,11 +1,11 @@
 #cloud-config
-# One generic, creds-free seed (#159) serves both argumentless blank mints and
-# runtime roles. Both get the runtime user, tmux, curl, ca-certificates,
-# chrony, and rig; role-only blocks add the unprivileged agent tool floor,
-# fixed /tmp cap, and swap before box auto-runs `rig bootstrap <runtime-role>`.
+# box's one creds-free seed (#214). There is no role axis and no blank/agent
+# split: every ordinary mint renders this file, and it carries ONE hygiene —
+# the agent-class one, because that is the shape the fleet measured. What the
+# box BECOMES is installed inside it afterwards, by its operator.
 # The tenant is UNPRIVILEGED, and the ABSENCE of a 'sudo:' line here is the
 # whole of it (#177, ruled by danmt on #176). Root was never a confidentiality
-# boundary — the agent already runs AS this user, so its credentials, the repo
+# boundary — an agent already runs AS this user, so its credentials, the repo
 # and the egress are reachable without it, and the VM contains the rest. What
 # root cost is in-guest mitigation: an egress allowlist enforced in the guest,
 # a read-only mount, auditd, a required proxy are each one 'sudo' away from
@@ -13,51 +13,50 @@
 # trustworthy evidence about its own contents, because root rewrites the logs
 # that would say otherwise. The operator's path is 'box root <box>', which
 # authorizes through the host's Incus socket and needs no sudoers entry in the
-# guest (#176). 'blank' and 'staging-box' keep theirs on purpose: agents lose
-# root, self-converging fleet guests keep it — two traits, two answers.
+# guest (#176). 'staging-box' keeps its sudo on purpose: a self-converging
+# fleet guest is the other trait, and it gets the other answer.
 # NOT a partial allowlist ('NOPASSWD: /usr/bin/apt-get' and friends, #177
 # decision 6): apt alone installs a package that owns the box, so it keeps
-# most of the risk while feeling safer. Either the agent is unprivileged or
+# most of the risk while feeling safer. Either the tenant is unprivileged or
 # it is not.
 users:
   - name: "@BOX_USER@"
     shell: /bin/bash
-# box-blank-only-begin
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
-# box-blank-only-end
     lock_passwd: true
-package_update: "@BOX_PACKAGE_UPDATE@"
+package_update: true
 # tmux: 'box tmux' runs 'tmux new-session' INSIDE the box (#65).
-# curl + ca-certificates: the rig installer below rides them, and a bare
-# cloud image is not guaranteed to ship either.
+# curl + ca-certificates: they no longer carry box's installer — they carry
+# the OPERATOR's (#214). The first line of the by-hand converge is a
+# 'curl … | bash' run as root inside this box, so a seed that dropped them
+# would break the path this release replaced the mint hook with, on a bare
+# cloud image that is not guaranteed to ship either.
 # chrony: step resumed guests back to real UTC even after startup (#174).
 # The unprivileged toolchain (#177 decision 3). With no sudo, 'apt install' is
-# no longer the agent's escape hatch, so what it reaches for ships here or is
+# no longer the tenant's escape hatch, so what it reaches for ships here or is
 # reachable user-locally. Measured, not guessed: over three weeks of duty in a
 # live agent box, the tenant-initiated installs recorded in
 # /var/log/apt/history.log were shellcheck,
 # then a Chromium/Playwright dependency set, then chromium. The browser stack
 # stays OUT — task-specific, hundreds of megabytes on every mint, and 'box
 # root' is the path for it; a shell linter is small and generic, so it is in.
-# Everything else an agent used came from rig's role (git, gh, ripgrep, jq,
-# build-essential, node), which is where the toolchain belongs; re-listing it
-# here would only thicken the seed (#81).
+# Everything else an agent used came from what the operator converges (git,
+# gh, ripgrep, jq, build-essential, node), which is where the toolchain
+# belongs; re-listing it here would only thicken the seed (#81).
 # python3-venv: Debian 13 ships no pip and marks the system environment
 # externally-managed, so 'python3 -m venv' — the user-local Python route the
 # ruling leans on — dies on a bare guest with "install the python3-venv
 # package". Measured in the same box. Without it, losing sudo means losing
-# every route to a Python package, which is the silently-crippled agent this
+# every route to a Python package, which is the silently-crippled tenant this
 # change must not produce.
 write_files:
   - path: /etc/chrony/conf.d/box-makestep.conf
     permissions: "0644"
     content: |
       makestep 1.0 -1
-# box-role-only-begin
-  # /tmp is RAM. systemd's stock tmp.mount sizes it at 50% of it, so the 8GiB
-  # on the memory line above buys ~3.9GB of scratch competing with the agent's
-  # own working set — and raising BOX_MEMORY raises the ceiling with it, which
-  # is why no memory figure fixes this and only a fixed cap does (#178). Not
+  # /tmp is RAM. systemd's stock tmp.mount sizes it at 50% of it, so a medium
+  # box's 8GiB buys ~3.9GB of scratch competing with the tenant's own working
+  # set — and raising the box's memory raises the ceiling with it, which is
+  # why no memory figure fixes this and only a fixed cap does (#178). Not
   # theoretical: heavy-duty/incubator#214 lost a builder's test suite to
   # ENOSPC on /tmp against scratch left by EARLIER sessions, and that ENOSPC
   # and the memory pressure were the same 3.9GB.
@@ -71,27 +70,23 @@ write_files:
     content: |
       [Mount]
       Options=mode=1777,strictatime,nosuid,nodev,size=1G,nr_inodes=1m
-# box-role-only-end
 packages:
   - tmux
   - curl
   - ca-certificates
   - chrony
-# box-role-only-begin
   - python3-venv
   - shellcheck
-# box-role-only-end
 runcmd:
   - systemctl enable chrony
   # Containers share the host clock; VM guests must start chrony (#174).
   - systemd-detect-virt --quiet --container || systemctl start chrony
-# box-role-only-begin
   # The tmp.mount drop-in above is read at the NEXT boot; these two lines make
   # it true on this one. 'remount' resizes a live tmpfs in place, where
-  # restarting tmp.mount would unmount /tmp out from under cloud-init and the
-  # rig installer below, both of which are using it right now (#178). The
-  # guard is a read of the actual fstype, so a guest whose /tmp is not tmpfs
-  # is left alone instead of dying on a remount that means nothing there.
+  # restarting tmp.mount would unmount /tmp out from under cloud-init, which
+  # is using it right now (#178). The guard is a read of the actual fstype, so
+  # a guest whose /tmp is not tmpfs is left alone instead of dying on a
+  # remount that means nothing there.
   - systemctl daemon-reload
   - test "$(findmnt -no FSTYPE /tmp)" != tmpfs || mount -o remount,size=1G /tmp
   # 4GiB of swap on the selected disk, so a memory spike degrades instead of
@@ -117,17 +112,3 @@ runcmd:
       [ -s /etc/fstab ] && [ -n "$(tail -c1 /etc/fstab)" ] && printf '\n' >> /etc/fstab
       printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab
     fi
-# box-role-only-end
-  # Preinstall rig so the box can converge — and re-converge — via
-  # 'rig bootstrap <runtime-role>'. @RIG_REPO@/@RIG_REF@ are the pin point (#81):
-  # box substitutes them at mint from the RIG_REPO/RIG_REF environment
-  # (default heavy-duty/rig @ its LATEST RELEASE, resolved at mint off the
-  # releases/latest redirect — #150 closed the unpinned default, because a
-  # released box converging its guests against rig's development tip ships a
-  # combination nobody drilled; RIG_REF=main is still the dev channel, said
-  # explicitly). The pin covers both the installer fetched AND the tree
-  # it installs, so a branch under review is testable end to end.
-  # HOME=/root: cloud-init runs runcmd as root but with NO $HOME in the
-  # environment, and the rig installer (set -u) reads $HOME for its DEST —
-  # measured live: the mint died with "HOME: unbound variable" without it.
-  - curl -fsSL https://raw.githubusercontent.com/@RIG_REPO@/@RIG_REF@/install.sh | HOME=/root RIG_REPO="@RIG_REPO@" RIG_REF="@RIG_REF@" bash
