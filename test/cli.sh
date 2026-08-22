@@ -610,14 +610,39 @@ rm -f "$SFPROBE"
 # form reads bin/box and templates/, and the help guard drives the help. A
 # fourth round of the same finding is a guard nobody wrote, so here it is.
 #
-# The set is what an operator actually reaches: the README, the two pages its
-# lede links, and the file a contributor is pointed at. docs/plans/ is
-# deliberately out — those are dated design records, true of the day they were
-# written, which is the same "history is correct as history" rule that excepts
-# 159.md's one clause in the corpus sweep above.
+# The set is the CLAIM, not the pages the last three rounds happened to land
+# on — bounding it to those four would be this issue's own defect written into
+# the fixture built to end it. It is every operator-facing page this repo
+# ships: the README, the contributor's page, the file every agent entering the
+# repo reads first, both design pages, and the drill's two. The last of those
+# are not padding — drill/README.md and drills/README.md are pages round 1
+# swept BY HAND for retired agent and role claims, so leaving them out holds
+# two already-failed surfaces with nothing but somebody's memory.
+#
+# Three exclusions, and they stay a comment only because the list is explicit;
+# if this ever becomes a glob they have to be enforced in code. docs/plans/ is
+# out — dated design records, true of the day they were written, the same
+# "history is correct as history" rule that excepts 159.md's one clause in the
+# corpus sweep above. .ceremony/ is out as vendored from another repo.
+# CHANGELOG.md and drills/0.9.*.md are out as released history, which this cut
+# does not reach back into.
 #
 # Two rules, because the defect had two shapes.
-DOC_PAGES="README.md CONTRIBUTING.md docs/box-recipe.md docs/box-design.md"
+DOC_PAGES="README.md CONTRIBUTING.md AGENTS.md docs/box-recipe.md docs/box-design.md"
+DOC_PAGES="$DOC_PAGES drill/README.md drills/README.md"
+#
+# RULE 0 — EVERY PAGE IN THE CORPUS EXISTS.
+#
+# Both rules below are ABSENCE assertions: they pass when nothing matches. A
+# path that is missing or misspelled matches nothing, so grep exits 1 and awk
+# exits 1 and both rules go green on a file that was never read. That makes the
+# corpus silently shrinkable — rename a page and its guard evaporates with it,
+# reporting ok. This is the same defect the two guards in the commit above had,
+# so the corpus asserts itself first and the absence rules mean something.
+for rel in $DOC_PAGES; do
+  check "docs: $rel is in the corpus and exists to be read (#214)" 0 "" \
+    test -f "$ROOT/$rel"
+done
 #
 # RULE 1 — NO PAGE CLAIMS A MINT LANDS AN AGENT.
 #
