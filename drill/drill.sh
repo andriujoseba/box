@@ -39,7 +39,7 @@
 #      anything else here touches it (#64).                                 [1]
 #   A. Incus semantics — the assumptions box is built on, probed directly.
 #      These were only ever verified against a stub.                        [8]
-#   B. The box surface — the whole CLI, end to end, including the boundary. [51]
+#   B. The box surface — the whole CLI, end to end, including the boundary. [45]
 #   C. Isolation baseline — does the trust boundary actually hold?
 #      (#15 section A)                                                      [9]
 #   E. box expose — a deliberate loopback door, opened and shut (#55).      [7]
@@ -188,8 +188,12 @@ aud()  { audit+=("$*"); }                       # a measurement, for the record
 # tally against whichever phase is open, and the summary asserts the numbers as
 # a FLOOR — a floor and not an equality, so adding a probe does not turn the
 # commit that adds it red. Bumping the number below is part of adding one,
-# which is also what finally gives CONTRIBUTING's "87-probe contract" and
-# drills/README.md's "86/87" something that checks them.
+# which is also what finally gives CONTRIBUTING's "81-probe contract" and
+# drills/README.md's worked ratio something that checks them. The header block
+# above states each phase's count too, and 'test/cli.sh' asserts the two
+# agree by INTEGER and not merely by phase key — #214 moved B from 51 to 45
+# and left the header saying 51, which is the drift a key-only check reads as
+# green.
 #
 # Phase keys are the letters the phase headers already use; '-' is a phase that
 # emits no verdicts at all (install, host setup, the summary itself). A verdict

@@ -58,8 +58,17 @@ refuse_role() {
 # box-strong-form-prose-end
 
 # The SHAPE of the mint stamp, not the box version — an integer that changes
-# only when a key is removed or repurposed, never when one is added (a reader
-# that does not know a key simply does not print it). Absent means pre-stamp:
+# when a key is REPURPOSED, or when a removal leaves an older reader unable to
+# read what survives. It never changes when a key is ADDED (a reader that does
+# not know a key simply does not print it), and #214 settled the third case,
+# which is the one this constant's first wording got wrong: a REMOVAL whose
+# survivors are every one still readable is a strict SUBSET of the old shape,
+# not a new shape, so it does not bump either. #214 dropped 'user.box.role',
+# 'user.box.rig.repo' and 'user.box.rig.ref' and left this at 1 on exactly that
+# ground — a 0.9.x 'box info' on a 0.10.0 box prints no RIG row, which is what
+# it would have done for an unset key anyway. Bumping would instead have fired
+# "stamp schema '2' is newer than this box reads" on every newly minted box,
+# warning every operator about nothing. Absent means pre-stamp:
 # every box minted before #103 has no schema key at all, and must keep working
 # under every verb, which is the same promise 'user.claudebox' carries.
 BOX_STAMP_SCHEMA=1
@@ -504,12 +513,15 @@ inside the guest, so it also works when the tenant has no sudoers entry.
 EOF
 ;;
     exec) cat <<'EOF'
-Run a command inside a box as the 'claude' user. Everything after -- is passed
-through untouched; the -- is required, or box will read your command's
-flags as its own.
+Run a command inside a box as its tenant user (default: 'dev', or whatever
+--user set at mint). Everything after -- is passed through untouched; the --
+is required, or box will read your command's flags as its own.
 
-  box exec work -- git -C project pull
-  box exec work -- claude --version
+  box exec work -- tmux ls
+  box exec work -- shellcheck --version
+
+A blank box carries the seed and nothing else, so a command you converged onto
+the box is only runnable after you have converged it.
 EOF
 ;;
     tmux) cat <<'EOF'

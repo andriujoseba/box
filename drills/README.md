@@ -67,8 +67,8 @@ bash drill/drill.sh --ref release/0.10.0 --emit-record drills/0.10.0.md
   is the field that had no mechanism at all before: it was invented at write-up
   time, three times, and the odds the three matched were whatever memory was
   worth.
-- **The numbers are the probe floor's**, not what happened to run: `78/87`, not
-  `78/78`. A phase that did not run is recorded as a shortfall, and a phase
+- **The numbers are the probe floor's**, not what happened to run: `72/81`, not
+  `72/72`. A phase that did not run is recorded as a shortfall, and a phase
   *declared* skipped is recorded as a `SKIP` line that lowers the floor by
   exactly its probes (#153). Passing and skipped never look alike.
 - **The isolation audit answers come with it**, as their own `## Audit

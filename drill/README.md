@@ -24,8 +24,9 @@ never executed used to report a clean sweep, and does not any more (#153).
 Roughly 20–40 minutes, most of it cold boxes.
 
 Boxes it creates and deletes by name: `drill`, `clone`, `archive`, `peer`,
-`tpl`, `codex`, `grok`, `legacybox`, plus the throwaway `cbprobe`, `cbcopy`,
-`cbnotours` and `payroll` probes. It refuses to touch any other instance,
+`tpl`, `legacybox`, plus the throwaway `cbprobe`, `cbcopy`,
+`cbnotours` and `payroll` probes. The per-role `codex` and `grok` mints went
+with #214: they proved a payload box no longer installs. It refuses to touch any other instance,
 including an operator's own boxes on a shared host.
 
 ## Flags and settings
@@ -156,9 +157,11 @@ about the host in front of you, and whether it is a *failure* is what the
 
 ## What it does not check
 
-Agent login (e.g. `claude /login`) — it's interactive by design, and the box is
-creds-free by design. The drill confirms each coding-agent template's CLI is
-installed and runnable; authenticating is yours.
+Anything a converger puts on a box. Since #214 box installs no agent, so there
+is no agent CLI for the drill to find and no agent login to rehearse — both are
+downstream of a convergence box does not perform. What the drill asserts is the
+seed's *own* payload (`tmux`, `shellcheck`), which is what box can still be held
+to. Converging a box, and authenticating what you converged, are yours.
 
 If the host has no `/dev/kvm`, box falls back to container mode. The drill
 still runs, but it declares the VM probe it did not run and says loudly that
