@@ -42,17 +42,17 @@ another converger follows the same shape):
 ```sh
 box new --name work --size medium   # a blank box, nothing converged
 box root work                       # root inside it, and converge it:
-rig bootstrap claude-box --user dev # ...after installing rig — Quick start has the full line
-box shell work                      # in as the tenant user, on a box that now has an agent
+curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh | bash
+rig bootstrap claude-box --user dev
+box shell work                      # in as the tenant user, on the box you just converged
 git clone <repo> && cd <repo>
 claude                              # the agent reads .box/ and brings the project up
 ```
 
-The first three lines are the mint-and-converge path abbreviated, and they are
-the README's rather than this page's: [Quick start](../README.md#quick-start)
-carries it whole, including the `curl … install.sh` line that puts `rig` on the
-box in the first place. They are here because the last three do not run without
-them.
+The first four lines are the mint-and-converge path, and it is the README's
+rather than this page's: [Quick start](../README.md#quick-start) carries it
+with the surrounding argument, and `<ref>` is a rig release you pin there. They
+are here because the last three do not run without them.
 
 The operator can also just say: *"set this project up per .box"*.
 

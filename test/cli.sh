@@ -644,28 +644,64 @@ for rel in $DOC_PAGES; do
     test -f "$ROOT/$rel"
 done
 #
-# RULE 1 — NO PAGE CLAIMS A MINT LANDS AN AGENT.
+# RULE 1 — NO PAGE CLAIMS A BOX SHIPS OR HAS AN AGENT AS A PROPERTY OF THE MINT.
+#
+# The criterion names two verbs and the first draft of this guard built one.
+# 'Ships' is what a mint DELIVERS; 'has' is what a mint LEAVES BEHIND, and the
+# second is the same claim in the tense an operator actually reads it in — 'a
+# freshly minted box has a coding agent', 'every box comes with one', 'the
+# template includes one'. All four of those stayed green against the ships-only
+# pattern, so the fourth arm below is the criterion's other half.
 #
 # The retired seed names are in the pattern: after #209 collapsed those four
 # directories, 'claude-box' in these pages is a box template that does not
-# exist. With exactly one exception, and it is why the sweep filters before it
-# matches — where 'rig bootstrap' is on the line, '<name>-box' is a RIG ROLE
-# and the line is the four-step path this release documents. That is the
-# boundary doing the work: the same token, told apart by whose noun it is.
+# exist. With exactly one exception — where 'rig bootstrap' LEADS it,
+# '<name>-box' is a RIG ROLE and the text is the four-step path this release
+# documents. That is the boundary doing the work: the same token, told apart by
+# whose noun it is. The prefix is INSIDE the pattern, so the exemption reads the
+# match rather than the line it sits on; filtering whole lines first (which this
+# did) drops any honest-looking line entirely, and a false claim sharing a line
+# with the documented converge went with it.
 #
-# The rest of the pattern is the claim in the shapes it was actually made in,
-# and the file is folded to one line first, because prose wraps and the
+# The file is folded to one line before matching, because prose wraps and the
 # sentence that failed round 3 wrapped between 'agent already' and 'installed'.
-# 'ships' and 'gets' are on opposite sides of the line on purpose: what a box
-# SHIPS is a claim about what a mint delivers, and after this cut a mint
-# delivers the seed. What a converged box GETS is a claim about that box's
-# state, which is still true and is how box-design.md states it, one sentence
-# above 'box does not write that file and never did'.
-DOC_PATTERN='\b(claude|codex|grok|kimi)-box\b|whichever template you minted'
+#
+# Two boundaries the arms are shaped around, both of them lines triage ruled
+# STANDING and neither of them exempted by name:
+#
+#   - 'gets' is not a verb here, on purpose. What a box SHIPS or HAS is a claim
+#     about the mint; what a CONVERGED box GETS is a claim about that box's
+#     state, which is still true and is how box-design.md:143 states it, four
+#     lines above 'box does not write that file and never did'.
+#   - the ownership arm binds its object TO the verb — determiner, one optional
+#     adjective, then the noun — rather than merely near it. 'A box the operator
+#     HAS CONVERGED WITH a coding agent' (box-recipe.md:33) puts a participle
+#     where the determiner must be, so it does not match, and neither does any
+#     other sentence whose agent arrives by a verb of its own.
+#
+# 'agents?([^-A-Za-z]|$)' and not '\bagent\b': a hyphen is a word boundary, so
+# '\bagent\b' matches inside 'agent-context' and would have reded both of the
+# sentences above for naming the FILE a converged box gets.
+DOC_PATTERN='(rig[ \t]+bootstrap[ \t]+)?\b(claude|codex|grok|kimi)-box\b|whichever template you minted'
 DOC_PATTERN="$DOC_PATTERN"'|\bagent\b[^.]{0,40}already installed|already installed[^.]{0,40}\bagent\b'
-DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|template|templates)\b[^.]{0,40}\b(ships?|each ship)\b[^.]{0,40}\bagent\b'
+DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|template|templates)\b[^.]{0,40}\b(ships?|each ship)\b[^.]{0,40}\bagents?\b'
+DOC_PATTERN="$DOC_PATTERN"'|\b(box|boxes|mint|mints|minted|template|templates)\b[^.]{0,60}'
+DOC_PATTERN="$DOC_PATTERN"'\b(has|have|comes? with|includes?|carries|carry|brings?|arrives? with|ships? with|leaves?[^.]{0,20} with)'
+DOC_PATTERN="$DOC_PATTERN"'[ \t]+(an?|one|the|its|your|another)?[ \t]*([A-Za-z]+[ \t]+)?agents?([^-A-Za-z]|$)'
+#
+# The exemptions, and they read the MATCH and never the line. Two of them:
+# the documented converge, anchored so it has to LEAD the match; and denial,
+# which is what most of this corpus says about agents and which a pattern this
+# broad has to be able to hear. 'A box ships with a thin seed and no
+# credentials — no agent token' (README.md:10) is out of the ships arm's window
+# by gap width alone today — that is the whole of what keeps it green, and it is
+# not a reason. Read on the match, 'no agent' immediately before the noun is a
+# denial and not a claim, while 'ships a coding agent, and no credentials' keeps
+# its claim, because the negation there is not the agent's.
+DOC_EXEMPT='^rig[ \t]+bootstrap'
+DOC_EXEMPT="$DOC_EXEMPT"'|\b(no|not|never|neither|nor|without)\b[ \t]+([a-z]+[ \t]+){0,2}agents?\b'
 doc_sells_a_minted_agent() {  # <file>
-  grep -v 'rig bootstrap' "$1" | tr '\n' ' ' | grep -qEi "$DOC_PATTERN"
+  tr '\n' ' ' < "$1" | grep -oEi "$DOC_PATTERN" | grep -qvEi "$DOC_EXEMPT"
 }
 for rel in $DOC_PAGES; do
   check "docs: $rel claims no agent a mint does not land (#214)" 1 "" \
@@ -682,6 +718,13 @@ done
 # agent must converge in between. The discriminator is the FIRST WORD of the
 # line, which is what makes it cheap and exact: 'claude' alone is an
 # invocation, 'rig bootstrap claude-box' is the converge that earns it.
+#
+# The converge arm names the CONVERGER'S installer and not any installer. A
+# bare 'install\.sh' counted box's own — the line at README.md:44 that puts box
+# on the HOST — so a block that curled box's installer, minted, and then ran
+# 'claude' passed on a convergence that never happened. Nothing in the corpus
+# sits in that hole today; the four-step path's installer is rig's and still
+# counts.
 doc_flow_skips_the_converge() {  # <file>
   awk '
     /^```/ {
@@ -693,9 +736,9 @@ doc_flow_skips_the_converge() {  # <file>
       next
     }
     inb {
-      if ($0  ~ /box[ \t]+new/)                  mint  = 1
-      if ($1  ~ /^(claude|codex|grok|kimi)$/)    agent = 1
-      if ($0  ~ /rig[ \t]+bootstrap|install\.sh/) conv = 1
+      if ($0  ~ /box[ \t]+new/)                       mint  = 1
+      if ($1  ~ /^(claude|codex|grok|kimi)$/)         agent = 1
+      if ($0  ~ /rig[ \t]+bootstrap|rig\/[^ ]*install\.sh/) conv = 1
     }
     END { exit(bad ? 0 : 1) }
   ' "$1"
@@ -703,6 +746,25 @@ doc_flow_skips_the_converge() {  # <file>
 for rel in $DOC_PAGES; do
   check "docs: $rel runs no agent on a box it just minted blank (#214)" 1 "" \
     doc_flow_skips_the_converge "$ROOT/$rel"
+done
+#
+# RULE 3 — NO PAGE CALLS A BOX'S AGENT "THE BOX'S".
+#
+# §4's amendment binds three shapes and the two rules above implement two. The
+# third — 'may call a box's agent "the box's"' — was caught by hand at da6eb05,
+# by a triage grep, on a clause that stood twice in README.md and once here.
+# The possessive is the whole defect: an agent an operator installed is the
+# OPERATOR'S, running in a box that box does not own, and calling it the box's
+# is how the retired promise survives a sweep of every sentence that names a
+# mint. A hand-grep somebody remembers is what this guard exists to replace, so
+# it gets a rule at the same cost as the other two. Widening, and §4 permits it.
+DOC_OWNS="\\bbox['’]?s\\b[^.]{0,20}\\b(coding[ \\t]+)?agents?([^-A-Za-z]|\$)"
+doc_calls_the_agent_the_box_s() {  # <file>
+  tr '\n' ' ' < "$1" | grep -qEi "$DOC_OWNS"
+}
+for rel in $DOC_PAGES; do
+  check "docs: $rel calls no agent the box's (#214)" 1 "" \
+    doc_calls_the_agent_the_box_s "$ROOT/$rel"
 done
 # The negative control, and it is the real pre-cut docs/box-recipe.md rather
 # than a fixture — the same standard rounds 1 and 2 set for the strong form and
@@ -716,28 +778,72 @@ if [ -n "$SFPRECOMMIT" ]; then
     doc_sells_a_minted_agent "$DOCPRE"
   check "docs: rule 2 reds on that same page's four-line flow (the sharper half)" 0 \
     "never converges it" doc_flow_skips_the_converge "$DOCPRE"
+  # Rule 3's control is the real pre-cut README.md, which carried the clause
+  # twice — :26 and :799 — and is the page triage's hand-grep caught it on.
+  git -C "$ROOT" show "$SFPRECOMMIT:README.md" > "$DOCPRE" 2>/dev/null || true
+  check "docs: rule 3 reds on the real pre-cut README.md's \"the box's coding agent\"" 0 "" \
+    doc_calls_the_agent_the_box_s "$DOCPRE"
   rm -f "$DOCPRE"
 fi
 # ...and the boundary, which is where a pattern this broad earns its keep. All
-# five of these are live at HEAD and every one of them is honest: a rig role in
-# the documented converge, two agent-context paths, a legacy stamp key, the one
-# template that still exists, and the 'gets' sentence rule 1 must not touch.
+# seven of these are live at HEAD or in the corpus verbatim, and every one of
+# them is honest: a rig role in the documented converge, two agent-context
+# paths, a legacy stamp key, the one template that still exists, the 'gets'
+# sentence rule 1 must not touch, the 'has converged with' sentence the
+# ownership arm must not touch, and the creds-free line, which is a DENIAL that
+# names both a mint verb and the noun.
 DOCPROBE="$(mktemp)"
 { printf 'rig bootstrap claude-box --user dev\n'
   printf 'the file at ~/.claude/CLAUDE.md, or ~/.codex/AGENTS.md\n'
   printf 'user.claudebox=1 stays honored forever\n'
   printf 'box new --template staging-box mints the server seed\n'
-  printf 'A box with a coding agent on it gets a global agent-context file.\n'; } > "$DOCPROBE"
+  printf 'A box with a coding agent on it gets a global agent-context file.\n'
+  printf 'A box the operator has converged with a coding agent gets a context file.\n'
+  printf 'A box ships with a thin seed and no credentials — no agent token, nothing.\n'; } > "$DOCPROBE"
 check "docs: ...and the rig role, the agent-context paths and staging-box pass (the boundary)" 1 "" \
   doc_sells_a_minted_agent "$DOCPROBE"
-# The guard's own test on the claim it exists for, in both shapes, so a green
-# sweep above is a sweep that would have gone red.
+# The guard's own test on the claim it exists for, in every shape it has been
+# made in, so a green sweep above is a sweep that would have gone red. The four
+# 'has' shapes are the mutations round 4 drove against the ships-only pattern
+# and watched stay green; each is its own probe, so a narrowing of the arm shows
+# up as a named failure rather than one check that used to pass for two reasons.
 printf 'The claude-box template ships a CLI agent, so a fresh box has one.\n' > "$DOCPROBE"
 check "docs: rule 1 reds on the claim itself (the guard's own test)" 0 "" \
   doc_sells_a_minted_agent "$DOCPROBE"
 printf 'box mints VMs with a coding agent already\ninstalled — nothing to do.\n' > "$DOCPROBE"
 check "docs: ...including across the line wrap the round-3 sentence had" 0 "" \
   doc_sells_a_minted_agent "$DOCPROBE"
+printf 'A freshly minted box has a coding agent.\n' > "$DOCPROBE"
+check "docs: rule 1 reds on 'has' — the criterion's other verb (#214)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+printf 'Every box comes with a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on 'comes with'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
+printf 'A mint leaves the box with a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on 'leaves the box with'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
+printf 'The template includes a coding agent.\n' > "$DOCPROBE"
+check "docs: ...and on 'includes'" 0 "" doc_sells_a_minted_agent "$DOCPROBE"
+# The denial exemption cuts one way only: a negation that is the AGENT'S makes
+# the sentence honest, and a negation of something else beside a live claim does
+# not launder it. Both directions, because an exemption nobody bounds is how a
+# rule this broad gets quietly turned off.
+printf 'A box ships a coding agent, and no credentials.\n' > "$DOCPROBE"
+check "docs: ...and the denial exemption does not launder a claim beside it" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# Rule 1's converge boundary is now anchored to the match, so a false claim
+# sharing a line with the documented converge no longer leaves with it — the
+# hole the old whole-line 'grep -v' had.
+printf 'rig bootstrap claude-box --user dev, because the claude-box template ships an agent.\n' \
+  > "$DOCPROBE"
+check "docs: ...and a claim sharing a line with 'rig bootstrap' still reds (the match, not the line)" 0 "" \
+  doc_sells_a_minted_agent "$DOCPROBE"
+# Rule 3, both ways: the retired possessive, and the two shapes that must pass —
+# the agent an operator converged, named as theirs, and the box's own files.
+printf "a runbook that the box's coding agent reads and acts on\n" > "$DOCPROBE"
+check "docs: rule 3 reds on \"the box's coding agent\"" 0 "" \
+  doc_calls_the_agent_the_box_s "$DOCPROBE"
+printf "the coding agent you converged onto the box reads the box's .box/ runbook\n" > "$DOCPROBE"
+check "docs: ...and passes the converged agent named as the operator's" 1 "" \
+  doc_calls_the_agent_the_box_s "$DOCPROBE"
 printf '%s\n' '```' 'box new' 'box shell' 'claude   # brings the project up' '```' > "$DOCPROBE"
 check "docs: rule 2 reds on a mint-then-agent block" 0 "never converges it" \
   doc_flow_skips_the_converge "$DOCPROBE"
@@ -747,6 +853,17 @@ check "docs: ...and passes the same block with the converge in it" 1 "" \
   doc_flow_skips_the_converge "$DOCPROBE"
 printf '%s\n' '```' 'box new' 'box shell' 'git clone <repo>' '```' > "$DOCPROBE"
 check "docs: ...and does not red a block that mints without invoking an agent" 1 "" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+# ...and the converge is the CONVERGER'S installer. Box's own puts box on the
+# host and converges nothing, so a block carrying it is not excused; rig's is
+# the four-step path's third line and still is.
+printf '%s\n' '```' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | bash' \
+  'box new' 'box shell' 'claude' '```' > "$DOCPROBE"
+check "docs: rule 2 reds on a block whose only installer is box's own" 0 "never converges it" \
+  doc_flow_skips_the_converge "$DOCPROBE"
+printf '%s\n' '```' 'curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash' \
+  'box new' 'box shell' 'claude' '```' > "$DOCPROBE"
+check "docs: ...and passes the same block with rig's installer in it" 1 "" \
   doc_flow_skips_the_converge "$DOCPROBE"
 rm -f "$DOCPROBE"
 
