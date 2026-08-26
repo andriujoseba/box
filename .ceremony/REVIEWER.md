@@ -120,8 +120,12 @@ saw Y" outranks one that says "this looks like it might".
   spec itself is wrong, say so with reasons — as a comment pointing at the
   discussion, while still reviewing the implementation against the spec as
   written. Spec changes go through triage, not through a review round.
-- **Merge, or tell the builder to merge.** Convergence hands the PR to a
-  human; only humans merge.
+- **Merge, or tell the builder to merge.** Convergence hands the PR on at
+  `state:needs-human` — to a human, or, where that repository's own sweep
+  caller passes a merge toggle (`auto_merge`, `off` by default, and the
+  consumer's setting, not ceremony's), to the reconciler acting on that
+  same verdict. Neither of them is you: your verdict is the input to that
+  hand-off and never the press.
 - **Approve a moving target.** Your approval is of a specific head. If the
   builder pushes after your approval, GitHub stales it — that is correct,
   and the builder owes a re-request, not an assumption.

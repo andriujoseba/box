@@ -38,8 +38,12 @@ discussion ──▶ triage ──▶ issue ──▶ build ──▶ review ─
 Two rules bind every role:
 
 - **Only triage mints issues.** Found work? Open or extend a discussion.
-- **Only humans merge.** Convergence ends at `state:needs-human`, never at
-  a merge button.
+- **Only humans merge, unless a repo opted in.** Convergence still ends at
+  `state:needs-human`, never at a merge button; the press after it is a
+  human's unless that repository's own sweep caller passes the governing
+  merge toggle — `auto_merge` for ordinary PRs or `auto_merge_release` for
+  release PRs, both `off` by default and set by the consumer, not ceremony —
+  at which point the reconciler presses it on that verdict.
 
 ## Repo specifics
 
