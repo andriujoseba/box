@@ -3,6 +3,169 @@
 History before 0.5.0 lives in git and in [drill/RUNS.md](drill/RUNS.md),
 which records not just what changed but what each drill run proved.
 
+## 0.10.0 — 2026-08-26
+
+### Added
+
+- `operator`, a cross-cutting issue-owner label, and `ready` turns owner-neutral — so an issue whose evidence only a human on real hardware can produce reads `ready` + `operator` rather than a false `blocked` (#219).
+- A return path for doctrine that blocks you: raise a discussion in ceremony quoting the rule at this repo's pin, and cite it wherever the local workaround lives. `.ceremony/README.md` names and links that flow (#219).
+- `test/cli.sh` asserts the two rosters are the same set, naming who each file
+  is missing, so the panel cannot drift silently in either direction again
+  (#198).
+- A box now has a stable identity: `user.box.id`, a kernel v4 UUID stamped
+  at mint. `rename` moves the name and leaves the id where it was, so a
+  record that kept the id can still find the box (#181).
+- The id is re-minted wherever box mints — a fresh mint, a `--from` clone,
+  an import — so no two boxes share one. A snapshot or a restore is the same
+  box and leaves it alone (#181).
+- `box info` shows the id under `NAME`; `box list` does not, and nothing is
+  invented at read time, so a box minted before the key reads as blank
+  (#181).
+- `BOX_STORAGE_SOURCE` places the host storage pool on a disk of its own (`/dev/sdb`) or a mounted filesystem (`/data/bulk/incus`), instead of the loop-backed image Incus builds under `/var/lib/incus` — where every box's root device is charged against `/` (#180).
+- `box doctor` reports the storage pool's driver and source, the device a pool built on a block device was made from, and the free space under a directory source, so "what is filling my root disk" is answered without an Incus lesson (#180).
+- `box restart <box>` — one Incus restart, not a stop followed by a start
+  (#179).
+- The lifecycle verbs take `all` where a box name goes: `box restart all`,
+  `box start all`, `box down all`. It acts on exactly the boxes `box list`
+  prints for you, so an admin never reaches a restricted user's boxes. Each
+  box is reported and one failure does not stop the rest (#179).
+- A fleet verb treats a box already in the state you asked for as a success,
+  not a failure: `down all` says so for a box that was already down, and
+  `restart all` starts a stopped one. The exit status stays a real signal
+  (#179).
+- A fleet verb tells "no boxes" apart from "the daemon did not answer": an
+  unreachable daemon fails with the diagnosis instead of reporting an empty
+  fleet and exiting 0 (#179).
+- `all` is now a reserved box name, refused at every door that would leave a
+  box carrying it: `box new --name all`, `box import --name all` and `box
+  rename <box> all` (#179).
+- Every ordinary box provisions a 4GiB swapfile. Without swap every memory spike was a
+  hard OOM-kill with no grace period; swap-in is observable, where a kill is a
+  process that was there and then was not (#178).
+- A named `box root <box>` path for an Incus-authorized root login shell that does not depend on guest sudo (#176).
+- `box new --from` honours `--cpu`, `--memory` and `--disk`. They ride the
+  copy itself — incus sizes the clone's volume as it creates it — so there is
+  no resize, no restart, and no step inside the guest (#171).
+- Every box now says what resources it came up with, clone or fresh mint, read
+  back off incus. That sizing was invisible until you ran `box info` and read
+  `limits.*` out of a config dump (#171).
+- `changelog-assembled`, `runner-isolated` and `sha-pinned` guard steps, and a `refs-guard.yml` caller that re-checks a PR body on edit (#168).
+- `ci-rerun.yml`, which services the `rerun-owed` label by starting the one rerun no fork-PR author can start themselves (#168).
+- Issue events now wake the labels automation, so a queue-state change no longer waits for the next cron tick (#168).
+- The emitted drill record carries the isolation audit answers in their own
+  `## Audit answers` section. They used to be printed for a human to paste into
+  an issue that has since closed, in a repo since renamed (#154).
+- Per-phase probe counts in the drill summary, and a `DRILL_EXPECT` floor a short run fails against (#153).
+- Legitimate drill skips print a `SKIP` line and lower the expected count by exactly their probes (#153).
+- `drill/drill.sh --emit-record <path>` writes the release record itself — host, candidate refs and their SHAs, the numbers, the wall clock (#152).
+- A shared drill run ID: `--run-id` / `DRILL_RUN_ID`, defaulting to `drill-<version>-<date>-01` and announced as soon as the install lands (#152).
+- The drill refuses `--emit-record` at a path that already holds a record, rather than overwriting the prose that makes it evidence (#152).
+
+### Changed
+
+- The ceremony pin moves `0.7.4` → `0.7.6` and `.ceremony/` is re-vendored with it. No new opt-in is adopted: auto-merge, the post-merge workflow, release dispatch and the non-release tag namespace all stay off (#219).
+- `labels-reconcile` marks the human review request it makes itself and withdraws only what it marked, so a maintainer's own early request is no longer mistaken for the machine's and taken back (#145, #219).
+- Converge a box yourself, in four steps, and box performs none of them. First `box new --name work --size medium`, then `box root work`. `--size` is not optional: a role never implied one, so omitting it gives 2/2/20 where an agent box got 4/8/60 (#159, #214).
+- Then, inside that box as root: `curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/<ref>/install.sh | RIG_REPO=heavy-duty/rig RIG_REF=<ref> bash`, and `rig bootstrap claude-box --user dev`. The README teaches the same path verbatim (#214).
+- That replaces a one-command creds-free agent box, ~10 min cold, with a path whose convergence you wait through interactively (#214).
+- [`crew new`](https://github.com/heavy-duty/crew) wraps `box new`, so crew pins the last box release before this one until it absorbs that path itself (#212, #214).
+- The tenant seed collapses to one shape, carried unconditionally: no sudoers entry, `shellcheck`, `python3-venv`, a fixed 1GiB `/tmp`, a 4GiB swapfile, chrony. `BOX_USER` is `dev`, and `--user` overrides it (#177, #214).
+- `--template staging-box` keeps its VM-only, autostarting, `ops`-with-sudo shape and loses its installer line: the server posture is operator-run now, exactly as its tailnet join always was (#69, #214).
+- `box info` reads a box minted before this release without error and shows no rig or role row. The retired keys stay on the instance untouched — no migration, no rewrite (#103, #214).
+- The drill mints and does not converge: its record names one candidate ref, box's own, and the reproduce line carries no pin. What it proves is what box owns (#152, #214).
+- `box doctor`'s header describes the two faults it actually reports — a run's
+  leftover boxes and users, and missing shipped stack pieces — instead of a
+  phase D hardening rehearsal that stopped mutating the host releases ago
+  (#197).
+- `box doctor` names each fault by its condition, not by a culprit: NIC
+  filtering is a fault because it is not shipped, and an `@internal` ACL rule
+  because `@internal` is unsupported on a bridge network's ACL (#197).
+- Every ordinary box caps `/tmp` at a fixed 1GiB. systemd sized it at 50% of RAM, so
+  scratch competed with the guest's working set and raising `BOX_MEMORY` raised
+  the ceiling with it — no memory figure fixed that, only a fixed cap (#178).
+- The default seed says in `box.env`, beside the memory line, that `/tmp` is
+  RAM and that swap is provisioned — the fact belongs next to the setting that
+  used to cause it (#178).
+- The default seed creates an unprivileged tenant — no sudoers entry — so `sudo` fails inside a fresh box. `box root <box>` is the operator's root path. This is mint-time only: cloud-init runs once, so a box minted before this keeps the sudo it was minted with (#177).
+- The default seed ships `shellcheck` and `python3-venv`, the toolchain its tenant can no longer install for itself; user-local installs still work unprivileged. `staging-box` keeps its `ops` sudo — it seeds a guest its operator converges (#177).
+- `--disk` on a clone whose source has no root device of its own refuses
+  before anything is created: a copy-time override replaces a profile's root
+  device rather than merging onto it, leaving a size with no type or path
+  (#171).
+- The refusal says nothing was created, that the other flags went nowhere
+  either, and offers the two routes box has watched work — drop `--disk`, or
+  mint fresh with it (#171).
+- A source box could not read — absent, or an incus that did not answer — is
+  refused the same way, and the message says so instead of blaming a profile
+  box never saw (#171).
+- Cloning a container with `--disk` keeps the answer it always had: the note
+  that a container's root rides the pool, now on the `--from` path too, and
+  the clone proceeds (#171, #57).
+- `box new --help` carries what a root resize actually does: on `dir` and
+  `btrfs` a running instance takes the size, reports it, and defers it to the
+  next start (#171, #29).
+- Release and repository governance move to the shared ceremony pinned at `0.7.4`, six minor releases on from `0.1.0` (#168).
+- Changelog entries are per-issue fragments under `changelog.d/` instead of lines under a shared `## Unreleased` heading, so two open PRs no longer conflict by construction (#168).
+- The labels automation is two callers: `labels.yml` carries the events, `labels-sweep.yml` carries the reconcile sweep and the hourly cron, which moved rather than being copied (#168).
+- `box new` now takes named sizes: `--size small|medium|large`, resolved most-specific-first — an explicit `--cpu`/`--memory`/`--disk` flag, then the `BOX_*` environment, then the size, then the seed's own default (#159).
+- Retired agent template spellings — `--template claude-box` and its siblings — refuse and teach the current mint form instead of minting something unexpected (#159).
+- `drill/drill.sh --help` names every phase the drill runs. Its window cut the
+  list off after four of eight, and those four described a drill two releases
+  old (#154).
+- `drill/README.md` documents the drill that exists: eight phases in print
+  order with their probe counts, `box expose` and the migration path among
+  them, and the probe floor and record emitter it never mentioned (#154).
+- The drill no longer warns that it leaves `dns.mode=none` and NIC filtering
+  applied to the host. Phase D stopped rehearsing the hardening when it
+  shipped, so a run leaves nothing of its own to revert (#154).
+
+### Fixed
+
+- Every ordinary box now evicts untouched `/tmp` scratch after a day instead of Debian's ten, so the 1GiB cap stops filling with earlier sessions' leftovers. Newly minted boxes only — `write_files` runs once, so an existing box keeps the 10-day age (#208).
+- The seed's `/etc/tmpfiles.d/tmp.conf` masks Debian's file rather than merging with it, so it restates `/var/tmp` at its stock 30 days; omitting that line would have silently dropped `/var/tmp`'s cleanup (#208).
+- `CONTRIBUTING.md`'s review panel names the three accounts `.github/labels.conf`
+  requests. It had kept a fourth, dropped from the governing file on 2026-08-19,
+  so the document a contributor reads named a reviewer no PR since has had
+  (#198).
+- `setup-host` no longer ignores `BOX_STORAGE_SOURCE` in silence on a host that already has a pool: it names the live source and the requested one and exits non-zero. A pool is created once, so moving one is a migration, not a re-run (#180).
+- A failed storage preseed no longer falls back to `incus admin init --minimal` when a placement was requested — minimal cannot carry a source, so the fallback would have put the pool on the root disk anyway (#180).
+- `BOX_STORAGE_SOURCE` reaches Incus exactly as typed: it is emitted as a quoted YAML scalar, so a path containing a space or ` #` places the pool where it names rather than at the prefix before YAML's comment marker (#180).
+- `setup-host` and `box doctor` read the pool's source past the first space, so a source with a space in it is reported whole rather than truncated to its first word — a wrong answer to "where do my boxes live" (#180).
+- Re-running `setup-host` with a block device checks the disk that path names now, not just the path recorded when the pool was made: a device name can move between reboots, and "already placed there" about another disk is the silence this check exists to remove (#180).
+- `BOX_STORAGE_SOURCE` refuses a path containing a newline or a tab. YAML folds a line break inside a quoted scalar to a space, so the value could not have reached Incus as typed (#180).
+- The default seed declares `BOX_NO_CONTAINER_FALLBACK`, so every ordinary box fails on a KVM-less host instead of silently minting a container, while an explicit `--container` remains available (#175).
+- Install and configure chrony in every template so guests correct multi-hour clock drift after a host suspend (#174).
+- `box import` on the restricted tier is refused before the transfer, not
+  after it. A restricted project rejects the low-level `volatile.*` config
+  every artifact carries, and incus said so only once the whole disk had
+  landed (#160, #156).
+- The refusal names your tier, the project it puts you in, every key the
+  artifact carries and who can land it instead — rather than an incus error
+  about a key you never set (#160).
+- `box import --force` skips that refusal and hands the artifact to incus
+  anyway. The refusal is read off the artifact and only the VM case has been
+  measured, so an inference can never be the last word on your own file
+  (#160).
+- That override is priced where it is offered: if the project really does
+  refuse, `--force` costs the whole transfer and then incus's error — the
+  cost the refusal exists to save (#160).
+- `box help import` says all of this up front, so the tier's one-way export
+  is known before a multi-GB copy proves it (#160).
+- The drill asserts how much it ran, not only what passed: a phase that never executed was a clean sweep and exit 0 (#153).
+- `DRILL_EXPECT` must be a whole number — a typo is refused by name at startup, instead of leaking a bash error into the summary (#153).
+- The drill, doctor and multi-user rehearsal honour `NO_COLOR` and drop ANSI when their output is not a terminal (#152).
+- The drill's group re-exec interpolates nothing into shell source, so an apostrophe or a space in a path, ref or run ID no longer kills the run (#152).
+- `--keep-boxes` survives the group re-exec as `DRILL_KEEP`; it was reset to off before the stage that tears down and writes the record could read it (#152).
+- A candidate ref that is an annotated tag records the commit it points at, not the tag object, which is hex and passed for one (#152).
+- `bin/box` captures multi-line Incus output before line readers inspect it, preventing SIGPIPE races from turning existing state into a false absence (#134).
+
+### Removed
+
+- **BREAKING** — box no longer installs or runs a converger. Every `box new` mints a blank box: the mint hook, its pin, the `user.box.rig.*` and `user.box.role` stamps, and the seeds' installer line are all gone (#212, #214).
+- `box new --role <role>` is gone. It refuses loudly rather than reading as an unknown flag, and teaches the replacement in full; the retired `--template claude-box` and its siblings now teach a blank mint too (#159, #214).
+- `RIG_REPO` and `RIG_REF` are inert: box reads neither and warns about neither. A mint makes no network request of its own, so a box mints on a host that cannot reach github.com (#150, #214).
+- Removed the automatic `bootstrapped` snapshot: box no longer watches convergence, so it will not label a state it cannot validate. The `pristine` mint snapshot and existing named restores remain available. (#130, #212, #213).
+
 ## 0.9.1 — 2026-08-04
 
 ### Fixed
