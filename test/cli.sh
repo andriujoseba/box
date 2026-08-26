@@ -7586,6 +7586,201 @@ check "panel: a labels.conf with no panel= line is a red as well" 1 "no panel= n
   panel_rosters_agree "$PANELWORK/nopanel.conf" "$ROOT/CONTRIBUTING.md"
 rm -rf "$PANELWORK"
 
+# ---------------------------------------------------------------------------
+# One pin, everywhere this repository writes it (#219). ceremony's docs-sync
+# reads the ref from the single `uses:` line in release.yml and verifies
+# `.ceremony/` against that one line. Nothing reads the other eleven callers,
+# the prose comment beside sha-pinned, or the two documents that state the pin
+# in words — and sha-pinned is not the backstop it looks like, because
+# references owned by this repository's own owner are exempt from it by design
+# (that exemption is written out at ci.yml's comment). So a bump that moves
+# eleven callers of twelve is green on every check this repo runs, and the
+# twelfth goes on invoking an older guard until somebody reads the file.
+#
+# Driven through a root argument rather than against this tree alone, because
+# "they all agree today" is exactly what a mixed pin also looks like from the
+# side that moved. The fixtures below break the agreement at each KIND of site
+# and require a red, and three more require a red for an extraction that reads
+# nothing — a comparison over an empty set of sites passes trivially, and would
+# pass just as well for a renamed workflow directory or a deleted sentence.
+#
+# `changelog.d/` is deliberately not a site. A fragment is the published prose
+# for what its own issue did: changelog.d/168.md says governance moved to a
+# ceremony pinned at 0.7.4, and under #168 it did. Rewriting it to match the
+# current pin would make it misreport the issue it is named for.
+# ---------------------------------------------------------------------------
+PINWORK="$(mktemp -d)"
+
+# The pin itself, read exactly as docs-sync reads it: a real `uses:` key on the
+# release caller. A commented-out one does not count, which is why the shape is
+# anchored rather than grepped loose.
+ceremony_pin() {   # ceremony_pin <release.yml>
+  grep -E '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*heavy-duty/ceremony/\.github/workflows/release\.yml@' "$1" \
+    | sed -E 's/^.*@//; s/[[:space:]#].*$//'
+}
+
+# The pin is written three ways, so there are three extractors, each emitting
+# "file:line ref". Splitting them is what lets each one's empty result be its
+# own red below: one combined extractor that reads two shapes and misses the
+# third still returns a non-empty set.
+#
+#   1. `@<ref>` — every `uses:` line, and the comment beside sha-pinned that
+#      names the pin in prose to explain the owner exemption.
+sites_at_ref() {   # sites_at_ref <file>...
+  grep -nHoE 'heavy-duty/ceremony[A-Za-z0-9./_-]*@[A-Za-z0-9._-]+' "$@" \
+    | sed -E 's/^(.*):([0-9]+):.*@([A-Za-z0-9._-]+)$/\1:\2 \3/'
+}
+#   2. a /blob/ or /tree/ URL into the pinned tree — CONTRIBUTING.md's link to
+#      ceremony's README, drills/README.md's link to the drill-recorded action.
+#      These are the sites that keep resolving after a bump and quietly show a
+#      reader the old file, which is worse than a broken link.
+sites_url_ref() {   # sites_url_ref <file>...
+  grep -nHoE 'heavy-duty/ceremony/(blob|tree)/[A-Za-z0-9._-]+/' "$@" \
+    | sed -E 's#^(.*):([0-9]+):.*/(blob|tree)/([A-Za-z0-9._-]+)/$#\1:\2 \4#'
+}
+#   3. the sentence in CONTRIBUTING.md that states the pin in words. Matched on
+#      its own wording, so rephrasing the sentence reds as a site that reads
+#      nothing rather than silently leaving the number unchecked.
+sites_prose_ref() {   # sites_prose_ref <file>...
+  # shellcheck disable=SC2016  # the backticks are markdown in the file being read
+  grep -nHoE 'pins the shared machinery and doctrine at `[A-Za-z0-9._-]+`' "$@" \
+    | sed -E 's/^(.*):([0-9]+):.*`([A-Za-z0-9._-]+)`$/\1:\2 \3/'
+}
+
+# ceremony_pin_is_one_pin [<root>] [<expected uses: count>] — this tree by
+# default. Names every site that disagrees with its file and line, so the
+# message says where the stale pin is rather than that a comparison failed.
+#
+# The count is asserted and not inferred. Twelve is this repository's callers
+# as of #219; a thirteenth is a deliberate edit to this number, and that is the
+# point — without it, an added caller could ship at any ref at all as long as
+# the twelve already here agreed with each other.
+ceremony_pin_is_one_pin() {
+  ( set -u
+    root="${1:-$ROOT}"; want_uses="${2:-12}"
+    rel="$root/.github/workflows/release.yml"
+    [ -f "$rel" ] || { echo "no $rel — the one pin lives there"; exit 1; }
+    pins="$(ceremony_pin "$rel")"
+    n_pins="$(printf '%s\n' "$pins" | awk 'NF { n++ } END { print n + 0 }')"
+    [ "$n_pins" -eq 1 ] || {
+      echo "expected exactly one ceremony pin line in $rel, read $n_pins —"
+      echo "  docs-sync never guesses a ref and neither does this check"
+      exit 1
+    }
+    pin="$pins"
+
+    files=()
+    for f in "$root"/.github/workflows/*.yml "$root/CONTRIBUTING.md" "$root/drills/README.md"; do
+      [ -f "$f" ] && files+=("$f")
+    done
+    [ "${#files[@]}" -gt 0 ] || { echo "no pin-carrying files found under $root"; exit 1; }
+
+    at="$(sites_at_ref "${files[@]}")"
+    url="$(sites_url_ref "${files[@]}")"
+    prose="$(sites_prose_ref "${files[@]}")"
+    [ -n "$at" ]    || { echo "no 'heavy-duty/ceremony...@<ref>' sites read under $root"; exit 1; }
+    [ -n "$url" ]   || { echo "no ceremony /blob/ or /tree/ URL sites read under $root"; exit 1; }
+    [ -n "$prose" ] || { echo "no prose pin sentence read under $root's CONTRIBUTING.md"; exit 1; }
+
+    uses="$(grep -hE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*heavy-duty/ceremony' \
+      "${files[@]}" | awk 'END { print NR + 0 }')"
+    [ "$uses" -eq "$want_uses" ] || {
+      echo "expected $want_uses ceremony 'uses:' references under $root, found $uses —"
+      echo "  a caller added or removed is a deliberate edit to that number"
+      exit 1
+    }
+
+    stale="$(printf '%s\n%s\n%s\n' "$at" "$url" "$prose" \
+      | awk -v p="$pin" 'NF && $2 != p { print "  " $1 " reads " $2 }')"
+    [ -z "$stale" ] || {
+      echo "the ceremony pin is mixed: $rel pins $pin, and"
+      printf '%s\n' "$stale"
+      exit 1
+    }
+    exit 0 )
+}
+check "pin: every ceremony reference in the tree reads the one pin" 0 "" ceremony_pin_is_one_pin
+# The count, asserted from the other side too: the check is not passing because
+# it read nothing and compared nothing.
+check "pin: ...and there are twelve of them, counted not assumed" 1 "found 12" \
+  ceremony_pin_is_one_pin "$ROOT" 11
+
+# --- and it fails, at every kind of site ------------------------------------
+# A tree of copies, broken one way at a time. Each fixture is one reference
+# left behind at the previous pin — the exact shape of the bump that moves
+# eleven of twelve.
+mkpintree() {   # mkpintree <name> — a copy of every pin-carrying file
+  local d="$PINWORK/$1"
+  mkdir -p "$d/.github/workflows" "$d/drills"
+  cp "$ROOT"/.github/workflows/*.yml "$d/.github/workflows/"
+  cp "$ROOT/CONTRIBUTING.md" "$d/"
+  cp "$ROOT/drills/README.md" "$d/drills/"
+  printf '%s\n' "$d"
+}
+
+MIXED="$(mkpintree mixed)"
+sed -i 's|actions/sha-pinned@0\.7\.6|actions/sha-pinned@0.7.4|' "$MIXED/.github/workflows/ci.yml"
+check "pin: one caller left at the old ref reds" 1 "reads 0.7.4" ceremony_pin_is_one_pin "$MIXED"
+check "pin: ...naming the file and line it is on" 1 "ci.yml:157" ceremony_pin_is_one_pin "$MIXED"
+
+# The comment beside sha-pinned. It is the one site that names the pin in prose
+# inside a workflow, and no guard reads a comment — so if this fixture passed,
+# the file explaining the owner exemption would go on citing the ref the
+# exemption no longer applies to.
+STALECOMMENT="$(mkpintree stalecomment)"
+sed -i 's|# heavy-duty/ceremony@0\.7\.6|# heavy-duty/ceremony@0.7.4|' "$STALECOMMENT/.github/workflows/ci.yml"
+check "pin: the prose comment left behind reds" 1 "ci.yml:150" ceremony_pin_is_one_pin "$STALECOMMENT"
+
+# The sentence a contributor reads to learn what this repo is governed by.
+STALEDOC="$(mkpintree staledoc)"
+# shellcheck disable=SC2016  # the backticks are markdown in the file being edited
+sed -i 's|doctrine at `0\.7\.6`|doctrine at `0.7.4`|' "$STALEDOC/CONTRIBUTING.md"
+check "pin: CONTRIBUTING.md's stated pin left behind reds" 1 "CONTRIBUTING.md" \
+  ceremony_pin_is_one_pin "$STALEDOC"
+
+# A URL into the old tree still resolves, so this is the failure with no
+# symptom at all: the link works and shows the reader the wrong file.
+STALELINK="$(mkpintree stalelink)"
+sed -i 's|ceremony/tree/0\.7\.6/actions|ceremony/tree/0.7.4/actions|' "$STALELINK/drills/README.md"
+check "pin: a /tree/ link into the old ref reds" 1 "drills/README.md" \
+  ceremony_pin_is_one_pin "$STALELINK"
+STALEBLOB="$(mkpintree staleblob)"
+sed -i 's|ceremony/blob/0\.7\.6/README|ceremony/blob/0.7.4/README|' "$STALEBLOB/CONTRIBUTING.md"
+check "pin: a /blob/ link into the old ref reds — the other URL shape" 1 "reads 0.7.4" \
+  ceremony_pin_is_one_pin "$STALEBLOB"
+
+# A thirteenth caller, at the right ref. Every site agrees, so only the count
+# catches it — which is what the count is for.
+THIRTEEN="$(mkpintree thirteen)"
+sed -i 's|\(^ *\)uses: heavy-duty/ceremony/actions/sha-pinned@0\.7\.6|&\n\1uses: heavy-duty/ceremony/actions/nonesuch@0.7.6|' \
+  "$THIRTEEN/.github/workflows/ci.yml"
+check "pin: a thirteenth caller at the right ref still reds" 1 "found 13" \
+  ceremony_pin_is_one_pin "$THIRTEEN"
+
+# --- an extraction that reads nothing is a failure, not an agreement --------
+# Three shapes, three ways to read nothing. Each has to be its own red, or the
+# guard quietly narrows to the sites that happen to survive an edit.
+NOPIN="$(mkpintree nopin)"
+sed -i 's|^\( *\)uses: heavy-duty/ceremony/\.github/workflows/release\.yml@|\1# uses: heavy-duty/ceremony/.github/workflows/release.yml@|' \
+  "$NOPIN/.github/workflows/release.yml"
+check "pin: a commented-out release pin is a red, not a ref" 1 "exactly one ceremony pin line" \
+  ceremony_pin_is_one_pin "$NOPIN"
+
+NOPROSE="$(mkpintree noprose)"
+sed -i 's|^Box pins the shared machinery and doctrine at .*|Box follows the shared machinery and doctrine.|' \
+  "$NOPROSE/CONTRIBUTING.md"
+check "pin: a rephrased CONTRIBUTING.md sentence is a red, not a pass" 1 "no prose pin sentence" \
+  ceremony_pin_is_one_pin "$NOPROSE"
+
+NOURL="$(mkpintree nourl)"
+sed -i 's|https://github.com/heavy-duty/ceremony/blob/[A-Za-z0-9._-]*/README.md|https://github.com/heavy-duty/ceremony|' \
+  "$NOURL/CONTRIBUTING.md"
+sed -i 's|https://github.com/heavy-duty/ceremony/tree/[A-Za-z0-9._-]*/actions/drill-recorded|https://github.com/heavy-duty/ceremony|' \
+  "$NOURL/drills/README.md"
+check "pin: no versioned URL left anywhere is a red as well" 1 "no ceremony /blob/ or /tree/ URL sites" \
+  ceremony_pin_is_one_pin "$NOURL"
+rm -rf "$PINWORK"
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 rm -rf "$SHIMDIR" "$WORK"

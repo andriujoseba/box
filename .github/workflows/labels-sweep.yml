@@ -43,7 +43,7 @@ permissions:
   pull-requests: write
 jobs:
   sweep:
-    uses: heavy-duty/ceremony/.github/workflows/labels-sweep.yml@0.7.4
+    uses: heavy-duty/ceremony/.github/workflows/labels-sweep.yml@0.7.6
     # No `pr_workflow_name:` — this repo's PR-facing caller is named
     # `labels`, which is the default the sweep exports as SELF_WORKFLOW so
     # the label machinery's own check entries never count toward

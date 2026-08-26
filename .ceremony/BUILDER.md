@@ -8,8 +8,8 @@ not to guess.
 
 ## Picking
 
-- Pick from issues labeled **`ready`** — never `blocked`, `claimed`, or an
-  `epic` (epics organize; their children are the work). Inside an epic take
+- Pick from issues labeled **`ready`** — never `blocked`, `claimed`, `operator`,
+  or an `epic` (epics organize; their children are the work). Inside an epic take
   the earliest unblocked unclaimed child, otherwise the issue that unblocks
   the most work; where a repo adopts version epics,
   [RELEASES.md](RELEASES.md) governs among window members.
