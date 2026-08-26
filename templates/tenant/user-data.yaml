@@ -70,6 +70,41 @@ write_files:
     content: |
       [Mount]
       Options=mode=1777,strictatime,nosuid,nodev,size=1G,nr_inodes=1m
+  # The cap above is a SIZE decision, and a cap without reclamation is ENOSPC
+  # on a schedule (#208). Debian's /usr/lib/tmpfiles.d/tmp.conf evicts a /tmp
+  # entry only once its atime, btime, ctime AND mtime are all older than TEN
+  # DAYS, and the daily systemd-tmpfiles-clean.timer that reads it was
+  # measured running, unaided, and evicting nothing: 2.8GB of scratch left by
+  # EARLIER sessions, no single directory above 672MB, all of it comfortably
+  # inside that window. Against the 1GiB ceiling one line up that is exactly
+  # the ENOSPC #178 measured — which is why the size and the lifetime are two
+  # fixes and a smaller cap is not a substitute for this one: the driver is
+  # accumulation ACROSS sessions, not one session's peak.
+  # systemd-tmpfiles reads the FIRST file of a given name across its search
+  # path, and /etc/tmpfiles.d outranks /usr/lib/tmpfiles.d — so this file
+  # MASKS Debian's entirely rather than merging with it. That is the only
+  # reason /var/tmp appears below: omitting the line would silently drop
+  # /var/tmp's cleanup on every box with no error message anywhere. Same
+  # class of trap as the Options= restatement above, and it has its own
+  # must-fail test for the same reason.
+  # 1d is derived, not chosen: the cap is 1GiB, the largest single-session
+  # scratch directory observed is 672MB, and the cleaner runs daily. At 1d at
+  # most one idle day's scratch can coexist with a live session's, which fits
+  # under the cap in the observed shape; at 2d two can, which does not.
+  # Live scratch is never at risk, and that is what makes 1d safe: an entry
+  # is eligible only when all four timestamps are older than the age, and the
+  # stock strictatime restated above keeps a merely-READ file's atime
+  # current. A long build's scratch is untouched; a directory nobody has
+  # touched since yesterday's session is the target.
+  # No remount-style line follows this one, unlike the cap's: /tmp was
+  # already mounted so the size had to be made true on the mint's own boot,
+  # where the age is consulted only by the next timer firing and a box minted
+  # an hour ago has nothing to clean.
+  - path: /etc/tmpfiles.d/tmp.conf
+    permissions: "0644"
+    content: |
+      q /tmp     1777 root root 1d
+      q /var/tmp 1777 root root 30d
 packages:
   - tmux
   - curl

@@ -1350,7 +1350,18 @@ for d in "$ROOT"/templates/*/; do
       # the scoping is pinned rather than merely true today.
       # shellcheck disable=SC2016  # $1 expands in the child shell, by design
       check "template '$t': no /tmp cap and no swapfile — a fleet guest, outside #178" 1 "" \
-        bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qE "tmp\.mount|swapfile"' _ "$d/user-data.yaml" ;;
+        bash -c 'grep -v "^[[:space:]]*#" "$1" | grep -qE "tmp\.mount|swapfile"' _ "$d/user-data.yaml"
+      # #208 D7: the shortened eviction age goes where the cap goes, and this
+      # seed has no cap. The scoping is not the cap's own reasoning repeated —
+      # an unneeded cap costs disk, where a shortened age DELETES FILES, and
+      # on a long-lived fleet guest with no ceiling squeezing anything there
+      # is nothing reclaimed in exchange. Opposite sign, so it stops here.
+      # Asserted as an absence, like the cap's, so the scoping is pinned
+      # rather than merely true today.
+      # shellcheck disable=SC2016  # $1 expands in the child shell, by design
+      check "template '$t': no tmpfiles age drop-in — a fleet guest, outside #208" 1 "" \
+        bash -c 'grep -v "^[[:space:]]*#" "$1" |
+                 grep -qE "tmpfiles\.d|^[[:space:]]+q[[:space:]]+/(var/)?tmp[[:space:]]"' _ "$d/user-data.yaml" ;;
     *)
       check "template '$t': writes the /tmp size drop-in (#178)" 0 "" \
         grep -qE '^[[:space:]]*-[[:space:]]+path:[[:space:]]+/etc/systemd/system/tmp\.mount\.d/box-size\.conf$' "$d/user-data.yaml"
@@ -1375,6 +1386,28 @@ for d in "$ROOT"/templates/*/; do
       # unmounting /tmp out from under cloud-init.
       check "template '$t': applies the /tmp cap on the mint boot too (#178)" 0 "" \
         grep -qE '^[[:space:]]*-[[:space:]]+test "\$\(findmnt -no FSTYPE /tmp\)" != tmpfs \|\| mount -o remount,size=1G /tmp$' "$d/user-data.yaml"
+      # #208: the cap above is a SIZE decision and nothing reclaims what it
+      # bounds. Debian's stock age is TEN DAYS and its daily cleaner was
+      # measured evicting nothing while 2.8GB of earlier sessions' scratch sat
+      # inside the window, so the seed states its own age. Three greps, because
+      # the three halves fail independently: the file, the /tmp age, and the
+      # /var/tmp restatement. There is deliberately no mint-boot counterpart to
+      # the remount above — the age is read by the next timer firing, and a box
+      # minted an hour ago has nothing to clean.
+      check "template '$t': writes the tmpfiles age drop-in (#208)" 0 "" \
+        grep -qE '^[[:space:]]*-[[:space:]]+path:[[:space:]]+/etc/tmpfiles\.d/tmp\.conf$' "$d/user-data.yaml"
+      # Pinned to 1d exactly: it is derived from the 1GiB cap against a 672MB
+      # observed peak and a daily cleaner, so a revert to Debian's 10d — or any
+      # other figure — reds here rather than silently restoring the defect.
+      check "template '$t': evicts /tmp scratch at 1d, not Debian's 10d (#208)" 0 "" \
+        grep -qE '^[[:space:]]+q[[:space:]]+/tmp[[:space:]]+1777[[:space:]]+root[[:space:]]+root[[:space:]]+1d$' "$d/user-data.yaml"
+      # systemd-tmpfiles reads the FIRST file of a name across its search path
+      # and /etc/tmpfiles.d outranks /usr/lib/tmpfiles.d, so the drop-in MASKS
+      # Debian's file rather than merging with it. A drop-in naming only /tmp
+      # therefore removes /var/tmp's cleanup on every box, with no error
+      # message anywhere — the silent regression this check exists for (#208).
+      check "template '$t': restates /var/tmp at its stock 30d — the file MASKS Debian's (#208)" 0 "" \
+        grep -qE '^[[:space:]]+q[[:space:]]+/var/tmp[[:space:]]+1777[[:space:]]+root[[:space:]]+root[[:space:]]+30d$' "$d/user-data.yaml"
       # #178 D2: no swap means every spike is a hard OOM-kill with no grace
       # period. Four greps, because the four halves fail independently — a
       # swapfile that is not made, not sized, not activated at boot, or made
