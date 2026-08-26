@@ -456,10 +456,6 @@ cl_announces_removed() {          # <file>
 cl_announces_removed_except() {   # <file> <fixed string the one blessed line carries>
   grep -vF -- "$2" "$1" | grep -qEi "$CL_PATTERN"
 }
-check "corpus: 214.md still names the removal it announces (#214)" 0 "" \
-  cl_announces_removed "$ROOT/changelog.d/214.md"
-check "corpus: 159.md still carries the history clause the sweep excepts (#214)" 0 "1" \
-  grep -c 'Retired agent template spellings' "$ROOT/changelog.d/159.md"
 # Every tracked file in the directory, not a *.md glob: the criterion greps
 # changelog.d/ whole, and README.md and shape assemble into nothing but are
 # read by the same people.
@@ -473,22 +469,47 @@ check "corpus: 159.md still carries the history clause the sweep excepts (#214)"
 # excepting nothing and the sweep is asserting nothing.
 CL_TRACKED="$(git -C "$ROOT" ls-files changelog.d 2>/dev/null)"
 cl_walk_reaches() { printf '%s\n' "$CL_TRACKED" | grep -qxF "$1"; }
-check "corpus: the walk reaches 214.md, which the first exception names (#214)" 0 "" \
-  cl_walk_reaches changelog.d/214.md
-check "corpus: ...and 159.md, which the second names — an empty walk sweeps nothing" 0 "" \
-  cl_walk_reaches changelog.d/159.md
-while read -r rel; do
-  [ -n "$rel" ] || continue
-  case "$rel" in
-    changelog.d/214.md) continue ;;
-    changelog.d/159.md)
-      check "corpus: $rel announces nothing removed but its history clause (#214)" 1 "" \
-        cl_announces_removed_except "$ROOT/$rel" 'Retired agent template spellings' ;;
-    *)
-      check "corpus: $rel announces nothing this release removes (#214)" 1 "" \
-        cl_announces_removed "$ROOT/$rel" ;;
-  esac
-done <<< "$CL_TRACKED"
+CL_RELEASE_SECTION=""
+if [ ! -e "$ROOT/changelog.d/214.md" ] && [ ! -e "$ROOT/changelog.d/159.md" ]; then
+  # A release consumes the two named exceptions with the rest of the corpus.
+  # Select this path from that tree shape, not VERSION or a caller-controlled
+  # switch, then require the assembled section itself to carry the evidence.
+  CL_RELEASE_SECTION="$(mktemp)"
+  awk '
+    /^## 0\.10\.0 — / { in_release = 1 }
+    in_release && /^## / && $0 !~ /^## 0\.10\.0 — / { exit }
+    in_release { print }
+  ' "$ROOT/CHANGELOG.md" > "$CL_RELEASE_SECTION"
+  check "corpus: the assembled 0.10.0 section exists exactly once (#214)" 0 "1" \
+    grep -c '^## 0\.10\.0 — ' "$CL_RELEASE_SECTION"
+  check "corpus: the assembled section retains the BREAKING removal (#214)" 0 "" \
+    grep -qF -- '**BREAKING**' "$CL_RELEASE_SECTION"
+  check "corpus: the assembled section retains the --role removal (#214)" 0 "" \
+    grep -qF -- '--role' "$CL_RELEASE_SECTION"
+  check "corpus: the assembled section retains the history clause (#214)" 0 "1" \
+    grep -c 'Retired agent template spellings' "$CL_RELEASE_SECTION"
+else
+  check "corpus: 214.md still names the removal it announces (#214)" 0 "" \
+    cl_announces_removed "$ROOT/changelog.d/214.md"
+  check "corpus: 159.md still carries the history clause the sweep excepts (#214)" 0 "1" \
+    grep -c 'Retired agent template spellings' "$ROOT/changelog.d/159.md"
+  check "corpus: the walk reaches 214.md, which the first exception names (#214)" 0 "" \
+    cl_walk_reaches changelog.d/214.md
+  check "corpus: ...and 159.md, which the second names — an empty walk sweeps nothing" 0 "" \
+    cl_walk_reaches changelog.d/159.md
+  while read -r rel; do
+    [ -n "$rel" ] || continue
+    case "$rel" in
+      changelog.d/214.md) continue ;;
+      changelog.d/159.md)
+        check "corpus: $rel announces nothing removed but its history clause (#214)" 1 "" \
+          cl_announces_removed_except "$ROOT/$rel" 'Retired agent template spellings' ;;
+      *)
+        check "corpus: $rel announces nothing this release removes (#214)" 1 "" \
+          cl_announces_removed "$ROOT/$rel" ;;
+    esac
+  done <<< "$CL_TRACKED"
+fi
 # The guard's own test, on the two shapes it exists to tell apart: a stale
 # SUBJECT — true in substance, naming a seed set #209 collapsed — and the same
 # claim repaired onto the tree that exists. The repair is the ruling's, D1
@@ -520,10 +541,25 @@ if [ -n "$SFPRECOMMIT" ]; then
   git -C "$ROOT" show "$SFPRECOMMIT:changelog.d/177.md" > "$CLPRE" 2>/dev/null || true
   check "corpus: the guard reds on the real pre-amendment 177.md (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
     cl_announces_removed "$CLPRE"
-  check "corpus: ...and is green on the amended one (the control's other half)" 1 "" \
-    cl_announces_removed "$ROOT/changelog.d/177.md"
+  if [ -n "$CL_RELEASE_SECTION" ]; then
+    CLPOST="$(mktemp)"
+    awk '
+      function emit() { if (entry ~ /#177/) print entry "\n"; entry = "" }
+      /^- / { emit(); entry = $0; next }
+      entry != "" && /^  / { entry = entry "\n" $0; next }
+      { emit() }
+      END { emit() }
+    ' "$CL_RELEASE_SECTION" > "$CLPOST"
+    check "corpus: ...and is green on the assembled #177 entries (the control's other half)" 1 "" \
+      cl_announces_removed "$CLPOST"
+    rm -f "$CLPOST"
+  else
+    check "corpus: ...and is green on the amended one (the control's other half)" 1 "" \
+      cl_announces_removed "$ROOT/changelog.d/177.md"
+  fi
   rm -f "$CLPRE"
 fi
+if [ -n "$CL_RELEASE_SECTION" ]; then rm -f "$CL_RELEASE_SECTION"; fi
 
 # ---------------------------------------------------------------------------
 # THE CLAIM, not the word (#214). The strong form above matches 'rig' — so it
