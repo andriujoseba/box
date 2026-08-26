@@ -15,4 +15,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: heavy-duty/ceremony/actions/refs-not-closing@0.7.4
+      - uses: heavy-duty/ceremony/actions/refs-not-closing@0.7.6
