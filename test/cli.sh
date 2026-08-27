@@ -6727,6 +6727,13 @@ check "drill help: ...and the window reaches the line after the list" 0 \
   "Exit 0 = every check passed" bash "$ROOT/drill/drill.sh" --help
 check "drill: an unknown option is still a usage error" 2 "unknown option" \
   bash "$ROOT/drill/drill.sh" --frobnicate
+# The help must not NAME the two retired flags, not even in the sentence saying
+# they are retired: the header block is what the tool answers with when asked
+# directly, so a flag named there is a flag an operator will try (#225). The
+# incident that bought the removal is kept in the settings block's comment,
+# which is code and not the help window.
+help_names_a_tree_flag() { bash "$ROOT/drill/drill.sh" --help | grep -qE -- '--repo|--ref'; }
+check "drill help: names neither --repo nor --ref (#225)" 1 "" help_names_a_tree_flag
 # The window is quoted in two docs as a literal range, beside an instruction to
 # keep it in step with the script — so a stale copy is not a stale fact, it is a
 # stale instruction, and the editor who obeys it truncates the help again. The

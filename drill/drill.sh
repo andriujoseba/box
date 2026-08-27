@@ -18,9 +18,9 @@
 # THE TREE UNDER TEST IS THIS CHECKOUT, always. The drill installs box by running
 # the install.sh beside it against the working tree, and no flag points it
 # anywhere else: to drill a branch, check that branch out (#225). It used to take
-# --repo/--ref and install over the network, so the harness came from your
-# checkout and the subject came from main — standing on a branch and running the
-# two lines above drilled a tree nobody was reading.
+# a repository and a ref and install over the network, so the harness came from
+# your checkout and the subject came from main — standing on a branch and running
+# the two lines above drilled a tree nobody was reading.
 #
 # A DIRTY WORKTREE IS REFUSED, and so is a run as root: the record names the
 # commit, which an uncommitted edit makes a lie, and box installs by uid, which
