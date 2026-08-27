@@ -5793,9 +5793,11 @@ run_summary() {
   # skeleton that supplied extras would prove the tail runs on a state the
   # script never produces. CHECKOUT and BOX_SHARE joined RECORD and KEEP when
   # the tree stopped being a repo/ref pair and the install root stopped being a
-  # hard-coded $HOME path (#225).
+  # hard-coded $HOME path (#225). Both are placeholders here and neither is
+  # read: RECORD is empty, so nothing in these scenarios collects a record. The
+  # scenarios that DO emit one, further down, pass real fixtures.
   bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
-    RECORD=''; CHECKOUT='$RECGIT'; BOX_SHARE='$RECINST'; KEEP=0
+    RECORD=''; CHECKOUT=/nonexistent/checkout; BOX_SHARE=/nonexistent/install; KEEP=0
     $1; . '$SUMFN'"
 }
 summary_lacks() {   # 0 when the composed run does NOT say $1
@@ -6246,7 +6248,7 @@ check "drill record: a run with no audit answers grows no empty section" 1 "" \
 run_emit() {   # run_emit <state> — EXIT STATUS is the drill's own
   rm -f "$RECOUT"
   bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
-    RECORD='$RECOUT'; REPO=heavy-duty/box; REF=release/9.9.9; KEEP=0
+    RECORD='$RECOUT'; CHECKOUT='$RECGIT'; BOX_SHARE='$RECINST'; KEEP=0
     RUN_ID=drill-9.9.9-20260721-01
     $RECSTATE; $1
     . '$SUMFN'"
@@ -6281,13 +6283,15 @@ check "drill emit: ...against the full denominator, 72/81" 0 "**72/81 passed" ca
 # opinion about whether the trust boundary held. It must not be silent either.
 check "drill emit: an unwritable path cannot change the drill's verdict" 0 "FAILED to write" \
   bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
-    RECORD='$RECWORK/gone/rec.md'; REPO=o/r; REF=v1; KEEP=0; RUN_ID=x
+    RECORD='$RECWORK/gone/rec.md'; CHECKOUT='$RECGIT'; BOX_SHARE='$RECINST'
+    KEEP=0; RUN_ID=x
     $RECSTATE; $CLEAN
     . '$SUMFN'"
 # ...and no --emit-record writes nothing at all, which is still the common run.
 check "drill emit: without --emit-record nothing is written" 0 "" \
   bash -c "rm -f '$RECOUT'; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
-    RECORD=''; $RECSTATE; $CLEAN; . '$SUMFN' >/dev/null; [ ! -e '$RECOUT' ]"
+    RECORD=''; CHECKOUT='$RECGIT'; BOX_SHARE='$RECINST'; KEEP=0
+    $RECSTATE; $CLEAN; . '$SUMFN' >/dev/null; [ ! -e '$RECOUT' ]"
 
 # --- the wiring, so the emitter cannot be left correct-but-unreachable ------
 # The path guard must run before the first phase, for the same reason the
@@ -6411,12 +6415,20 @@ check "drill preflight: ...and the refusal prints the two lines that DO work" 2 
 # All three run before the consent prompt and before the first phase, for the
 # reason the record-path guard does: an operator who cannot run this must find
 # out in the first second, not in the summary forty minutes on.
+# The guard names are matched with grep -F on the whole call, so the assertion
+# is that the LINE exists rather than that a fragment of it does — a call whose
+# `|| exit 2` was dropped would satisfy a looser pattern while refusing nothing.
+# shellcheck disable=SC2016  # every one of these is literal text in drill.sh
+PREFLIGHT_CALLS=(
+  'preflight_uid "$(id -u)" || exit 2'
+  'preflight_tree "$CHECKOUT" "$ALLOW_DIRTY" || exit 2'
+)
 preflight_runs_first() {
   ( set -u
-    local first g
+    local first g line
     first="$(grep -nE '^[[:space:]]*phase [A-Za-z-]+ ' "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
-    for g in 'preflight_uid "\$\(id -u\)" \|\| exit 2' 'preflight_tree "\$CHECKOUT" "\$ALLOW_DIRTY" \|\| exit 2'; do
-      line="$(grep -n "^$g\$" "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+    for g in "${PREFLIGHT_CALLS[@]}"; do
+      line="$(grep -nF -- "$g" "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
       [ -n "$line" ] || { echo "preflight guard is defined but never called: $g"; exit 1; }
       [ "$line" -lt "$first" ] \
         || { echo "$g runs at $line, after the first phase at $first"; exit 1; }
