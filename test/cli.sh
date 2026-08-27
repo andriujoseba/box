@@ -7007,6 +7007,32 @@ check "drill ignored: a rewrite inside an ignored file moves the witness" 1 \
     tree_ident_verify '$PAYIGN' 'in the window'"
 check "drill ignored: ...which the dirty path list still cannot see" 1 "" \
   pay "record_tree_dirty '$PAYIGN'"
+# The cap. Ignored trees can be thousands of files where dirty ones rarely are,
+# and TREE_DIRTY_PATHS crosses the sg re-exec as an environment variable — an
+# exposure this round introduces, so it bounds it. What is capped is the LIST;
+# what is not capped is anything the record's meaning depends on.
+printf 'TOKEN=hunter2\n' > "$PAYIGN/secrets.env"
+printf 'secrets.env\nignored/\n' > "$PAYIGN/.gitignore"
+git -C "$PAYIGN" add .gitignore
+git -C "$PAYIGN" commit -q -m 'ignore a directory too'
+mkdir -p "$PAYIGN/ignored"
+for i in $(seq 1 25); do printf 'x\n' > "$PAYIGN/ignored/f$i"; done
+check "drill ignored: a refusal lists 20 paths, not 26" 2 "…and 6 more" \
+  pay "preflight_tree '$PAYIGN' 0"
+check "drill ignored: ...and the carried list is capped the same way" 0 "…and 6 more" \
+  payign_latch TREE_DIRTY_PATHS
+# The measurement is over all of them: capping the list must not cap the fact.
+check "drill ignored: ...while the tree is still dirty on the 26th" 0 "[1]" \
+  payign_latch TREE_DIRTY
+check "drill ignored: ...and the witness still moves on a file past the cap" 1 \
+  "changed in the window" \
+  bash -c "set -u; . '$RECFN'; . '$PREFN'
+    TREE_DIRTY=''; TREE_DIRTY_PATHS=''
+    REC_TREE_REPO=''; REC_TREE_REF=''; REC_TREE_SHA=''; TREE_IDENT=''
+    tree_ident_latch '$PAYIGN'
+    printf 'moved\n' > '$PAYIGN/ignored/f25'
+    tree_ident_verify '$PAYIGN' 'in the window'"
+rm -rf "$PAYIGN/ignored"
 
 # The wiring, the same shape the window guards get: the attestation can be
 # perfect and never called, or called and its verdict dropped.

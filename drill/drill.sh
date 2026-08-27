@@ -854,6 +854,22 @@ preflight_uid() {   # <uid> — 0 to proceed
   return 2
 }
 
+# One printer for both path lists, and the reason it counts (round 4, #225). An
+# ignored tree can be thousands of files — a node_modules, a build directory —
+# where a dirty one rarely is, and a refusal that prints all of them buries its
+# own explanation. So the LISTING is capped and says that it is. Nothing about
+# the measurement is: the refusal itself, TREE_DIRTY and the witness are over
+# everything git can see.
+TREE_PATHS_MAX=20
+preflight_paths() {   # <paths> — print them indented, at most TREE_PATHS_MAX
+  local n
+  n="$(printf '%s\n' "$1" | grep -c .)"
+  printf '%s\n' "$1" | head -n "$TREE_PATHS_MAX" | sed 's/^/    /' >&2
+  if [ "$n" -gt "$TREE_PATHS_MAX" ]; then
+    echo "    …and $((n - TREE_PATHS_MAX)) more" >&2
+  fi
+}
+
 # The tree, and the one new failure mode co-location introduces (D5, #225).
 # Before this change the ref was a name the operator typed and the tree was
 # whatever the network served; now the tree is local and mutable, so an
@@ -887,20 +903,20 @@ preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
     echo "drill: --allow-dirty: this tree is not the commit, and the run will go ahead." >&2
     echo "  The record's ref field will be stamped '-dirty': it names a commit" >&2
     echo "  that is NOT what ran, and the run cannot be reproduced from it." >&2
-    [ -n "$paths" ] && printf '%s\n' "$paths" | sed 's/^/    /' >&2
+    [ -n "$paths" ] && preflight_paths "$paths"
     if [ -n "$ign" ]; then
       echo "  '!!' is a file git IGNORES and install.sh copies anyway — it will be" >&2
       echo "  installed into the box, and this repository ignores secrets:" >&2
-      printf '%s\n' "$ign" | sed 's/^/    /' >&2
+      preflight_paths "$ign"
     fi
     return 0
   fi
   echo "drill: REFUSING to drill $head." >&2
   echo "  The tree under test is this checkout, and the record names its commit." >&2
   echo "  These paths are not in that commit, so the record would be a lie:" >&2
-  [ -n "$paths" ] && printf '%s\n' "$paths" | sed 's/^/    /' >&2
+  [ -n "$paths" ] && preflight_paths "$paths"
   if [ -n "$ign" ]; then
-    printf '%s\n' "$ign" | sed 's/^/    /' >&2
+    preflight_paths "$ign"
     echo "  '!!' is git's mark for a file it IGNORES. install.sh excludes .git" >&2
     echo "  and nothing else, so these are copied into the box while every" >&2
     echo "  reader of the record says the tree is clean — and this repository" >&2
@@ -935,7 +951,7 @@ preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
 # It is still a measurement and never a flag — it reads the tree, not
 # $ALLOW_DIRTY — it is simply taken at the moment it describes.
 tree_ident_latch() {   # <dir> — the tree fields a record carries, measured once
-  local ign
+  local ign n
   [ -z "$TREE_DIRTY" ] || return 0
   TREE_DIRTY_PATHS="$(record_tree_dirty "$1")" || TREE_DIRTY_PATHS=''
   # An ignored file is dirtiness the record has to declare, for the reason the
@@ -947,6 +963,17 @@ tree_ident_latch() {   # <dir> — the tree fields a record carries, measured on
     TREE_DIRTY_PATHS="${TREE_DIRTY_PATHS:+$TREE_DIRTY_PATHS$'\n'}$ign"
   fi
   if [ -n "$TREE_DIRTY_PATHS" ]; then TREE_DIRTY=1; else TREE_DIRTY=0; fi
+  # What crosses the sg re-exec is an ENVIRONMENT VARIABLE, and with ignored
+  # files in the list it can now be thousands of paths where it used to be a
+  # handful (round 4, #225). The list exists to be read in a NOTE, and its
+  # carrier has a size limit, so it is capped exactly like the refusal's is —
+  # and the flag above it, which is the part that changes what the record says,
+  # is measured over all of them before the cap applies.
+  n="$(printf '%s\n' "$TREE_DIRTY_PATHS" | grep -c .)"
+  if [ "$n" -gt "$TREE_PATHS_MAX" ]; then
+    TREE_DIRTY_PATHS="$(printf '%s\n' "$TREE_DIRTY_PATHS" | head -n "$TREE_PATHS_MAX")
+…and $((n - TREE_PATHS_MAX)) more"
+  fi
   REC_TREE_REPO="$(record_tree_repo "$1")"
   REC_TREE_SHA="$(record_tree_sha "$1")"
   REC_TREE_REF="$(record_tree_ref_stamped "$1" "$TREE_DIRTY")"
