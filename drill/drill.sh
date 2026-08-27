@@ -564,6 +564,30 @@ record_tree_dirty() {   # <dir> → the dirty paths on stdout; 0 when dirty
   printf '%s\n' "$out"
 }
 
+# The paths git hides from every reader above — and copies into the box anyway
+# (round 4, #225). `install.sh` acquires a local tree with
+# `tar -C "$SRC" --exclude=.git` (install.sh:213): it excludes the VCS state and
+# NOTHING else, so a file this repository ignores is installed exactly like a
+# tracked one, while `--porcelain` reports a clean tree and the record names a
+# public commit that does not contain it. The measured subject and the copied
+# subject disagreed, and the copied one is the one that gets drilled.
+#
+# The class this repository ignores is `secrets.env` and `*.agekey`, so what
+# falls through that gap is the secrets class: an operator with a secrets file
+# beside their checkout installs it into $BOX_SHARE under a record calling the
+# tree clean. The drill cannot narrow what install.sh copies — that copy is
+# every caller's, CI included — so it widens what it measures instead, and the
+# refusal below makes the operator's choice explicit either way.
+#
+# Emitted in git's own porcelain notation for an ignored path, '!! <path>', so
+# the refusal, the NOTE and the dirty list can be read as one list.
+record_tree_ignored() {   # <dir> → the ignored paths install.sh would copy; 0 when any
+  local out
+  out="$(git -C "$1" ls-files -o -i --exclude-standard 2>/dev/null)" || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out" | sed 's/^/!! /'
+}
+
 # The tree's CONTENT, as one comparable string (round 3, #225). The function
 # above answers which paths differ from the commit; it cannot answer what is
 # inside them, and between the moment the identity is latched and the moment
@@ -577,23 +601,32 @@ record_tree_dirty() {   # <dir> → the dirty paths on stdout; 0 when dirty
 #     content with no change of status is visible.
 #
 # Content-addressed via git rather than sha256sum, because git is already the
-# hard dependency the preflight refuses without. Scoped to what git can see,
-# exactly like record_tree_dirty: an ignored file is not something the record
-# ever said anything about, so it is not something this can catch it lying about.
+# hard dependency the preflight refuses without.
+#
+# It digests the IGNORED files too (round 4, #225). This used to stop where
+# git's own reporting stops — an ignored file being nothing the record ever
+# claimed — which reasoned about the record and not about the box: install.sh
+# copies ignored files like every other byte in the tree (record_tree_ignored,
+# above), so one rewritten in the window moves the installed bytes exactly as a
+# tracked one does. The subject of this digest is what gets copied.
+record_tree_hashes() {   # <dir> <ls-files flags...> → '<path> <hash>' per file
+  # -z, because a newline is legal in a path and a path list that cannot say so
+  # is a list an operator can forge. hash-object without -w computes and writes
+  # nothing: measuring the tree must not modify it.
+  git -C "$1" ls-files --exclude-standard -z "${@:2}" 2>/dev/null \
+    | while IFS= read -r -d '' p; do
+        printf '%s ' "$p"
+        git -C "$1" hash-object -- "$1/$p" 2>/dev/null || printf 'unreadable\n'
+      done
+}
 record_tree_ident() {   # <dir> → one digest of the tree the record describes
   {
     git -C "$1" rev-parse HEAD 2>/dev/null
     record_tree_ref "$1"; printf '\n'
     git -C "$1" status --porcelain 2>/dev/null
     git -C "$1" diff HEAD --binary 2>/dev/null
-    # -z, because a newline is legal in a path and a path list that cannot say
-    # so is a list an operator can forge. hash-object without -w computes and
-    # writes nothing: measuring the tree must not modify it.
-    git -C "$1" ls-files -o --exclude-standard -z 2>/dev/null \
-      | while IFS= read -r -d '' p; do
-          printf '%s ' "$p"
-          git -C "$1" hash-object -- "$1/$p" 2>/dev/null || printf 'unreadable\n'
-        done
+    record_tree_hashes "$1" -o          # untracked, and not ignored
+    record_tree_hashes "$1" -o -i       # ignored, and copied all the same
   } | git -C "$1" hash-object --stdin
 }
 
@@ -827,7 +860,7 @@ preflight_uid() {   # <uid> — 0 to proceed
 # uncommitted edit would put a SHA in the record that is not what ran — the
 # same class of untruth this issue closes, re-entered by the back door.
 preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
-  local paths
+  local paths ign head
   if ! record_tree_is_git "$1"; then
     echo "drill: $1 is not a git checkout, or git is not installed." >&2
     echo "  The drill installs the tree it runs from and the record names that" >&2
@@ -836,18 +869,43 @@ preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
     echo "    bash drill/drill.sh --yes" >&2
     return 2
   fi
-  paths="$(record_tree_dirty "$1")" || return 0
+  # Two questions with one answer: is anything here not in the commit the
+  # record will name? git answers it in two lists — the paths it reports as
+  # changed, and the paths it hides but install.sh copies (round 4, #225) —
+  # and a tree carrying either is a tree the record cannot describe. They are
+  # gathered before either is printed, because a tree that is BOTH dirty and
+  # carrying ignored files used to return on the first list and never name the
+  # second, which is the half that can be a secrets file.
+  paths="$(record_tree_dirty "$1")" || paths=''
+  ign="$(record_tree_ignored "$1")" || ign=''
+  [ -n "$paths$ign" ] || return 0
+  # The headline is about what is actually there. "Dirty worktree" for a clean
+  # tree with a secrets.env beside it would send the operator to `git status`,
+  # which is precisely the reader that cannot see it.
+  if [ -n "$paths" ]; then head="a dirty worktree"; else head="a tree git is not showing you"; fi
   if [ "$2" = 1 ]; then
-    echo "drill: --allow-dirty: the worktree is dirty and the run will go ahead." >&2
+    echo "drill: --allow-dirty: this tree is not the commit, and the run will go ahead." >&2
     echo "  The record's ref field will be stamped '-dirty': it names a commit" >&2
     echo "  that is NOT what ran, and the run cannot be reproduced from it." >&2
-    printf '%s\n' "$paths" | sed 's/^/    /' >&2
+    [ -n "$paths" ] && printf '%s\n' "$paths" | sed 's/^/    /' >&2
+    if [ -n "$ign" ]; then
+      echo "  '!!' is a file git IGNORES and install.sh copies anyway — it will be" >&2
+      echo "  installed into the box, and this repository ignores secrets:" >&2
+      printf '%s\n' "$ign" | sed 's/^/    /' >&2
+    fi
     return 0
   fi
-  echo "drill: REFUSING to drill a dirty worktree." >&2
+  echo "drill: REFUSING to drill $head." >&2
   echo "  The tree under test is this checkout, and the record names its commit." >&2
   echo "  These paths are not in that commit, so the record would be a lie:" >&2
-  printf '%s\n' "$paths" | sed 's/^/    /' >&2
+  [ -n "$paths" ] && printf '%s\n' "$paths" | sed 's/^/    /' >&2
+  if [ -n "$ign" ]; then
+    printf '%s\n' "$ign" | sed 's/^/    /' >&2
+    echo "  '!!' is git's mark for a file it IGNORES. install.sh excludes .git" >&2
+    echo "  and nothing else, so these are copied into the box while every" >&2
+    echo "  reader of the record says the tree is clean — and this repository" >&2
+    echo "  ignores secrets.env and *.agekey. Move them out of the checkout." >&2
+  fi
   echo "  Commit or stash them, or re-run with --allow-dirty, which drills them" >&2
   echo "  anyway and stamps the record's ref field '-dirty'." >&2
   return 2
@@ -877,13 +935,18 @@ preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
 # It is still a measurement and never a flag — it reads the tree, not
 # $ALLOW_DIRTY — it is simply taken at the moment it describes.
 tree_ident_latch() {   # <dir> — the tree fields a record carries, measured once
+  local ign
   [ -z "$TREE_DIRTY" ] || return 0
-  if TREE_DIRTY_PATHS="$(record_tree_dirty "$1")"; then
-    TREE_DIRTY=1
-  else
-    TREE_DIRTY=0
-    TREE_DIRTY_PATHS=''
+  TREE_DIRTY_PATHS="$(record_tree_dirty "$1")" || TREE_DIRTY_PATHS=''
+  # An ignored file is dirtiness the record has to declare, for the reason the
+  # preflight refuses one (round 4, #225): install.sh copies it, so the tree in
+  # the box is not the commit, and a run carrying one cannot be reproduced by
+  # checking that commit out. It reaches this line only through --allow-dirty,
+  # and the flag it costs is the one that says so.
+  if ign="$(record_tree_ignored "$1")"; then
+    TREE_DIRTY_PATHS="${TREE_DIRTY_PATHS:+$TREE_DIRTY_PATHS$'\n'}$ign"
   fi
+  if [ -n "$TREE_DIRTY_PATHS" ]; then TREE_DIRTY=1; else TREE_DIRTY=0; fi
   REC_TREE_REPO="$(record_tree_repo "$1")"
   REC_TREE_SHA="$(record_tree_sha "$1")"
   REC_TREE_REF="$(record_tree_ref_stamped "$1" "$TREE_DIRTY")"
@@ -1249,7 +1312,7 @@ export PATH="$BOX_BINDIR:$PATH"
 # tree that matters stopped existing the moment it was copied, so remembering
 # once beats measuring twice: there is only one moment this note is true about.
 if [ "$TREE_DIRTY" = 1 ]; then
-  note "the worktree was DIRTY and --allow-dirty was given: this run drilled uncommitted work, and the record's ref field is stamped '-dirty' because it cannot be reproduced from the commit it names — $(printf '%s' "$TREE_DIRTY_PATHS" | tr '\n' ';')"
+  note "the worktree was DIRTY and --allow-dirty was given: this run drilled work that is not in the commit — uncommitted paths, and '!!' paths git ignores and install.sh copied into the box regardless — and the record's ref field is stamped '-dirty' because it cannot be reproduced from the commit it names — $(printf '%s' "$TREE_DIRTY_PATHS" | tr '\n' ';')"
 fi
 
 # PROVE THE INSTALLER'S CONTRACT (#64) — first, before the clean or anything
