@@ -5800,15 +5800,20 @@ check "drill summary: ...with the exit gate inside the window, not below it" 0 "
 # RECORD empty is a drill run without --emit-record, which is still the common
 # case; the scenarios that DO emit one set it, further down.
 run_summary() {
-  # The four settings the block documents itself as assuming, and no more: a
-  # skeleton that supplied extras would prove the tail runs on a state the
-  # script never produces. CHECKOUT and BOX_SHARE joined RECORD and KEEP when
-  # the tree stopped being a repo/ref pair and the install root stopped being a
-  # hard-coded $HOME path (#225). Both are placeholders here and neither is
-  # read: RECORD is empty, so nothing in these scenarios collects a record. The
-  # scenarios that DO emit one, further down, pass real fixtures.
+  # The settings the block documents itself as assuming, and no more: a skeleton
+  # that supplied extras would prove the tail runs on a state the script never
+  # produces. CHECKOUT and BOX_SHARE joined RECORD and KEEP when the tree
+  # stopped being a repo/ref pair and the install root stopped being a
+  # hard-coded $HOME path (#225); TREE_DIRTY joined them when the tree's
+  # dirtiness stopped being re-read at summary time and became a fact the
+  # preflight latched and the re-exec carried here (round 2, #225) — which is
+  # exactly why the summary can no longer derive it and must be handed it.
+  # CHECKOUT and BOX_SHARE are placeholders and neither is read: RECORD is
+  # empty, so nothing in these scenarios collects a record. The scenarios that
+  # DO emit one, further down, pass real fixtures.
   bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
     RECORD=''; CHECKOUT=/nonexistent/checkout; BOX_SHARE=/nonexistent/install; KEEP=0
+    TREE_DIRTY=0
     $1; . '$SUMFN'"
 }
 summary_lacks() {   # 0 when the composed run does NOT say $1
@@ -5909,12 +5914,12 @@ check "drill record: the default run ID is drill-<version>-<date>-01" 0 \
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: ...and record_collect derives it from the collected date" 0 \
   "[drill-9.9.9-20260721-01]" \
-  rec "REC_VERSION=9.9.9; REC_DATE=2026-07-21; record_collect '$RECGIT' '$RECINST' 0; printf '[%s]' \"\$REC_RUN_ID\""
+  rec "REC_VERSION=9.9.9; REC_DATE=2026-07-21; record_collect '$RECGIT' '$RECINST' 0 0; printf '[%s]' \"\$REC_RUN_ID\""
 # An ID passed in is the release set's shared one and must survive collection
 # untouched — three repos reconciling on it is the entire reason it exists.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: ...but a pinned run ID is never regenerated" 0 "[drill-shared-42]" \
-  rec "REC_RUN_ID=drill-shared-42; REC_VERSION=9.9.9; REC_DATE=2026-07-21; record_collect '$RECGIT' '$RECINST' 0; printf '[%s]' \"\$REC_RUN_ID\""
+  rec "REC_RUN_ID=drill-shared-42; REC_VERSION=9.9.9; REC_DATE=2026-07-21; record_collect '$RECGIT' '$RECINST' 0 0; printf '[%s]' \"\$REC_RUN_ID\""
 
 # --- the wall clock, the other field that did not exist ---------------------
 # drills/README.md's worked example writes "41 minutes wall clock"; 2460s is it.
@@ -6039,6 +6044,28 @@ check "drill tree: a non-GitHub remote is recorded verbatim, not mangled" 0 \
 check "drill tree: ...and so is an ssh:// one on a private host" 0 \
   "[ssh://git.example.invalid/mirrors/box.git]" \
   recrepo ssh://git@git.example.invalid/mirrors/box.git
+# The host is matched case-INSENSITIVELY, hostnames being case-insensitive: a
+# `GitHub.com` origin is the same host, and carrying it verbatim would put a
+# record beside its siblings that no longer compares with them (round 2, #225).
+check "drill tree: the host match ignores case, as hostnames do" 0 \
+  "[heavy-duty/box]" recrepo https://GitHub.com/heavy-duty/box.git
+check "drill tree: ...and that does not loosen the exact-host match" 0 \
+  "[https://github.com.evil.invalid/heavy-duty/box.git]" \
+  recrepo https://github.com.evil.invalid/heavy-duty/box.git
+# A trailing slash after the suffix. '.git' was stripped first and found nothing
+# at the end to strip, so the record carried 'heavy-duty/box.git' — the slash
+# comes off first now (round 2, #225).
+check "drill tree: a trailing slash after '.git' does not survive into the field" 0 \
+  "[heavy-duty/box]" recrepo https://github.com/heavy-duty/box.git/
+# A GitHub URL with NO PATH reduces to nothing, and nothing is not a reduction:
+# an empty field in a record reads as a formatting slip rather than a fact, and
+# this function's other absence ('no origin remote') is a stated one. So it
+# falls to the verbatim arm like any other URL that does not reduce — and is
+# credential-stripped there exactly the same way (round 2, #225).
+check "drill tree: a pathless GitHub origin is never an empty field" 0 \
+  "[https://github.com]" recrepo https://github.com
+check "drill tree: ...and its credential does not survive the fallback" 0 "" \
+  norecred https://someuser:pw123@github.com pw123
 git -C "$RECGIT" remote set-url origin https://github.com/heavy-duty/box.git
 # No origin at all is stated rather than left blank: a blank field in a record
 # reads as a formatting slip, and this one is a fact about the checkout.
@@ -6102,16 +6129,16 @@ check "drill record: ...while an empty file is not a record and may be used" 0 "
 # ref alone, and reaches for nothing else.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: collects no converger repo (#214)" 0 "[]" \
-  rec "record_collect '$RECGIT' '$RECINST' 0; printf '[%s]' \"\${REC_RIG_REPO:-}\""
+  rec "record_collect '$RECGIT' '$RECINST' 0 0; printf '[%s]' \"\${REC_RIG_REPO:-}\""
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: collects no converger ref (#214)" 0 "[]" \
-  rec "record_collect '$RECGIT' '$RECINST' 0; printf '[%s]' \"\${REC_RIG_REF:-}\""
+  rec "record_collect '$RECGIT' '$RECINST' 0 0; printf '[%s]' \"\${REC_RIG_REF:-}\""
 # The pin environment cannot reach the record either. It used to be the first
 # fallback record_collect consulted; a run that still honoured it would put a
 # variable box never read into the reproduction of a run that never used it.
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: a set pin in the environment is not collected (#214)" 0 "[]" \
-  rec "export RIG_REPO=you/rig RIG_REF=topic; record_collect '$RECGIT' '$RECINST' 0; printf '[%s%s]' \"\${REC_RIG_REPO:-}\" \"\${REC_RIG_REF:-}\""
+  rec "export RIG_REPO=you/rig RIG_REF=topic; record_collect '$RECGIT' '$RECINST' 0 0; printf '[%s%s]' \"\${REC_RIG_REPO:-}\" \"\${REC_RIG_REF:-}\""
 # drill_stamp() went with its only caller (#214): a reader with nothing to read
 # is a place for the question to come back.
 # On ACTING lines again: drill.sh's comments record what drill_stamp() was and
@@ -6128,10 +6155,10 @@ check "drill record: drill.sh passes no --role (#214)" 1 "" \
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: the invocation carries no converger pin (#214)" 0 \
   "bash drill/drill.sh" \
-  rec "export RIG_REF=topic; record_collect '$RECGIT' '$RECINST' 0; printf '%s' \"\$REC_INVOCATION\""
+  rec "export RIG_REF=topic; record_collect '$RECGIT' '$RECINST' 0 0; printf '%s' \"\$REC_INVOCATION\""
 INVF="$(mktemp)"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
-rec "export RIG_REPO=you/rig RIG_REF=topic; record_collect '$RECGIT' '$RECINST' 0; printf '%s' \"\$REC_INVOCATION\"" > "$INVF" 2>/dev/null
+rec "export RIG_REPO=you/rig RIG_REF=topic; record_collect '$RECGIT' '$RECINST' 0 0; printf '%s' \"\$REC_INVOCATION\"" > "$INVF" 2>/dev/null
 check "drill record: ...not even one set in the environment (#214)" 1 "" \
   grep -qE 'RIG_RE(PO|F)=' "$INVF"
 check "drill record: ...and 'unresolved' is never put in a command line (#150)" 1 "" \
@@ -6141,11 +6168,11 @@ check "drill record: ...and 'unresolved' is never put in a command line (#150)" 
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: DRILL_EXPECT still reaches the invocation (#153)" 0 \
   "DRILL_EXPECT=90 bash drill/drill.sh" \
-  rec "export DRILL_EXPECT=90; record_collect '$RECGIT' '$RECINST' 0; printf '%s' \"\$REC_INVOCATION\""
+  rec "export DRILL_EXPECT=90; record_collect '$RECGIT' '$RECINST' 0 0; printf '%s' \"\$REC_INVOCATION\""
 rm -f "$INVF"
 # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
 check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--keep-boxes" \
-  rec "record_collect '$RECGIT' '$RECINST' 1; printf '%s' \"\$REC_INVOCATION\""
+  rec "record_collect '$RECGIT' '$RECINST' 1 0; printf '%s' \"\$REC_INVOCATION\""
 
 # --- what record_collect MEASURES (D4, #225) --------------------------------
 # The three fields the issue exists for, end to end: not the readers in
@@ -6153,9 +6180,9 @@ check "drill record: ...and --keep-boxes, which changes what was drilled" 0 "--k
 # REC_* set. These used to be $1 and $2 echoed back — the record described the
 # arguments the run was given, which is the property drills/README.md says makes
 # a record prove nothing later.
-collected() {   # collected <field> [snippet] → that field, off the fixture
+collected() {   # collected <field> [snippet] [tree-dirty] → that field, off the fixture
   rec "${2:-}
-       record_collect '$RECGIT' '$RECINST' 0
+       record_collect '$RECGIT' '$RECINST' 0 ${3:-0}
        printf '[%s]' \"\$$1\""
 }
 check "drill record: the collected SHA is the checkout's HEAD" 0 "[$RECGITSHA]" \
@@ -6172,9 +6199,15 @@ check "drill record: a pinned field is still never overwritten by collection" 0 
 # The dirty stamp, and the whole price of --allow-dirty. A record naming a
 # commit that is not what ran is the same untruth this issue closes, so the
 # field that names it stops naming a branch anybody can check out.
+#
+# The fact arrives as an ARGUMENT now and is not re-read here (round 2, #225):
+# collection runs at the end of a forty-minute drill and the tree it can see by
+# then is not the one that was installed. The fixture is still dirtied, because
+# the SHA the stamp is built from is read off it — what moved is WHO measured
+# the dirtiness, and that measurement is driven against the latch below.
 dirty_collected() {   # dirty_collected <field> → that field, off a DIRTY fixture
   printf 'uncommitted\n' >> "$RECGIT/tracked"
-  collected "$1"
+  collected "$1" '' 1
   git -C "$RECGIT" checkout -q -- tracked
 }
 check "drill record: a dirty checkout stamps the ref field '-dirty'" 0 \
@@ -6190,6 +6223,28 @@ clean_invocation_is_dirty() { collected REC_INVOCATION | grep -q -- --allow-dirt
 check "drill record: a clean checkout's command carries no --allow-dirty" 1 "" \
   clean_invocation_is_dirty
 
+# THE TRANSITION (round 2, #225). The fixture below is CLEAN at this moment and
+# the latched fact says the tree was dirty when install.sh copied it — which is
+# what a run looks like when the operator stashes or commits during the forty
+# minutes. Collection used to re-ask git here and believe the answer, so the
+# record named a clean branch, dropped --allow-dirty from the line that claims
+# to reproduce the run, and described a checkout nobody had installed. The two
+# checks below fail on that version and pass on this one; the suite covered
+# dirty-at-collection and clean-at-collection but never the step between them.
+check "drill record: a tree cleaned MID-DRILL still stamps what was installed" 0 \
+  "[$RECGITSHA-dirty]" collected REC_TREE_REF '' 1
+check "drill record: ...and its reproducing command still carries --allow-dirty" 0 \
+  "--allow-dirty" collected REC_INVOCATION '' 1
+# ...and the converse, so the fix is a carried FACT and not a stamp welded on:
+# a tree dirtied after the install was measured clean records a clean ref.
+dirtied_after_install() {   # <field> → that field for a tree dirtied mid-drill
+  printf 'uncommitted\n' >> "$RECGIT/tracked"
+  collected "$1" '' 0
+  git -C "$RECGIT" checkout -q -- tracked
+}
+check "drill record: a tree dirtied AFTER the install records the clean ref" 0 \
+  "[$RECGITREF]" dirtied_after_install REC_TREE_REF
+
 # --- the record itself ------------------------------------------------------
 # A finished drill, pinned so every field is assertable. record_collect fills
 # only what is not already set, which is what lets a test pin the world away.
@@ -6197,7 +6252,7 @@ RECSTATE="PHASE_RAN=([I]=1 [A]=8 [B]=45 [C]=9 [E]=7 [D]=0 [M]=10 [T]=1)
 REC_VERSION=9.9.9; REC_DATE=2026-07-21; REC_HOST='bare Debian 13, Incus 6.0.2'
 REC_RUN_ID=drill-9.9.9-20260721-01; REC_TREE_SHA=abc1234
 REC_TREE_REF=release/9.9.9; REC_TREE_REPO=heavy-duty/box
-REC_ELAPSED=2460; record_collect '$RECGIT' '$RECINST' 0"
+REC_ELAPSED=2460; record_collect '$RECGIT' '$RECINST' 0 0"
 emit() {   # emit <state> → the record that state produces, on stdout
   rm -f "$RECOUT"
   rec "$RECSTATE; $1; record_write '$RECOUT'" >/dev/null 2>&1
@@ -6316,6 +6371,7 @@ run_emit() {   # run_emit <state> — EXIT STATUS is the drill's own
   rm -f "$RECOUT"
   bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
     RECORD='$RECOUT'; CHECKOUT='$RECGIT'; BOX_SHARE='$RECINST'; KEEP=0
+    TREE_DIRTY=0
     RUN_ID=drill-9.9.9-20260721-01
     $RECSTATE; $1
     . '$SUMFN'"
@@ -6351,13 +6407,13 @@ check "drill emit: ...against the full denominator, 72/81" 0 "**72/81 passed" ca
 check "drill emit: an unwritable path cannot change the drill's verdict" 0 "FAILED to write" \
   bash -c "set -u; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
     RECORD='$RECWORK/gone/rec.md'; CHECKOUT='$RECGIT'; BOX_SHARE='$RECINST'
-    KEEP=0; RUN_ID=x
+    KEEP=0; TREE_DIRTY=0; RUN_ID=x
     $RECSTATE; $CLEAN
     . '$SUMFN'"
 # ...and no --emit-record writes nothing at all, which is still the common run.
 check "drill emit: without --emit-record nothing is written" 0 "" \
   bash -c "rm -f '$RECOUT'; . '$VERDFN'; . '$LEDGERFN'; . '$RECFN'
-    RECORD=''; CHECKOUT='$RECGIT'; BOX_SHARE='$RECINST'; KEEP=0
+    RECORD=''; CHECKOUT='$RECGIT'; BOX_SHARE='$RECINST'; KEEP=0; TREE_DIRTY=0
     $RECSTATE; $CLEAN; . '$SUMFN' >/dev/null; [ ! -e '$RECOUT' ]"
 
 # --- the wiring, so the emitter cannot be left correct-but-unreachable ------
@@ -6479,6 +6535,88 @@ check "drill preflight: ...and --allow-dirty does not override that" 2 \
 check "drill preflight: ...and the refusal prints the two lines that DO work" 2 \
   "git clone https://github.com/heavy-duty/box" pre "preflight_tree '$RECNOTGIT' 0"
 
+# --- the latch: the tree is measured ONCE, before anything is installed -------
+# install.sh copies the checkout in stage 1 and the record is written forty
+# minutes later, so every field describing the tree has exactly one moment at
+# which it is true. It used to be re-read at summary time, which is a reading of
+# a tree that is no longer the one in the box (round 2, #225).
+#
+# Composed the way the script composes it: the latch is in the preflight block
+# and the readers it uses are in the record block, and the five settings it
+# fills are declared by the settings block, so the harness seeds them empty the
+# way a stage-1 start does.
+latch() {   # latch <snippet> → the latched state after that snippet
+  bash -c "set -u; . '$RECFN'; . '$PREFN'
+    TREE_DIRTY=''; TREE_DIRTY_PATHS=''
+    REC_TREE_REPO=''; REC_TREE_REF=''; REC_TREE_SHA=''
+    $1"
+}
+latched() {   # latched <field> [snippet] → that field after latching the fixture
+  latch "${2:-}
+    tree_ident_latch '$RECGIT'
+    printf '[%s]' \"\$$1\""
+}
+check "drill latch: a clean tree latches dirty=0" 0 "[0]" latched TREE_DIRTY
+check "drill latch: ...and the record's ref field is the branch" 0 "[$RECGITREF]" \
+  latched REC_TREE_REF
+check "drill latch: ...and the SHA and repo are the checkout's" 0 \
+  "[$RECGITSHA][heavy-duty/box]" \
+  latch "tree_ident_latch '$RECGIT'
+         printf '[%s][%s]' \"\$REC_TREE_SHA\" \"\$REC_TREE_REPO\""
+check "drill latch: a dirty tree latches dirty=1" 0 "[1]" \
+  latched TREE_DIRTY "printf 'uncommitted\n' >> '$RECGIT/tracked'"
+check "drill latch: ...and stamps the ref field, off the tree and not off a flag" 0 \
+  "[$RECGITSHA-dirty]" \
+  latched REC_TREE_REF "printf 'uncommitted\n' >> '$RECGIT/tracked'"
+# The PATHS are latched with the flag because the NOTE that names them is raised
+# on the far side of the sg re-exec, where git can no longer be asked for them.
+check "drill latch: ...and the dirty paths are carried, not re-derived later" 0 \
+  "tracked" latched TREE_DIRTY_PATHS "printf 'uncommitted\n' >> '$RECGIT/tracked'"
+git -C "$RECGIT" checkout -q -- tracked
+check "drill latch: a clean tree carries no paths" 0 "[]" latched TREE_DIRTY_PATHS
+
+# THE latch, which is the whole point: an answer already in hand is stage 1's
+# measurement arriving over the re-exec, and re-answering it in stage 2 is the
+# defect. A second call must change nothing, even against a tree that has since
+# been cleaned — that is the run codex reproduced, one function call wide.
+check "drill latch: a second call does not re-answer a tree that has changed" 0 \
+  "[1]" \
+  latch "printf 'uncommitted\n' >> '$RECGIT/tracked'
+         tree_ident_latch '$RECGIT'
+         git -C '$RECGIT' checkout -q -- tracked
+         tree_ident_latch '$RECGIT'
+         printf '[%s]' \"\$TREE_DIRTY\""
+check "drill latch: ...and the stamped ref it latched survives the second call" 0 \
+  "[$RECGITSHA-dirty]" \
+  latch "printf 'uncommitted\n' >> '$RECGIT/tracked'
+         tree_ident_latch '$RECGIT'
+         git -C '$RECGIT' checkout -q -- tracked
+         tree_ident_latch '$RECGIT'
+         printf '[%s]' \"\$REC_TREE_REF\""
+# ...end to end, through record_collect, which is where the defect was VISIBLE:
+# dirty at install, clean at collection, and the record still describes the tree
+# that ran. This is codex's reproduction as a check.
+check "drill latch: a run cleaned mid-drill records what was installed" 0 \
+  "[$RECGITSHA-dirty][bash drill/drill.sh --allow-dirty]" \
+  latch "printf 'uncommitted\n' >> '$RECGIT/tracked'
+         tree_ident_latch '$RECGIT'
+         git -C '$RECGIT' checkout -q -- tracked
+         record_collect '$RECGIT' '$RECINST' 0 \"\$TREE_DIRTY\"
+         printf '[%s][%s]' \"\$REC_TREE_REF\" \"\$REC_INVOCATION\""
+git -C "$RECGIT" checkout -q -- tracked
+# A COMMIT mid-drill moves the SHA the same way a stash moves the dirty flag,
+# and the record must not follow it either: the tree that was installed is the
+# one that ran, whatever HEAD says forty minutes on.
+check "drill latch: a commit mid-drill does not move the recorded SHA" 0 \
+  "[$RECGITSHA]" \
+  latch "tree_ident_latch '$RECGIT'
+         git -C '$RECGIT' commit -q --allow-empty -m 'mid-drill' >/dev/null 2>&1
+         record_collect '$RECGIT' '$RECINST' 0 \"\$TREE_DIRTY\"
+         printf '[%s]' \"\$REC_TREE_SHA\""
+# That check commits into the shared fixture, so the fixture goes back to the
+# commit every assertion above and below it names.
+git -C "$RECGIT" reset -q --hard "$RECGITSHA"
+
 # All three run before the consent prompt and before the first phase, for the
 # reason the record-path guard does: an operator who cannot run this must find
 # out in the first second, not in the summary forty minutes on.
@@ -6540,6 +6678,11 @@ cat > "$REXWORK/stage2.sh" <<'SHIM'
 printf 'argv=[%s] record=[%s] runid=[%s] dirty=[%s] keep=[%s] t0=[%s] ingroup=[%s]\n' \
   "${1:-}" "$DRILL_RECORD" "$DRILL_RUN_ID" "$DRILL_ALLOW_DIRTY" \
   "$DRILL_KEEP" "$DRILL_T0" "$IN_GROUP"
+# The latched tree, which stage 2 cannot re-measure: by the time it runs, the
+# checkout has been installed and may have moved underneath the drill.
+printf 'tree=[%s] paths=[%s] repo=[%s] ref=[%s] sha=[%s]\n' \
+  "$DRILL_TREE_DIRTY" "$(printf '%s' "$DRILL_TREE_DIRTY_PATHS" | tr '\n' ';')" \
+  "$DRILL_TREE_REPO" "$DRILL_TREE_REF" "$DRILL_TREE_SHA"
 SHIM
 chmod +x "$REXWORK/sg" "$REXWORK/stage2.sh"
 
@@ -6551,6 +6694,8 @@ reexec() {   # reexec <record> <run-id> <allow-dirty> → what stage 2 received
     . '$REEXECFN'
     OWNS=0; KEEP=0; DRILL_T0=1750000000
     SELF='$REXWORK/stage2.sh'
+    TREE_DIRTY=1; TREE_DIRTY_PATHS=' M tracked'
+    REC_TREE_REPO=heavy-duty/box; REC_TREE_REF=abc1234-dirty; REC_TREE_SHA=abc1234
     RECORD=\$1; RUN_ID=\$2; ALLOW_DIRTY=\$3
     reexec_in_group" _ "$1" "$2" "$3"
 }
@@ -6569,6 +6714,17 @@ check "drill re-exec: --allow-dirty crosses, or stage 2 refuses what stage 1 all
 # the record's wall clock is measured from it.
 check "drill re-exec: the clock crosses, because \$SECONDS restarts here" 0 \
   "t0=[1750000000]" reexec '' '' 0
+# The LATCHED TREE crosses for the same reason the clock does, and one more: it
+# cannot be re-measured on the far side at all. install.sh has already copied
+# the checkout by then, so a stage 2 that asked git again would answer about a
+# tree the drill is no longer running — the record then names a commit anyone
+# can check out and that is not what ran (round 2, #225).
+check "drill re-exec: the latched dirty flag crosses, or stage 2 re-measures it" 0 \
+  "tree=[1]" reexec '' '' 1
+check "drill re-exec: ...and the dirty PATHS, which the far side cannot re-derive" 0 \
+  "paths=[ M tracked]" reexec '' '' 1
+check "drill re-exec: ...and the three tree fields the record carries" 0 \
+  "repo=[heavy-duty/box] ref=[abc1234-dirty] sha=[abc1234]" reexec '' '' 1
 check "drill re-exec: ...and so does IN_GROUP, or the second stage re-execs forever" 0 \
   "ingroup=[1]" reexec '' '' 0
 
@@ -6600,6 +6756,8 @@ check "drill re-exec: the drill's own path may contain a space and an apostrophe
   bash -c "PATH='$REXWORK':\$PATH; set -u
     . '$REEXECFN'
     OWNS=0; KEEP=0; ALLOW_DIRTY=0; DRILL_T0=1; RECORD=; RUN_ID=
+    TREE_DIRTY=0; TREE_DIRTY_PATHS=
+    REC_TREE_REPO=; REC_TREE_REF=; REC_TREE_SHA=
     SELF=\$1
     reexec_in_group" _ "$SPACED/stage2.sh"
 
@@ -6621,7 +6779,10 @@ settings() {   # settings <env-assignment...> -- <argv...> → the resolved sett
   # shellcheck disable=SC2016  # the snippet is evaluated by the child shell, not here
   env -i PATH="$PATH" "${env[@]}" bash -c '. "$0"
     printf "keep=[%s] record=[%s] runid=[%s] dirty=[%s] checkout=[%s]\n" \
-      "$KEEP" "$RECORD" "$RUN_ID" "$ALLOW_DIRTY" "$CHECKOUT"' "$SETFN" "$@"
+      "$KEEP" "$RECORD" "$RUN_ID" "$ALLOW_DIRTY" "$CHECKOUT"
+    printf "tree=[%s] paths=[%s] repo=[%s] ref=[%s] sha=[%s]\n" \
+      "$TREE_DIRTY" "$TREE_DIRTY_PATHS" \
+      "$REC_TREE_REPO" "$REC_TREE_REF" "$REC_TREE_SHA"' "$SETFN" "$@"
 }
 check "drill settings: DRILL_RECORD and DRILL_RUN_ID cross the exec" 0 \
   "record=[/tmp/r.md] runid=[rid-01]" \
@@ -6639,6 +6800,18 @@ check "drill settings: ...and on when the flag is given" 0 "dirty=[1]" \
   settings -- --allow-dirty
 check "drill settings: ...and DRILL_ALLOW_DIRTY is how it crosses the re-exec" 0 \
   "dirty=[1]" settings DRILL_ALLOW_DIRTY=1 --
+# The latched tree is a MEASUREMENT and not a flag, so there is no way to ask
+# for it on a command line: it arrives from the environment or it has not been
+# taken yet. Empty is exactly that — 'not yet latched', which is how stage 1
+# starts — and it is what makes the latch's own guard work (round 2, #225).
+check "drill settings: an unlatched tree is empty, never a default of 'clean'" 0 \
+  "tree=[] paths=[] repo=[] ref=[] sha=[]" settings --
+check "drill settings: ...and --allow-dirty does not latch anything by itself" 0 \
+  "tree=[]" settings -- --allow-dirty
+check "drill settings: the latched tree crosses the re-exec, all five of it" 0 \
+  "tree=[1] paths=[ M tracked] repo=[you/box] ref=[abc1234-dirty] sha=[abc1234]" \
+  settings DRILL_TREE_DIRTY=1 'DRILL_TREE_DIRTY_PATHS= M tracked' \
+    DRILL_TREE_REPO=you/box DRILL_TREE_REF=abc1234-dirty DRILL_TREE_SHA=abc1234 --
 # The checkout is derived from the SCRIPT'S OWN PATH and never from $PWD, so
 # the block is planted where drill.sh actually lives — <root>/drill/drill.sh —
 # and sourced from somewhere else entirely. A resolver reading $PWD would answer
