@@ -755,11 +755,11 @@ history, including every trap that fooled a run into a wrong verdict.
 ### Run the drill yourself
 
 The drill ships in the repo, not the installed tree — run it from a checkout.
-Two versions are in play and both must be current: **the drill script you
-run** (a stale checkout judges the past), and **the code under test** — the
-drill does not test your working tree; it installs box from GitHub
-(default: `heavy-duty/box@main`) and asserts the installed tree is exactly
-the ref it asked for before issuing any verdict.
+Two versions used to be in play, the harness and the tree it fetched from
+GitHub; now there is one: **the checkout you run it from is the code under
+test** (#225). The drill installs that tree through its own `install.sh`, and
+before issuing any verdict it asserts that what landed is byte-for-byte what
+the checkout holds — so a stale checkout can only judge itself.
 
 ```sh
 git clone https://github.com/heavy-duty/box && cd box   # or refresh an existing
@@ -776,10 +776,15 @@ on a fork — **check it out and run the drill there**. The drill installs the
 tree it runs from and takes no ref (#225):
 
 ```sh
-git checkout <branch-or-tag>                    # a release candidate
-git fetch <fork-remote> <branch> && git checkout FETCH_HEAD   # a PR under review
-bash drill/drill.sh
+git checkout <branch-or-tag>                       # a release candidate
+git clone https://github.com/<fork-owner>/box && cd box && git checkout <branch>
+bash drill/drill.sh                                #   a PR under review, from its fork
 ```
+
+The record's repository field is this checkout's `origin`, so drilling a fork's
+branch from a clone **of the fork** records the fork — which is the point of
+the field. Fetching that branch into a `heavy-duty/box` clone drills the right
+commit and records the wrong repository, because `origin` is still upstream.
 
 The doctor reads ground truth, not config claims — the kernel's `isolated on`
 flag per bridge port, the process table, the resolver actually in use — and

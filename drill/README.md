@@ -177,6 +177,23 @@ the content, not on `git status`: rewriting a file that was already dirty
 changes what lands and changes no path list. Leave the checkout alone for the
 length of a run; everything after the install is yours again.
 
+Both of those readings are of the **source**, and two equal readings taken
+either side of a copy do not make the copy faithful: a change made while `tar`
+was reading the tree and undone before it returned would be installed and then
+be invisible to both. So the drill also **attests what landed** — every file
+`install.sh` copies, compared by content against the checkout, once the install
+reports success — and refuses when they differ, naming the files. That is the
+comparison whose subject is the bytes the next forty minutes will actually run
+(`.git` and the installer's own `INSTALLED_FROM` are not payload and are not
+compared; neither is a file's mode, which `install.sh` sets deliberately).
+
+**Files git ignores are copied too.** `install.sh` excludes `.git` and nothing
+else, so a `secrets.env` beside your checkout is installed into the box while
+`git status` calls the tree clean. The drill refuses a checkout carrying any,
+listing them as git does with `!!`; `--allow-dirty` drills them anyway, stamps
+the ref field `-dirty` and names them in the record's notes. Move them out of
+the checkout, or know that they shipped.
+
 What it emits is a **skeleton**: it says so in its own last paragraph, and that
 paragraph is deleted by whoever writes what the findings *mean* for the
 release. A generated file that reads like a finished one is worse than no file
