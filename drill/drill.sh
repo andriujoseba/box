@@ -876,7 +876,7 @@ preflight_paths() {   # <paths> — print them indented, at most TREE_PATHS_MAX
 # uncommitted edit would put a SHA in the record that is not what ran — the
 # same class of untruth this issue closes, re-entered by the back door.
 preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
-  local paths ign head
+  local paths ign headline
   if ! record_tree_is_git "$1"; then
     echo "drill: $1 is not a git checkout, or git is not installed." >&2
     echo "  The drill installs the tree it runs from and the record names that" >&2
@@ -898,7 +898,8 @@ preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
   # The headline is about what is actually there. "Dirty worktree" for a clean
   # tree with a secrets.env beside it would send the operator to `git status`,
   # which is precisely the reader that cannot see it.
-  if [ -n "$paths" ]; then head="a dirty worktree"; else head="a tree git is not showing you"; fi
+  if [ -n "$paths" ]; then headline="a dirty worktree"
+  else headline="a tree git is not showing you"; fi
   if [ "$2" = 1 ]; then
     echo "drill: --allow-dirty: this tree is not the commit, and the run will go ahead." >&2
     echo "  The record's ref field will be stamped '-dirty': it names a commit" >&2
@@ -911,7 +912,7 @@ preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
     fi
     return 0
   fi
-  echo "drill: REFUSING to drill $head." >&2
+  echo "drill: REFUSING to drill $headline." >&2
   echo "  The tree under test is this checkout, and the record names its commit." >&2
   echo "  These paths are not in that commit, so the record would be a lie:" >&2
   [ -n "$paths" ] && preflight_paths "$paths"
