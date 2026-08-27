@@ -99,6 +99,26 @@ YES=0
 # crosses the sg re-exec as DRILL_ALLOW_DIRTY, like every other pin, because the
 # second stage re-runs the same refusal.
 ALLOW_DIRTY="${DRILL_ALLOW_DIRTY:-0}"
+# ...and what the tree WAS when it was installed, which is a different fact from
+# what the tree is now and the only one a record may use (round 2, #225). The
+# checkout is local and mutable and the drill runs for forty minutes on top of
+# it, so every field describing the tree is measured ONCE — beside the preflight,
+# before install.sh copies anything — and then carried. These five cross the sg
+# re-exec like every other pin because the shell that writes the record is not
+# the shell that took the measurement.
+#
+# Empty TREE_DIRTY means 'not yet latched', which is how a stage-1 start looks;
+# the latch in the preflight block fills all five. The second stage finds them
+# already set and cannot re-answer a question whose answer has since changed.
+TREE_DIRTY="${DRILL_TREE_DIRTY:-}"
+TREE_DIRTY_PATHS="${DRILL_TREE_DIRTY_PATHS:-}"
+# The record's three tree fields, pinned from the latch through the mechanism
+# record_collect already advertises: it fills only what is not already set, so a
+# caller holding a better answer than the world can give at summary time simply
+# supplies it. Empty here is 'nothing latched', and collection measures instead.
+REC_TREE_REPO="${DRILL_TREE_REPO:-}"
+REC_TREE_REF="${DRILL_TREE_REF:-}"
+REC_TREE_SHA="${DRILL_TREE_SHA:-}"
 # KEEP crossed the exec as a bare `KEEP=`, which this line then set to 0 before
 # anything could read it: --keep-boxes was inert in the second stage — the whole
 # stage — so the teardown phase always ran and the record could never say the run
@@ -162,11 +182,20 @@ done
 #
 # The clock MUST cross: the shell that writes the record is not the shell that
 # started the run, so a $SECONDS-based duration would measure from this line
-# rather than the drill's start.
+# rather than the drill's start. The tree's dirtiness crosses for the same
+# reason and one more: it is not merely inconvenient to re-measure on the far
+# side, it is WRONG to, because by then install.sh has already copied the tree
+# and the answer describes a checkout the drill is no longer running (round 2,
+# #225).
 reexec_in_group() {
   export IN_GROUP=1 \
          DRILL_OWNS_SETUP="$OWNS" \
          DRILL_ALLOW_DIRTY="$ALLOW_DIRTY" \
+         DRILL_TREE_DIRTY="$TREE_DIRTY" \
+         DRILL_TREE_DIRTY_PATHS="$TREE_DIRTY_PATHS" \
+         DRILL_TREE_REPO="$REC_TREE_REPO" \
+         DRILL_TREE_REF="$REC_TREE_REF" \
+         DRILL_TREE_SHA="$REC_TREE_SHA" \
          DRILL_KEEP="$KEEP" \
          DRILL_RECORD="$RECORD" \
          DRILL_RUN_ID="$RUN_ID" \
@@ -437,6 +466,18 @@ record_tree_ref() {   # <dir> → the branch, the tag, or 'detached' for neither
   esac
 }
 
+# The ref field a RECORD carries, which is the ref above plus the price of
+# --allow-dirty: a dirty tree's record stops naming a branch anyone can check
+# out and names the commit it DIVERGED from, marked. One spelling of that stamp,
+# because it is produced in two places — the latch that measures the tree before
+# the install, and record_collect's fallback for a caller that never latched —
+# and a stamp spelled twice is a stamp that can differ (round 2, #225).
+record_tree_ref_stamped() {   # <dir> <dirty:0|1> → the record's ref field
+  if [ "$2" = 1 ]; then printf '%s-dirty' "$(record_tree_sha "$1")"
+  else record_tree_ref "$1"
+  fi
+}
+
 # The repository, off origin. A GitHub URL in any of the shapes git hands out
 # reduces to the owner/repo every record before this one carried by hand, so old
 # and new records stay comparable and a FORK is visible as one — the case this
@@ -454,7 +495,7 @@ record_tree_ref() {   # <dir> → the branch, the tag, or 'detached' for neither
 # verbatim arm is rebuilt without its userinfo too: the property worth having
 # is that NO credential reaches a record, not that no github.com one does.
 record_tree_repo() {   # <dir> → owner/repo, the remote URL, or a stated absence
-  local url host path
+  local url host path repo bare
   url="$(git -C "$1" remote get-url origin 2>/dev/null)"
   [ -n "$url" ] || { printf 'no origin remote'; return 0; }
   case "$url" in
@@ -472,16 +513,36 @@ record_tree_repo() {   # <dir> → owner/repo, the remote URL, or a stated absen
   # business; everything after it is the host the record should name.
   host="${host##*@}"
   # The port is matched off but kept: github.com:22 is github.com, while a
-  # private host's port is part of what the verbatim arm is for.
-  case "${host%%:*}" in
-    github.com) path="${path%.git}"; printf '%s' "${path%/}" ;;
+  # private host's port is part of what the verbatim arm is for. The match is
+  # case-INSENSITIVE on a lowered copy, hostnames being case-insensitive: a
+  # `GitHub.com` origin is the same host and its record should be as comparable
+  # as any other. Only the comparison is lowered — the verbatim arm below still
+  # prints the host as the remote spells it, that arm being $url minus the
+  # userinfo and nothing else (round 2, #225).
+  repo=''
+  bare="${host%%:*}"
+  if [ "${bare,,}" = github.com ]; then
+    # The trailing slash comes off FIRST. Stripping '.git' before it leaves
+    # 'owner/repo.git' for a `…/box.git/` origin, because the suffix the second
+    # strip is looking for is no longer at the end (round 2, #225).
+    repo="${path%/}"; repo="${repo%.git}"; repo="${repo%/}"
+  fi
+  # A reduction that produced NOTHING is not a reduction. `https://user:pw@
+  # github.com` with no path yields an empty owner/repo, and an empty field in a
+  # record reads as a formatting slip rather than a fact — this function's other
+  # absence ('no origin remote') is a stated one. There is no owner/repo to
+  # name, so the URL goes to the verbatim arm like any other URL that does not
+  # reduce, credential-stripped exactly the same way (round 2, #225).
+  if [ -n "$repo" ]; then
+    printf '%s' "$repo"
+  else
     # Rebuilt, not echoed: this is $url minus the userinfo and nothing else.
-    *) case "$url" in
-         *://*) printf '%s://%s' "${url%%://*}" "$host"
-                if [ -n "$path" ]; then printf '/%s' "$path"; fi ;;
-         *)     printf '%s:%s' "$host" "$path" ;;
-       esac ;;
-  esac
+    case "$url" in
+      *://*) printf '%s://%s' "${url%%://*}" "$host"
+             if [ -n "$path" ]; then printf '/%s' "$path"; fi ;;
+      *)     printf '%s:%s' "$host" "$path" ;;
+    esac
+  fi
   return 0
 }
 
@@ -556,7 +617,7 @@ record_check_path() {   # <path> — empty path means no record was asked for
 # Fill the REC_* set from the world. Every field is ${...:-} against itself, so
 # a caller (the test, or an operator scripting around this) can pin any one of
 # them and have the rest collected around it.
-record_collect() {   # <checkout-dir> <install-root> <keep-boxes:0|1>
+record_collect() {   # <checkout-dir> <install-root> <keep-boxes:0|1> <tree-dirty:0|1>
   local prefix='' inv
   REC_VERSION="${REC_VERSION:-$(record_version "$2")}"
   REC_DATE="${REC_DATE:-$(date -I 2>/dev/null)}"
@@ -568,15 +629,16 @@ record_collect() {   # <checkout-dir> <install-root> <keep-boxes:0|1>
   REC_TREE_REPO="${REC_TREE_REPO:-$(record_tree_repo "$1")}"
   REC_TREE_SHA="${REC_TREE_SHA:-$(record_tree_sha "$1")}"
   # A dirty tree reaches this line only through --allow-dirty, the preflight
-  # having refused it otherwise. The stamp is the whole price of that flag: the
-  # record's ref field stops naming a branch anyone can check out and names the
-  # commit it DIVERGED from, marked. Nothing downstream has to remember the flag
-  # was given, because the tree still says so.
-  if record_tree_dirty "$1" >/dev/null; then
-    REC_TREE_REF="${REC_TREE_REF:-$REC_TREE_SHA-dirty}"
-  else
-    REC_TREE_REF="${REC_TREE_REF:-$(record_tree_ref "$1")}"
-  fi
+  # having refused it otherwise, and the stamp is the whole price of that flag.
+  #
+  # $4 is the latched INSTALL-TIME fact and not a fresh reading, which is the
+  # difference between a record and a guess: this runs at the END of a
+  # forty-minute drill, and the checkout it can see here is not necessarily the
+  # tree that was copied into the box (round 2, #225). In the drill all three
+  # fields above arrive latched and none of these fallbacks fire; they stay for a
+  # caller holding no latch, for which a live reading is the only answer there
+  # is — and which is only correct before anything has been installed.
+  REC_TREE_REF="${REC_TREE_REF:-$(record_tree_ref_stamped "$1" "$4")}"
   # ONE candidate ref, box's own (#214). The record used to carry a second —
   # the converger the mint installed into every guest, read off the mint's own
   # stamp — because box pinned it and a drill has to name what it drilled.
@@ -602,9 +664,10 @@ record_collect() {   # <checkout-dir> <install-root> <keep-boxes:0|1>
   inv="${prefix}bash drill/drill.sh"
   [ "$3" = 1 ] && inv="$inv --keep-boxes"
   # --allow-dirty changes what was drilled at least as much as --keep-boxes
-  # does, so it is in the line too — and it is read off the TREE rather than off
-  # a flag, for the same reason every other field here is.
-  record_tree_dirty "$1" >/dev/null && inv="$inv --allow-dirty"
+  # does, so it is in the line too — off the latched reading of the TREE rather
+  # than off the flag the operator typed, for the same reason every other field
+  # here is a measurement.
+  [ "$4" = 1 ] && inv="$inv --allow-dirty"
   REC_INVOCATION="${REC_INVOCATION:-$inv}"
   return 0
 }
@@ -750,11 +813,51 @@ preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
   echo "  anyway and stamps the record's ref field '-dirty'." >&2
   return 2
 }
+
+# The one moment the tree's identity has an answer (round 2, #225).
+#
+# A record describes what was INSTALLED AND DRILLED, and install.sh copies the
+# tree in stage 1, forty minutes before the record is written. Every field
+# describing the tree used to re-ask git at summary time instead, and by then
+# git is answering about a different tree than the one in the box. The
+# reproduced case: a run starts dirty under --allow-dirty, the operator stashes
+# or commits during the drill, and collection reads a clean checkout — so the
+# record names a branch with no '-dirty' stamp and drops --allow-dirty from the
+# line that claims to reproduce it, while the installed tree still holds the
+# uncommitted work that actually ran. A record naming a commit anyone can check
+# out and that is NOT what ran is the exact untruth #225 closes, re-entered
+# through the one door left open. The SHA and the ref go the same way for the
+# same reason: a mid-run commit or branch switch moves both.
+#
+# So the tree is read ONCE, here, before anything is installed, and the answers
+# are latched. An already-set TREE_DIRTY is the stage-1 measurement arriving over
+# the sg re-exec, and re-answering any of this in the second stage is the defect
+# itself. The dirty PATHS are latched with the flag, because the NOTE that names
+# them is raised in that second stage and git cannot be asked for them there.
+#
+# It is still a measurement and never a flag — it reads the tree, not
+# $ALLOW_DIRTY — it is simply taken at the moment it describes.
+tree_ident_latch() {   # <dir> — the tree fields a record carries, measured once
+  [ -z "$TREE_DIRTY" ] || return 0
+  if TREE_DIRTY_PATHS="$(record_tree_dirty "$1")"; then
+    TREE_DIRTY=1
+  else
+    TREE_DIRTY=0
+    TREE_DIRTY_PATHS=''
+  fi
+  REC_TREE_REPO="$(record_tree_repo "$1")"
+  REC_TREE_SHA="$(record_tree_sha "$1")"
+  REC_TREE_REF="$(record_tree_ref_stamped "$1" "$TREE_DIRTY")"
+  return 0
+}
 # <<< drill preflight
 
 resolve_install_paths "$(id -u)"
 preflight_uid "$(id -u)" || exit 2
 preflight_tree "$CHECKOUT" "$ALLOW_DIRTY" || exit 2
+# After the refusal and before the install: a tree that got past the line above
+# is one this run will drill, and this is what it looked like when it did.
+tree_ident_latch "$CHECKOUT"
 ledger_check_expect || exit 2
 record_check_path "$RECORD" || exit 2
 
@@ -1041,14 +1144,17 @@ export PATH="$BOX_BINDIR:$PATH"
 # is stamped for it; what the note adds is WHICH paths, which the stamp cannot
 # carry (D5, #225).
 #
-# This is the SECOND read of the tree's dirtiness, the stamp in record_collect()
-# being the first, and they are deliberately independent: both describe the tree
-# as it is, not the flag the operator typed, so neither latches the other's
-# answer. A tree cleaned between them therefore emits an unstamped record with
-# no note beside it — which is the honest reading of a tree that is now clean,
-# and the reason to prefer measuring twice to remembering once.
-if [ "$ALLOW_DIRTY" = 1 ] && dirty_paths="$(record_tree_dirty "$CHECKOUT")"; then
-  note "the worktree was DIRTY and --allow-dirty was given: this run drilled uncommitted work, and the record's ref field is stamped '-dirty' because it cannot be reproduced from the commit it names — $(printf '%s' "$dirty_paths" | tr '\n' ';')"
+# It is NOT a second read of the tree. This line and the record's stamp are one
+# measurement, taken by tree_ident_latch before install.sh copied anything and
+# carried here over the sg re-exec, which is why the paths are a variable and not
+# a `git status` — asking again from this stage was the defect (round 2, #225).
+# An earlier version read the tree twice and called the two reads deliberately
+# independent; a run that started dirty and was cleaned mid-drill then emitted an
+# unstamped record with no note, describing a checkout nobody had installed. The
+# tree that matters stopped existing the moment it was copied, so remembering
+# once beats measuring twice: there is only one moment this note is true about.
+if [ "$TREE_DIRTY" = 1 ]; then
+  note "the worktree was DIRTY and --allow-dirty was given: this run drilled uncommitted work, and the record's ref field is stamped '-dirty' because it cannot be reproduced from the commit it names — $(printf '%s' "$TREE_DIRTY_PATHS" | tr '\n' ';')"
 fi
 
 # PROVE THE INSTALLER'S CONTRACT (#64) — first, before the clean or anything
@@ -1843,7 +1949,7 @@ fi
 # changed underfoot — loud on stderr, in the findings, and never silent.
 if [ -n "${RECORD:-}" ]; then
   REC_RUN_ID="${REC_RUN_ID:-${RUN_ID:-}}"
-  record_collect "$CHECKOUT" "$BOX_SHARE" "$KEEP"
+  record_collect "$CHECKOUT" "$BOX_SHARE" "$KEEP" "$TREE_DIRTY"
   if record_write "$RECORD"; then
     echo
     inf "record written: $RECORD"
