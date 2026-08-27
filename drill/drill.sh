@@ -6,13 +6,27 @@
 #     unit, and creates and deletes instances. Never run it on a machine you care
 #     about.
 #
+#   git clone https://github.com/heavy-duty/box && cd box
 #   bash drill/drill.sh                  # asks first
 #   bash drill/drill.sh --yes            # no prompt (CI, or you've read it)
-#   bash drill/drill.sh --ref main       # drill a different branch of the repo
 #   bash drill/drill.sh --keep-boxes     # leave the boxes up to poke at
+#   bash drill/drill.sh --allow-dirty    # drill uncommitted work (see below)
 #   DRILL_EXPECT=90 bash drill/drill.sh  # raise the floor (a whole number)
 #   bash drill/drill.sh --emit-record drills/0.10.0.md    # write the record
 #   bash drill/drill.sh --run-id drill-0.10.0-20260819-01 # share one ID
+#
+# THE TREE UNDER TEST IS THIS CHECKOUT, always. The drill installs box by running
+# the install.sh beside it against the working tree, and no flag points it
+# anywhere else: to drill a branch, check that branch out (#225). It used to take
+# --repo/--ref and install over the network, so the harness came from your
+# checkout and the subject came from main — standing on a branch and running the
+# two lines above drilled a tree nobody was reading.
+#
+# A DIRTY WORKTREE IS REFUSED, and so is a run as root: the record names the
+# commit, which an uncommitted edit makes a lie, and box installs by uid, which
+# only a non-root drill has ever exercised. --allow-dirty runs a dirty tree
+# anyway and stamps the record's ref field '-dirty' — a record that cannot be
+# reproduced says so on its face.
 #
 # The run is short unless it emits at least the expected number of verdicts:
 # a phase that never executed used to report a clean sweep (#153). A skip that
@@ -20,7 +34,8 @@
 #
 # --emit-record <path> writes drills/README.md's six-item record with every
 # field the harness already knows filled in (#152): the run ID, the host, the
-# candidate refs and the SHAs they resolve to, the numbers against #153's
+# repository, branch and commit MEASURED from this checkout, the numbers
+# against #153's
 # floor, the wall clock, the findings and the isolation audit answers, all
 # uncoloured (#154). It is a SKELETON — what
 # a failure means for the release is a judgement a script must not fabricate,
@@ -69,9 +84,21 @@ set -u
 # EVERY setting the second stage needs arrives as environment, and every one of
 # them reads that environment HERE rather than being clobbered to a default the
 # flag can no longer change.
-REPO="${BOX_REPO:-heavy-duty/box}"
-REF="${BOX_REF:-main}"
+# There is no --repo and no --ref, and no environment pass-through behind them:
+# the two installer variables that carried a repository and a ref across the sg
+# re-exec are gone with the flags, and the acceptance test for this is that
+# neither name survives anywhere in this file, comments included (#225).
+# The subject of the drill is the checkout the harness ships in, so the
+# only thing to resolve is where that checkout is: drill/drill.sh's parent's
+# parent, off SELF, which readlink has already made absolute. A flag naming a
+# second tree is what let the harness and the subject come from different
+# commits, and it is not replaced by a safer flag — it is removed.
 YES=0
+# --allow-dirty is the one escape hatch, and it buys a stamped record rather
+# than a silent one: see the preflight block for what it costs (D5, #225). It
+# crosses the sg re-exec as DRILL_ALLOW_DIRTY, like every other pin, because the
+# second stage re-runs the same refusal.
+ALLOW_DIRTY="${DRILL_ALLOW_DIRTY:-0}"
 # KEEP crossed the exec as a bare `KEEP=`, which this line then set to 0 before
 # anything could read it: --keep-boxes was inert in the second stage — the whole
 # stage — so the teardown phase always ran and the record could never say the run
@@ -85,25 +112,31 @@ KEEP="${DRILL_KEEP:-0}"
 RECORD="${DRILL_RECORD:-}"
 RUN_ID="${DRILL_RUN_ID:-}"
 SELF="$(readlink -f "$0")"
+# The checkout root, and the only tree this run will install (#225). Derived
+# from SELF and not from $PWD: the drill is run as `bash drill/drill.sh` from
+# the repository root by every document that mentions it, but a run from
+# anywhere else must still drill the tree the script belongs to rather than
+# whichever directory the operator happened to be standing in.
+CHECKOUT="$(cd -- "$(dirname -- "$SELF")/.." && pwd)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes|-y) YES=1; shift ;;
     --keep-boxes) KEEP=1; shift ;;
-    --repo) REPO="$2"; shift 2 ;;
-    --ref) REF="$2"; shift 2 ;;
+    --allow-dirty) ALLOW_DIRTY=1; shift ;;
     --emit-record) RECORD="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     --in-group) shift; break ;;                       # internal: see below
     # The help IS the header block above, printed verbatim, so a line added
     # there must move this window with it — 18 → 23 for the five lines the
     # probe floor added, 23 → 39 for the sixteen the record added, 39 → 54 for
-    # the phase list this window used to cut off in the middle of (#154). It
+    # the phase list this window used to cut off in the middle of (#154), 54 →
+    # 69 for the co-location contract and the dirty-tree refusal (#225). It
     # ended on "C. Isolation baseline" while the list ran to M, which is how a
     # tool asked directly for its phases answered with four of eight. The whole
     # list is inside the window now, and test/cli.sh asserts that by driving
     # --help against the ledger's own keys rather than against a fixed string.
-    -h|--help) sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,69p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "drill: unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -116,7 +149,7 @@ done
 # interpolated into that string is shell SOURCE and not data. This line used to
 # read `DRILL_RECORD='$RECORD' … bash '$SELF'`, and an apostrophe — legal in a
 # Unix pathname, legal in a run ID, and constrained by neither --emit-record nor
-# --run-id nor --repo nor --ref — closed the quotes and reparsed the remainder as
+# --run-id — closed the quotes and reparsed the remainder as
 # a command. It exited 127 forty minutes in, on the far side of the startup guard
 # that exists to catch bad record paths early (#152).
 #
@@ -133,8 +166,7 @@ done
 reexec_in_group() {
   export IN_GROUP=1 \
          DRILL_OWNS_SETUP="$OWNS" \
-         BOX_REPO="$REPO" \
-         BOX_REF="$REF" \
+         DRILL_ALLOW_DIRTY="$ALLOW_DIRTY" \
          DRILL_KEEP="$KEEP" \
          DRILL_RECORD="$RECORD" \
          DRILL_RUN_ID="$RUN_ID" \
@@ -323,9 +355,13 @@ ledger_line() {   # the per-phase counts a single total can never make obvious
 # waivers were written under. So the emitted record ends by saying it is a
 # draft, in the rendered text and not in an HTML comment nobody sees.
 
-record_version() {   # the VERSION of the tree the install actually landed
+record_version() {   # <install-root> — the VERSION of the tree that landed
   local v
-  v="$(cat "$HOME/.local/share/box/current/VERSION" 2>/dev/null)"
+  # The root is an ARGUMENT because it is resolved by uid now (#225): a root
+  # install lands in /opt/box and a per-user one in ~/.local/share/box, and a
+  # function that hard-codes either reads the wrong file for half the hosts
+  # that run it — silently, since a missing file becomes 'unknown'.
+  v="$(cat "$1/current/VERSION" 2>/dev/null)"
   printf '%s' "${v:-unknown}"
 }
 
@@ -357,49 +393,79 @@ record_host() {
     "$cpu" "$mem" "$os" "$kernel" "$incus" "$virt"
 }
 
-# A ref without its SHA proves nothing later — the branch moves and the record
-# stops naming a tree. git first because it costs no rate limit and answers for
-# any ref; the GitHub API's `sha` media type second, because a drill host has
-# curl by construction (it fetched install.sh with it) and may not have git.
-# Both answers go through one validator: an error page and a rate-limit body are
-# not SHAs, and 'unresolved' in the record is honest where a truncated HTML
-# fragment would be a lie with a monospace font on.
-record_sha() {   # <repo> <ref> → the seven-char commit, or 'unresolved'
-  local repo="$1" ref="$2" sha=''
-  # A ref that IS a commit resolves to itself; asking a remote to expand it
-  # returns nothing, which is how a pinned drill used to record 'unresolved'.
-  if [ "${#ref}" -eq 40 ] && [ -z "${ref//[0-9a-f]/}" ]; then
-    printf '%s' "${ref:0:7}"; return 0
-  fi
-  # GIT_TERMINAL_PROMPT=0 and a timeout are not belt-and-braces: a repo name
-  # that 404s (a typo'd --repo, a private fork) makes git ask for credentials
-  # on the terminal, and an unattended drill would sit at that prompt forever —
-  # forty minutes of work waiting on a username nobody is there to type.
-  # An ANNOTATED tag resolves to the tag OBJECT: a 40-hex string that is a valid
-  # object and not a tree anyone can check out — and the validator below cannot
-  # tell, because it is hex. The commit lives on a SECOND ref, `refs/tags/<t>^{}`,
-  # and ls-remote matches a pattern against the ref's tail component, so an exact
-  # `<t>` selects the tag object ALONE. Asking for the peel is the only way to be
-  # sent it; a peel-preferring reader over a `"$ref"`-only query prefers a line
-  # that never arrives. Both patterns go out, the peeled answer wins where there
-  # is one, and a branch or lightweight tag — which has no peeled ref — is
-  # unaffected, because a pattern matching nothing changes no output.
-  if command -v git >/dev/null 2>&1; then
-    sha="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true timeout -k 5 25 \
-             git ls-remote "https://github.com/$repo" "$ref" "$ref^{}" 2>/dev/null \
-           | awk '$2 ~ /\^\{\}$/ { peeled = substr($1, 1, 7); exit }
-                  NR == 1       { first  = substr($1, 1, 7) }
-                  END           { if (peeled != "") print peeled; else print first }')"
-  fi
-  if [ -z "$sha" ] && command -v curl >/dev/null 2>&1; then
-    sha="$(curl -fsSL -m 20 -H 'Accept: application/vnd.github.sha' \
-             "https://api.github.com/repos/$repo/commits/$ref" 2>/dev/null \
-           | cut -c1-7)"
-  fi
+# The tree's own identity, MEASURED (#225). record_sha() lived here: it took a
+# repo and a ref off the command line and asked a REMOTE to expand them, because
+# the drill installed over the network and those two strings were the only thing
+# it knew about its subject. They described what had been REQUESTED, never what
+# ran — and drills/README.md's standard for a record is precisely the opposite,
+# a record that does not say what it drilled proving nothing later. The subject
+# is the checkout now, so the three fields are read off it with git, and the
+# remote resolution, its rate-limit fallback and its 'unresolved' verdict go
+# with the flag that made them necessary.
+#
+# All three take the checkout as an argument and none of them touch $PWD: the
+# drill re-execs itself through `sg` and the shell that writes the record is not
+# the shell that started the run.
+record_tree_sha() {   # <dir> → the seven-char commit, or 'unresolved'
+  local sha
+  sha="$(git -C "$1" rev-parse --short=7 HEAD 2>/dev/null)"
   case "$sha" in
     ''|*[!0-9a-f]*) printf 'unresolved' ;;
     *)              printf '%s' "$sha" ;;
   esac
+}
+
+record_tree_ref() {   # <dir> → the branch, or 'detached' where there is none
+  local ref
+  ref="$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  # A detached HEAD — which is what a `git checkout <tag>` leaves, and how a
+  # release candidate is most often drilled — answers the literal string HEAD.
+  # 'HEAD' names no tree to a later reader; 'detached' at least says why the
+  # field is empty, and the SHA beside it is the fact that matters there.
+  case "$ref" in
+    ''|HEAD) printf 'detached' ;;
+    *)       printf '%s' "$ref" ;;
+  esac
+}
+
+# The repository, off origin. GitHub's two URL forms and an optional .git suffix
+# reduce to the owner/repo every record before this one carried by hand, so old
+# and new records stay comparable and a FORK is visible as one — the case this
+# issue was measured on, where the 0.10.0 candidate lived on andriujoseba/box.
+# Anything that is not a GitHub URL is carried VERBATIM rather than mangled into
+# that shape: a record naming a path or a private host says so.
+record_tree_repo() {   # <dir> → owner/repo, the remote URL, or a stated absence
+  local url
+  url="$(git -C "$1" remote get-url origin 2>/dev/null)"
+  [ -n "$url" ] || { printf 'no origin remote'; return 0; }
+  case "$url" in
+    https://github.com/*|http://github.com/*|git@github.com:*|ssh://git@github.com/*)
+      url="${url#*github.com}"; url="${url#[:/]}"; url="${url%.git}"
+      printf '%s' "${url%/}" ;;
+    *) printf '%s' "$url" ;;
+  esac
+}
+
+# The paths git reports as changed, one per line — the message the refusal
+# prints, and the reason the refusal exists (D5, #225). Exit 0 means DIRTY, so a
+# caller reads it as the question it asks. --porcelain covers staged, unstaged
+# and untracked alike: an untracked file is not in the commit the record names
+# either, and `install.sh` copies the whole tree, so it is in the box that ran.
+record_tree_dirty() {   # <dir> → the dirty paths on stdout; 0 when dirty
+  local out
+  out="$(git -C "$1" status --porcelain 2>/dev/null)" || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# Is this a git checkout at all? Everything above answers 'unresolved', 'no
+# origin remote' or clean-looking for a tree git cannot read, and each of those
+# is a record that quietly says less than it appears to. The preflight asks this
+# first and refuses, so the softer answers are only ever reached by a caller
+# that already knows it is holding a checkout.
+record_tree_is_git() {   # <dir> → 0 when git can read <dir> as a work tree
+  command -v git >/dev/null 2>&1 || return 1
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
 # drills/README.md's worked example writes "41 minutes wall clock". $SECONDS
@@ -448,15 +514,27 @@ record_check_path() {   # <path> — empty path means no record was asked for
 # Fill the REC_* set from the world. Every field is ${...:-} against itself, so
 # a caller (the test, or an operator scripting around this) can pin any one of
 # them and have the rest collected around it.
-record_collect() {   # <box-repo> <box-ref> <keep-boxes:0|1>
+record_collect() {   # <checkout-dir> <install-root> <keep-boxes:0|1>
   local prefix='' inv
-  REC_VERSION="${REC_VERSION:-$(record_version)}"
+  REC_VERSION="${REC_VERSION:-$(record_version "$2")}"
   REC_DATE="${REC_DATE:-$(date -I 2>/dev/null)}"
   REC_RUN_ID="${REC_RUN_ID:-$(record_run_id "$REC_VERSION" "${REC_DATE//-/}")}"
   REC_HOST="${REC_HOST:-$(record_host)}"
-  REC_BOX_REPO="${REC_BOX_REPO:-$1}"
-  REC_BOX_REF="${REC_BOX_REF:-$2}"
-  REC_BOX_SHA="${REC_BOX_SHA:-$(record_sha "$REC_BOX_REPO" "$REC_BOX_REF")}"
+  # The three fields the issue exists for (D4, #225). They are MEASUREMENTS of
+  # the tree that ran, not the arguments that asked for one, which is why they
+  # are collected here — in the world-touching half — rather than passed in.
+  REC_TREE_REPO="${REC_TREE_REPO:-$(record_tree_repo "$1")}"
+  REC_TREE_SHA="${REC_TREE_SHA:-$(record_tree_sha "$1")}"
+  # A dirty tree reaches this line only through --allow-dirty, the preflight
+  # having refused it otherwise. The stamp is the whole price of that flag: the
+  # record's ref field stops naming a branch anyone can check out and names the
+  # commit it DIVERGED from, marked. Nothing downstream has to remember the flag
+  # was given, because the tree still says so.
+  if record_tree_dirty "$1" >/dev/null; then
+    REC_TREE_REF="${REC_TREE_REF:-$REC_TREE_SHA-dirty}"
+  else
+    REC_TREE_REF="${REC_TREE_REF:-$(record_tree_ref "$1")}"
+  fi
   # ONE candidate ref, box's own (#214). The record used to carry a second —
   # the converger the mint installed into every guest, read off the mint's own
   # stamp — because box pinned it and a drill has to name what it drilled.
@@ -473,9 +551,18 @@ record_collect() {   # <box-repo> <box-ref> <keep-boxes:0|1>
   # gone from this prefix with the thing it pinned (#214): box reads no such
   # variable at mint, so carrying one here would name an environment that
   # changes nothing and read as a dependency box no longer has.
+  #
+  # It names no repo and no ref any more, and that is the point rather than an
+  # omission: the tree is the checkout, so the line that reproduces the run is
+  # the line the quickstart already prints, run from the commit the field above
+  # names. A --repo/--ref pair here described the request and not the run (#225).
   [ -n "${DRILL_EXPECT:-}" ] && prefix="${prefix}DRILL_EXPECT=$DRILL_EXPECT "
-  inv="${prefix}bash drill/drill.sh --repo $1 --ref $2"
+  inv="${prefix}bash drill/drill.sh"
   [ "$3" = 1 ] && inv="$inv --keep-boxes"
+  # --allow-dirty changes what was drilled at least as much as --keep-boxes
+  # does, so it is in the line too — and it is read off the TREE rather than off
+  # a flag, for the same reason every other field here is.
+  record_tree_dirty "$1" >/dev/null && inv="$inv --allow-dirty"
   REC_INVOCATION="${REC_INVOCATION:-$inv}"
   return 0
 }
@@ -492,7 +579,7 @@ record_write() {   # <path> — composes the REC_* set and the ledger into a rec
     printf -- '- **Host:** %s\n' "$REC_HOST"
     printf -- '- **Date:** %s\n' "$REC_DATE"
     printf -- '- **Candidate refs:**\n'
-    printf -- '  - box `%s` @ `%s` (%s)\n' "$REC_BOX_REF" "$REC_BOX_SHA" "$REC_BOX_REPO"
+    printf -- '  - box `%s` @ `%s` (%s)\n' "$REC_TREE_REF" "$REC_TREE_SHA" "$REC_TREE_REPO"
     printf '\n## What ran\n\n'
     printf '`%s`\n\n' "$REC_INVOCATION"
     # The denominator is the FLOOR, never pass+fail. #153 is the whole reason:
@@ -541,6 +628,91 @@ record_write() {   # <path> — composes the REC_* set and the ledger into a rec
 }
 # <<< drill record
 
+# >>> drill preflight (#225) — extracted by test/cli.sh and DRIVEN. Everything
+# here is a refusal, and a refusal that has never been executed is a guess about
+# what the script does. Keep it self-contained: it may assume the record block
+# above it (record_tree_*) and nothing else.
+#
+# All three guards answer the same question — is the tree in front of us the
+# tree this run will install and name? — and all three run BEFORE the consent
+# prompt, beside the DRILL_EXPECT and record-path guards, because an operator
+# who cannot run this must find out in the first second and not in the summary
+# forty minutes on.
+
+# Where install.sh will put the tree, resolved the way install.sh resolves it
+# (install.sh:39-45). The drill used to wipe and then verify ~/.local/share/box
+# unconditionally while the installer chose by uid, so a root run installed to
+# /opt/box, the verification file it read never existed, and the mismatch fired
+# a FATAL that told the operator their local drill.sh was stale — a confidently
+# wrong diagnosis of a path bug. BOX_HOME and BOX_BIN win here exactly as they
+# win there; a drill that ignored them would verify a directory the install had
+# been told not to use.
+resolve_install_paths() {   # <uid> — sets BOX_SHARE and BOX_BINDIR
+  if [ "$1" -eq 0 ]; then
+    BOX_SHARE="${BOX_HOME:-/opt/box}"
+    BOX_BINDIR="${BOX_BIN:-/usr/local/bin}"
+  else
+    BOX_SHARE="${BOX_HOME:-$HOME/.local/share/box}"
+    BOX_BINDIR="${BOX_BIN:-$HOME/.local/bin}"
+  fi
+}
+
+# ...and then refuse uid 0 anyway, up front and by name. Resolving the paths is
+# not the same as supporting the run: every phase below assumes the operator is
+# a non-root member of incus-admin — that is what the sg re-exec is for, what
+# `sudo` is used for, and the tier `box` reports for uid 0 is admin, not the
+# restricted one phases C and E measure. No root run has ever been drilled, and
+# a drill that half-works is the failure mode this whole issue is about. So the
+# answer is a refusal that says which uid it saw and what to do instead, never
+# a diagnosis about a stale script (D6, #225).
+preflight_uid() {   # <uid> — 0 to proceed
+  [ "$1" -eq 0 ] || return 0
+  echo "drill: REFUSING to run as root (uid 0)." >&2
+  echo "  box installs by uid — root installs globally to /opt/box, a normal" >&2
+  echo "  user to ~/.local/share/box — and every phase here assumes the second:" >&2
+  echo "  the incus-admin re-exec, the sudo calls, and the tier box reports." >&2
+  echo "  Run it as the ordinary operator account you would use box from:" >&2
+  echo "    bash drill/drill.sh --yes        # NOT under sudo" >&2
+  echo "  It calls sudo itself for the parts that need root." >&2
+  return 2
+}
+
+# The tree, and the one new failure mode co-location introduces (D5, #225).
+# Before this change the ref was a name the operator typed and the tree was
+# whatever the network served; now the tree is local and mutable, so an
+# uncommitted edit would put a SHA in the record that is not what ran — the
+# same class of untruth this issue closes, re-entered by the back door.
+preflight_tree() {   # <dir> <allow-dirty:0|1> — 0 to proceed
+  local paths
+  if ! record_tree_is_git "$1"; then
+    echo "drill: $1 is not a git checkout, or git is not installed." >&2
+    echo "  The drill installs the tree it runs from and the record names that" >&2
+    echo "  tree's commit, so a tree with no commit to name cannot be drilled:" >&2
+    echo "    git clone https://github.com/heavy-duty/box && cd box" >&2
+    echo "    bash drill/drill.sh --yes" >&2
+    return 2
+  fi
+  paths="$(record_tree_dirty "$1")" || return 0
+  if [ "$2" = 1 ]; then
+    echo "drill: --allow-dirty: the worktree is dirty and the run will go ahead." >&2
+    echo "  The record's ref field will be stamped '-dirty': it names a commit" >&2
+    echo "  that is NOT what ran, and the run cannot be reproduced from it." >&2
+    printf '%s\n' "$paths" | sed 's/^/    /' >&2
+    return 0
+  fi
+  echo "drill: REFUSING to drill a dirty worktree." >&2
+  echo "  The tree under test is this checkout, and the record names its commit." >&2
+  echo "  These paths are not in that commit, so the record would be a lie:" >&2
+  printf '%s\n' "$paths" | sed 's/^/    /' >&2
+  echo "  Commit or stash them, or re-run with --allow-dirty, which drills them" >&2
+  echo "  anyway and stamps the record's ref field '-dirty'." >&2
+  return 2
+}
+# <<< drill preflight
+
+resolve_install_paths "$(id -u)"
+preflight_uid "$(id -u)" || exit 2
+preflight_tree "$CHECKOUT" "$ALLOW_DIRTY" || exit 2
 ledger_check_expect || exit 2
 record_check_path "$RECORD" || exit 2
 
@@ -668,7 +840,7 @@ EOF
   # drill's duration, which is why the stamp is taken below it and not above.
   DRILL_T0="$(date +%s)"
 
-  phase - "Installing box ($REPO@$REF)"
+  phase - "Installing box from this checkout ($CHECKOUT @ $(record_tree_sha "$CHECKOUT"))"
 
   # Sudo, up front and out loud. Later calls run unattended, and a password
   # prompt swallowed by a '-qq' redirect looks exactly like a hang. This now
@@ -704,34 +876,63 @@ EOF
   # lands side-by-side without flipping under boxes). The drill re-proves a
   # tree from SCRATCH every run — a fresh host, not a converged one — so it
   # removes the whole install root and symlink first.
-  rm -rf "$HOME/.local/share/box" "$HOME/.local/bin/box"
+  rm -rf "$BOX_SHARE" "$BOX_BINDIR/box"
 
   # The installer prompts (install? set up host?) and reads /dev/tty. The drill
   # runs unattended with no tty, so it answers yes to everything via BOX_YES.
   # OWNS still suppresses the setup prompt via BOX_SKIP_SETUP_HOST above.
   export BOX_YES=1
 
-  BOX_REPO="$REPO" BOX_REF="$REF" \
-    bash -c "$(curl -fsSL "https://raw.githubusercontent.com/$REPO/$REF/install.sh")" \
+  # THE change (D1, D2, #225). This used to curl install.sh out of
+  # raw.githubusercontent.com at $REPO@$REF and install whatever the network
+  # served, so the harness came from the checkout and the subject came from
+  # somewhere else — usually main, because that was the default nothing on the
+  # documented command line overrode. Now the checkout supplies both: its own
+  # install.sh, run against its own tree through BOX_INSTALL_SOURCE, which is
+  # the mechanism install.sh already carries for exactly this (install.sh:23)
+  # and the one CI installs through. Phase I is untouched in substance —
+  # install.sh still runs the host setup itself, which is the whole of what
+  # #64's contract asserts.
+  BOX_INSTALL_SOURCE="$CHECKOUT" bash "$CHECKOUT/install.sh" \
     || { echo "install failed"; exit 1; }
-  export PATH="$HOME/.local/bin:$PATH"
+  export PATH="$BOX_BINDIR:$PATH"
 
   # ASSERT WHAT LANDED — never trust that the install obeyed us.
-  # This has bitten twice: once on a lagged CDN tarball, once when a STALE local
-  # drill.sh passed the retired CLAUDEBOX_* env vars to a 0.5.0 install.sh that
-  # reads BOX_* — the vars were ignored, main was installed, and the run drilled
-  # the wrong tree while reporting success. A drill that silently drills the
-  # wrong code is worse than one that fails.
-  got="$(cat "$HOME/.local/share/box/current/INSTALLED_FROM" 2>/dev/null || echo '<unknown>')"
-  if [ "$got" != "$REPO@$REF" ]; then
-    echo "drill: FATAL — asked to install $REPO@$REF, but the tree says '$got'." >&2
-    echo "  Your local drill.sh is probably STALE (pre-0.5.0 it passed CLAUDEBOX_*," >&2
-    echo "  which today's install.sh ignores, so it fell back to main). Fix:" >&2
-    echo "    git fetch origin && git checkout <the branch you mean> && git pull" >&2
-    echo "  then re-run this drill." >&2
+  # The original assertion compared INSTALLED_FROM against the repo@ref pair the
+  # drill had been asked for, and it was written for two incidents where that
+  # pair was not what arrived: a lagged CDN tarball, and a stale drill.sh passing
+  # retired CLAUDEBOX_* vars to an install.sh reading BOX_* — main was installed
+  # and the run drilled the wrong tree while reporting success. There is no ref
+  # to mismatch any more, so that purpose is gone; what survives is the half that
+  # keeps earning its place, THE INSTALL LANDED WHERE WE THINK IT DID, and it now
+  # has a second reason to exist: the destination is chosen by uid, so this read
+  # is the only thing standing between a mis-resolved path and forty minutes of
+  # drilling a tree nobody chose. It reads the path the install actually used
+  # (D6, #225), and it diagnoses nothing it has not measured.
+  want="local:$CHECKOUT"
+  got="$(cat "$BOX_SHARE/current/INSTALLED_FROM" 2>/dev/null || echo '<unknown>')"
+  if [ "$got" != "$want" ]; then
+    echo "drill: FATAL — installed from '$want', but $BOX_SHARE/current says '$got'." >&2
+    echo "  The install root is resolved by uid, the way install.sh resolves it:" >&2
+    echo "    uid $(id -u) → $BOX_SHARE (BOX_HOME/BOX_BIN override both)" >&2
+    echo "  Either the install went somewhere else, or a previous install is" >&2
+    echo "  still in the way. Inspect it, remove it, and re-run:" >&2
+    echo "    ls -l $BOX_SHARE/current" >&2
     exit 1
   fi
-  inf "installed tree confirms: $got"
+  # ...and that what landed is byte-for-byte the checkout's, which is the
+  # criterion the flags could never satisfy: INSTALLED_FROM records the source
+  # that was NAMED, and comparing the delivered CLI against the one in the tree
+  # is the drill asserting the tree it drilled rather than reading its own log.
+  if ! cmp -s "$CHECKOUT/bin/box" "$BOX_SHARE/current/bin/box"; then
+    echo "drill: FATAL — the installed bin/box is not this checkout's." >&2
+    echo "    checkout:  $CHECKOUT/bin/box" >&2
+    echo "    installed: $BOX_SHARE/current/bin/box" >&2
+    echo "  The install reported success, so something rewrote or replaced the" >&2
+    echo "  tree afterwards. Nothing below this line would be drilling your code." >&2
+    exit 1
+  fi
+  inf "installed tree confirms: $got, and bin/box matches the checkout byte for byte"
 
   # The run ID is resolved HERE and not at the end, because its whole purpose is
   # to be handed to whoever drills rig and cast — and they need it while their
@@ -739,7 +940,7 @@ EOF
   # later. It needs the installed VERSION, which is why it cannot be resolved
   # any earlier than this line (#152).
   if [ -z "$RUN_ID" ]; then
-    RUN_ID="$(record_run_id "$(record_version)" "$(date +%Y%m%d)")"
+    RUN_ID="$(record_run_id "$(record_version "$BOX_SHARE")" "$(date +%Y%m%d)")"
   fi
   inf "run ID: $RUN_ID   ← rig's and cast's records for this release use this exact string"
   [ -n "$RECORD" ] && inf "record will be written to: $RECORD"
@@ -788,7 +989,18 @@ EOF
   reexec_in_group
 fi
 
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$BOX_BINDIR:$PATH"
+
+# The dirty-tree note is raised HERE and not beside the refusal that let the run
+# through, because `findings` does not cross the sg re-exec: the array belongs to
+# the shell that `exec`s away, so anything recorded in stage 1 is gone before the
+# record is written. This is the first line of the stage that writes it. A NOTE
+# and not a FAIL — the operator asked for this with --allow-dirty and the record
+# is stamped for it; what the note adds is WHICH paths, which the stamp cannot
+# carry (D5, #225).
+if [ "$ALLOW_DIRTY" = 1 ] && dirty_paths="$(record_tree_dirty "$CHECKOUT")"; then
+  note "the worktree was DIRTY and --allow-dirty was given: this run drilled uncommitted work, and the record's ref field is stamped '-dirty' because it cannot be reproduced from the commit it names — $(printf '%s' "$dirty_paths" | tr '\n' ';')"
+fi
 
 # PROVE THE INSTALLER'S CONTRACT (#64) — first, before the clean or anything
 # else on this host mutates the stack, and before the drill runs setup-host
@@ -810,7 +1022,7 @@ if [ "${DRILL_OWNS_SETUP:-0}" != 1 ]; then
     echo "  install.sh is supposed to run the host setup itself (#64), and setup-host" >&2
     echo "  is supposed to converge in one run (#63). One of those did not happen." >&2
     echo "  reproduce with the output visible:" >&2
-    echo "    ~/.local/share/box/current/host/setup-host.sh" >&2
+    echo "    $BOX_SHARE/current/host/setup-host.sh" >&2
     echo "  or hand setup back to the drill:  DRILL_OWNS_SETUP=1 $SELF" >&2
     exit 1
   fi
@@ -871,7 +1083,7 @@ left="$(incus list --format csv --columns n 2>/dev/null | tr '\n' ' ')"
 # proves is idempotency: a second run over a cleaned host is a no-op that
 # restores the stack rather than a fresh build.
 inf "running setup-host.sh (post-clean convergence: restores dns.mode and any reverted mutations)…"
-if ! timeout -k 10 300 ~/.local/share/box/current/host/setup-host.sh; then
+if ! timeout -k 10 300 "$BOX_SHARE/current/host/setup-host.sh"; then
   echo "drill: setup-host.sh failed or timed out (>5 min)." >&2
   echo "  it should take seconds on a host that already has incus. usual causes:" >&2
   echo "    · instances still attached to boxnet while its ACLs are reconfigured" >&2
@@ -980,7 +1192,7 @@ phase B "B. The box surface"
 # ===========================================================================
 # Compare against the installed tree's VERSION file, not a hardcoded number —
 # a pinned literal here would fail the drill on every release.
-expected="$(cat "$HOME/.local/share/box/current/VERSION" 2>/dev/null || echo '?')"
+expected="$(cat "$BOX_SHARE/current/VERSION" 2>/dev/null || echo '?')"
 v="$(box --version 2>&1)"
 case "$v" in *"$expected"*) ok "box --version → $v" ;; *) no "version mismatch: CLI says '$v', VERSION file says '$expected'" ;; esac
 
@@ -1007,7 +1219,7 @@ box new --name tpl --template nosuch 2>&1 | grep -q 'no such template' \
 # The one rule that keeps templates honest: no key can name a network. Plant a
 # bad template in the installed tree (the drill owns this host), expect the
 # parser to reject it BY NAME, remove it.
-badt="$HOME/.local/share/box/current/templates/cbdrill-bad"
+badt="$BOX_SHARE/current/templates/cbdrill-bad"
 mkdir -p "$badt" && printf 'BOX_IMAGE="x"\nBOX_USER="y"\nBOX_NETWORK="lan"\n' >"$badt/box.env" && : >"$badt/user-data.yaml"
 box new --name tpl --template cbdrill-bad 2>&1 | grep -q "unknown key 'BOX_NETWORK'" \
   && ok "a template cannot name a network — BOX_NETWORK rejected by name" \
@@ -1441,7 +1653,7 @@ phase M "M. Migration — the pre-0.4.0 → box transition (host/migrate-host.sh
 # tag on the OLD network — exactly what a pre-0.4.0 host carries. Then prove
 # migrate-host.sh moves it onto the new stack with its identity intact, and
 # retires the legacy stack only once it is empty.
-MIG="$HOME/.local/share/box/current/host/migrate-host.sh"
+MIG="$BOX_SHARE/current/host/migrate-host.sh"
 if [ ! -f "$MIG" ]; then
   no "migrate-host.sh not installed — cannot drill the transition"
 else
@@ -1536,7 +1748,8 @@ fi
 # criterion is an EXIT STATUS, so the exit status is what has to be driven. Keep
 # the block self-contained: it may assume the verdict helpers, the ledger and
 # the record block above it — all three are extracted alongside it — plus the
-# four settings the record needs from the command line: RECORD, REPO, REF, KEEP.
+# four settings the record needs from around it: RECORD and KEEP off the command
+# line, CHECKOUT off the script's own path and BOX_SHARE off the uid (#225).
 phase - "Summary"
 # Everything the floor grades on is read BEFORE the floor's own verdict, which
 # would otherwise count itself: the shortfall FAIL lands under phase '-' and so
@@ -1581,7 +1794,7 @@ fi
 # changed underfoot — loud on stderr, in the findings, and never silent.
 if [ -n "${RECORD:-}" ]; then
   REC_RUN_ID="${REC_RUN_ID:-${RUN_ID:-}}"
-  record_collect "$REPO" "$REF" "$KEEP"
+  record_collect "$CHECKOUT" "$BOX_SHARE" "$KEEP"
   if record_write "$RECORD"; then
     echo
     inf "record written: $RECORD"
@@ -1599,6 +1812,6 @@ inf "this host still has Incus, boxnet, the ACL, the profile and the firewall ru
 # D phase)" — residue from a rehearsal that no longer runs. dns.mode=none is the
 # shipped stack's, not the drill's, and the NIC filtering was vetoed (#154).
 inf "— the shipped stack, as setup-host.sh leaves it; the drill adds nothing of its own."
-inf "to undo:  box uninstall --purge-host   (or ~/.local/share/box/current/host/teardown-host.sh)"
+inf "to undo:  box uninstall --purge-host   (or $BOX_SHARE/current/host/teardown-host.sh)"
 [ "$fail" -eq 0 ]
 # <<< ledger summary
