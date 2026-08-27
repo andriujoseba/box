@@ -993,6 +993,68 @@ tree_ident_verify() {   # <dir> <when> — 0 when the tree is still the latched 
   echo "    bash drill/drill.sh --yes" >&2
   return 1
 }
+
+# THE BYTES THAT LANDED (round 4, #225). Everything above watches the SOURCE: the
+# tree is measured, measured again on both sides of the install, and refused if
+# the two answers differ. Two equal endpoints do not make a constant interval.
+# install.sh reads the checkout ACROSS that gap, so a change made after the first
+# verify and reverted before the second is copied into the box and then made
+# invisible to the only thing looking. codex reproduced exactly that with a `tar`
+# shim: both witnesses matched, INSTALLED_FROM was right, the checkout ended with
+# no marker in it, and the installed README.md had one.
+#
+# No check on the source closes that, because the source is not the subject. What
+# the record claims is about the COPY, so the copy is what gets attested: every
+# file the installer copies, on both sides, by content. That catches a divergence
+# whatever produced it — a race, a shim, a truncated tar, an install that fell
+# back to another tree — without anticipating any of them, and it is the one
+# comparison whose subject is the bytes the drill is about to run.
+#
+# What it deliberately does NOT compare, each because it is not payload:
+#   · .git, which install.sh excludes (install.sh:213), excluded on both sides;
+#   · INSTALLED_FROM, which the installer WRITES into the version directory —
+#     the installer's own note about itself, asserted separately just above;
+#   · file MODES: install.sh chmods bin/box +x deliberately, and a mode is not
+#     a byte the drill runs;
+#   · empty directories, which carry no bytes either.
+payload_list() {   # <dir> → '<path> <hash>' per file, sorted; the copied payload
+  ( cd "$1" 2>/dev/null || exit 1
+    # -print0 and a -z sort, because a newline is legal in a path. hash-object
+    # needs no repository (it is a content hash) and writes nothing without -w,
+    # which is what lets the same reader run over an install root.
+    find . -path ./.git -prune -o -path ./INSTALLED_FROM -prune -o \
+         \( -type f -o -type l \) -print0 2>/dev/null \
+      | LC_ALL=C sort -z \
+      | while IFS= read -r -d '' p; do
+          if [ -L "$p" ]; then
+            printf '%s -> %s\n' "$p" "$(readlink "$p")"
+          else
+            printf '%s %s\n' "$p" "$(git hash-object -- "$p" 2>/dev/null || echo unreadable)"
+          fi
+        done )
+}
+
+payload_attest() {   # <checkout> <install root> — 0 when what landed IS the checkout
+  local a b delta
+  a="$(payload_list "$1")"
+  b="$(payload_list "$2")"
+  [ -n "$a" ] || { echo "drill: FATAL — $1 holds no files to attest." >&2; return 1; }
+  [ "$a" = "$b" ] && return 0
+  echo "drill: FATAL — the installed tree is not the tree this checkout holds." >&2
+  echo "  Every file install.sh copies was compared by content. '<' is the" >&2
+  echo "  checkout, '>' is $2:" >&2
+  delta="$(diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") 2>/dev/null \
+           | grep -E '^[<>]' | head -20)"
+  printf '%s\n' "${delta:-  (the two listings differ; diff is unavailable to say where)}" \
+    | sed 's/^/    /' >&2
+  echo "  The record would name a commit whose bytes are not the ones installed." >&2
+  echo "  The usual cause is the checkout being edited while install.sh copied" >&2
+  echo "  it — including an edit that was undone again, which the guards above" >&2
+  echo "  cannot see and this can. Leave the checkout alone for the length of" >&2
+  echo "  the run, and re-run:" >&2
+  echo "    bash drill/drill.sh --yes" >&2
+  return 1
+}
 # <<< drill preflight
 
 resolve_install_paths "$(id -u)"
@@ -1162,6 +1224,15 @@ EOF
     export BOX_SKIP_SETUP_HOST=1
   fi
 
+  # The first of the two window guards runs HERE, above the rm -rf, and not
+  # beside the install below it. It is the whole of the operator's think-time —
+  # the consent prompt and `sudo -v` — and its comment claims it refuses with
+  # the host still untouched; below the rm -rf that sentence was false, because
+  # a refusal would already have destroyed the operator's previous install
+  # (round 4, #225). Nothing between here and the install reads the checkout, so
+  # the guard is as good here and the claim becomes true.
+  tree_ident_verify "$CHECKOUT" "between its measurement and the install" || exit 1
+
   # The installer converges when a version is already installed (0.7.0's
   # versioned layout: re-running the same version is a no-op, and an upgrade
   # lands side-by-side without flipping under boxes). The drill re-proves a
@@ -1186,10 +1257,9 @@ EOF
   # #64's contract asserts.
   #
   # The two guards around it close the window between the latch and the copy
-  # (round 3, #225). The first one is the whole of the operator's think-time —
-  # the consent prompt and `sudo -v` above — and it refuses with the host still
-  # untouched, so a tree that moved in that window is never installed at all.
-  tree_ident_verify "$CHECKOUT" "between its measurement and the install" || exit 1
+  # (round 3, #225). The first one ran above the rm -rf, where the host is still
+  # untouched, so a tree that moved during the operator's think-time is never
+  # installed at all.
   BOX_INSTALL_SOURCE="$CHECKOUT" bash "$CHECKOUT/install.sh" \
     || { echo "install failed"; exit 1; }
   # ...and the second is the copy itself, the only half of the window no earlier
@@ -1235,7 +1305,14 @@ EOF
     echo "  tree afterwards. Nothing below this line would be drilling your code." >&2
     exit 1
   fi
-  inf "installed tree confirms: $got, and bin/box matches the checkout byte for byte"
+  # ...and then the same question about the WHOLE payload, which is the one the
+  # record answers (round 4, #225). The two lines above ask whether the install
+  # obeyed the source and whether the CLI is the checkout's; neither can see a
+  # file that was moved during the copy and moved back, or any other divergence
+  # outside bin/box. This compares every file that was copied, by content, and
+  # it is the last thing between a mixed tree and forty minutes of drilling it.
+  payload_attest "$CHECKOUT" "$BOX_SHARE/current" || exit 1
+  inf "installed tree confirms: $got, and every copied file matches the checkout byte for byte"
 
   # The run ID is resolved HERE and not at the end, because its whole purpose is
   # to be handed to whoever drills rig and cast — and they need it while their

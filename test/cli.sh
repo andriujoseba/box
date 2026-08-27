@@ -6776,6 +6776,259 @@ check "drill window: the install header names the latched SHA, not a live read" 
 # free to move, so a second stage holding it could only refuse something legal.
 check "drill window: the witness does not cross the re-exec" 1 "" \
   grep -qE 'DRILL_TREE_IDENT' "$ROOT/drill/drill.sh"
+# The first guard runs ABOVE the rm -rf that wipes the previous install, because
+# its whole claim is that it refuses with the host still untouched (round 4,
+# #225). Below it, a refusal had already destroyed the operator's install.
+guard_precedes_wipe() {
+  # shellcheck disable=SC2016  # both patterns are literal text in drill.sh
+  ( set -u
+    local v w
+    v="$(grep -nF 'tree_ident_verify "$CHECKOUT" "between its measurement' \
+         "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+    w="$(grep -nF 'rm -rf "$BOX_SHARE" "$BOX_BINDIR/box"' \
+         "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+    [ -n "$v" ] || { echo "the pre-install guard is gone"; exit 1; }
+    [ -n "$w" ] || { echo "the wipe is gone"; exit 1; }
+    [ "$v" -lt "$w" ] || { echo "the guard at $v refuses after the wipe at $w"; exit 1; } )
+}
+check "drill window: the pre-install guard refuses before the install is wiped" 0 "" \
+  guard_precedes_wipe
+
+# --- the bytes that landed (round 4, #225) -----------------------------------
+# Everything above watches the SOURCE, and two equal endpoints do not make a
+# constant interval: install.sh reads the checkout BETWEEN the two verifies, so a
+# change made after the first and undone before the second is copied into the box
+# and then made invisible to the only thing looking. codex reproduced exactly
+# that with a `tar` shim — both witnesses matched, INSTALLED_FROM was right, the
+# checkout ended clean, and the installed README.md carried a marker.
+#
+# The subject of the record is the COPY, so the copy is what is attested. These
+# drive the attestation against fixtures, and then run codex's reproduction for
+# real through install.sh, which is the only way to prove the guard catches a
+# mutation nobody arranged inside the extracted block.
+PAYWORK="$RECWORK/payload"; mkdir -p "$PAYWORK"
+PAYTAR="$(command -v tar)"
+pay() { bash -c "set -u; . '$RECFN'; . '$PREFN'; $1"; }
+mk_tree() {   # mk_tree <dir> — the smallest tree install.sh will install
+  mkdir -p "$1/bin" "$1/sub"
+  printf '9.9.9\n'                         > "$1/VERSION"
+  printf '#!/usr/bin/env bash\necho stub\n' > "$1/bin/box"; chmod +x "$1/bin/box"
+  printf 'readme\n'                        > "$1/README.md"
+  printf 'nested\n'                        > "$1/sub/nested.txt"
+}
+mk_git_tree() {   # mk_git_tree <dir> [gitignore-line] — the same, as a checkout
+  mk_tree "$1"
+  git init -q "$1"
+  git -C "$1" symbolic-ref HEAD refs/heads/trunk
+  git -C "$1" config user.email drill@example.invalid
+  git -C "$1" config user.name drill
+  git -C "$1" config commit.gpgsign false
+  git -C "$1" remote add origin https://github.com/heavy-duty/box.git
+  [ -n "${2:-}" ] && printf '%s\n' "$2" > "$1/.gitignore"
+  git -C "$1" add -A
+  git -C "$1" commit -q -m 'the commit a record names'
+}
+pay_install() {   # pay_install <src> <root> [shim-dir] — a real isolated install
+  local src="$1" root="$2" shim="${3:-}"
+  PATH="${shim:+$shim:}$PATH" BOX_YES=1 BOX_SKIP_SETUP_HOST=1 \
+    BOX_HOME="$root/share" BOX_BIN="$root/bin" BOX_INSTALL_SOURCE="$src" \
+    bash "$ROOT/install.sh" >/dev/null 2>&1
+}
+
+PAYSRC="$PAYWORK/src"; mk_tree "$PAYSRC"
+PAYDST="$PAYWORK/dst"; mkdir -p "$PAYDST"; cp -a "$PAYSRC/." "$PAYDST/"
+check "drill payload: a faithful copy attests" 0 "" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+# The two exclusions, each because it is not payload. install.sh excludes .git
+# (install.sh:213) and WRITES INSTALLED_FROM into the version dir, so a check
+# that compared either would fail on every honest install there has ever been.
+mkdir -p "$PAYSRC/.git"; printf 'vcs state\n' > "$PAYSRC/.git/config"
+printf 'local:%s\n' "$PAYSRC" > "$PAYDST/INSTALLED_FROM"
+check "drill payload: ...with .git on one side and INSTALLED_FROM on the other" 0 "" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+# THE case: same paths, one file's content differs. This is the ABA reduced to
+# its consequence — the source is irrelevant by now, the installed bytes are not
+# the checkout's, and no reading of the source can say so.
+printf 'readme-with-marker\n' > "$PAYDST/README.md"
+check "drill payload: a file whose CONTENT differs is refused" 1 \
+  "the installed tree is not the tree this checkout holds" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+check "drill payload: ...and the refusal names the file, both sides" 1 "README.md" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+printf 'readme\n' > "$PAYDST/README.md"
+# A file the install has and the checkout does not, and its converse. Neither is
+# a content change, and both mean the box holds a tree the record cannot name.
+printf 'stray\n' > "$PAYDST/extra.txt"
+check "drill payload: a file only the install has is refused" 1 "extra.txt" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+rm -f "$PAYDST/extra.txt"
+rm -f "$PAYDST/sub/nested.txt"
+check "drill payload: a file missing from the install is refused" 1 "nested.txt" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+printf 'nested\n' > "$PAYDST/sub/nested.txt"
+check "drill payload: ...and the pair attests again once restored" 0 "" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+# A mode is not a byte the drill runs, and install.sh chmods bin/box +x on
+# purpose — so the attestation must not red on one, or it reds on every install.
+chmod -x "$PAYSRC/bin/box"
+check "drill payload: a mode difference is not a payload difference" 0 "" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+chmod +x "$PAYSRC/bin/box"
+# An empty listing is the reader failing, not two trees agreeing — the shape
+# that would make this guard pass on a checkout it could not read at all.
+check "drill payload: an unreadable checkout is a FATAL, not a pass" 1 \
+  "holds no files to attest" pay "payload_attest '$PAYWORK/nonexistent' '$PAYDST'"
+# Symlinks are compared as their TARGETS: 'current' is one, and a link that
+# moved is a different tree even when every file behind it is identical.
+ln -sfn sub "$PAYSRC/link"; ln -sfn bin "$PAYDST/link"
+check "drill payload: a symlink pointing elsewhere is refused" 1 "link ->" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+rm -f "$PAYSRC/link" "$PAYDST/link"
+
+# codex's reproduction, RUN. A tar shim appends a marker to the source's
+# README.md immediately before the real tar reads it and restores the file the
+# moment tar returns, which is the mutation-during-copy the two-instant guards
+# cannot see. Everything else about the install is honest, and that is the point.
+PAYABA="$PAYWORK/aba"; mk_git_tree "$PAYABA"
+PAYSHIM="$PAYWORK/shim"; mkdir -p "$PAYSHIM"
+cat > "$PAYSHIM/tar" <<EOF
+#!/usr/bin/env bash
+# Only the create side (-C <src>) mutates; the extract side passes straight
+# through, so the install is otherwise exactly the one install.sh performs.
+if [ "\$1" = "-C" ] && [ "\$2" = "$PAYABA" ]; then
+  printf 'readme-during-copy\n' > "$PAYABA/README.md"
+  "$PAYTAR" "\$@"; rc=\$?
+  printf 'readme\n' > "$PAYABA/README.md"
+  exit \$rc
+fi
+exec "$PAYTAR" "\$@"
+EOF
+chmod +x "$PAYSHIM/tar"
+PAYABAROOT="$PAYWORK/aba-root"
+# The witness is latched before the install and verified after it, the way the
+# drill does it, so the two guards get their real chance at this run.
+PAYABAIDENT="$(bash -c "set -u; . '$RECFN'; record_tree_ident '$PAYABA'")"
+pay_install "$PAYABA" "$PAYABAROOT" "$PAYSHIM"
+PAYABACUR="$PAYABAROOT/share/current"
+check "drill payload: the ABA install SUCCEEDED, as codex reported" 0 "9.9.9" \
+  cat "$PAYABACUR/VERSION"
+check "drill payload: ...and INSTALLED_FROM names the checkout, correctly" 0 \
+  "local:$PAYABA" cat "$PAYABACUR/INSTALLED_FROM"
+check "drill payload: ...and the marker really did land in the installed tree" 0 \
+  "readme-during-copy" cat "$PAYABACUR/README.md"
+check "drill payload: ...while the checkout it came from ends with no marker" 1 "" \
+  grep -qF 'readme-during-copy' "$PAYABA/README.md"
+# THE discriminator. The window guard is not weakened by this scenario — it is
+# blind to it, because its subject is the source and the source is restored.
+check "drill payload: ...so the window guard passes the run it cannot see" 0 "[same]" \
+  bash -c "set -u; . '$RECFN'
+    now=\"\$(record_tree_ident '$PAYABA')\"
+    [ \"\$now\" = '$PAYABAIDENT' ] && printf '[same]'"
+# ...and the attestation refuses it, which is the whole of round 4's blocking
+# point: the bytes that landed are not the bytes the record names.
+check "drill payload: ...and the attestation refuses the tree that landed" 1 \
+  "the installed tree is not the tree this checkout holds" \
+  pay "payload_attest '$PAYABA' '$PAYABACUR'"
+check "drill payload: ...naming the file that was copied mid-edit" 1 "README.md" \
+  pay "payload_attest '$PAYABA' '$PAYABACUR'"
+# The control: the same tree, the same installer, no shim. A guard that refused
+# here would refuse every drill, which is a worse failure than the one above.
+PAYOKROOT="$PAYWORK/ok-root"
+pay_install "$PAYABA" "$PAYOKROOT"
+check "drill payload: an honest real install attests, end to end" 0 "" \
+  pay "payload_attest '$PAYABA' '$PAYOKROOT/share/current'"
+
+# --- the files git hides and install.sh copies (round 4, #225) ---------------
+# `tar -C "$SRC" --exclude=.git` excludes the VCS state and NOTHING else, so an
+# ignored file is installed like a tracked one while `git status` reports a clean
+# tree — and this repository's ignore list is secrets.env and *.agekey. The gap
+# is proved by a real install before anything is asserted about the refusal.
+PAYIGN="$PAYWORK/ignored"; mk_git_tree "$PAYIGN" 'secrets.env'
+printf 'TOKEN=hunter2\n' > "$PAYIGN/secrets.env"
+PAYIGNROOT="$PAYWORK/ignored-root"
+pay_install "$PAYIGN" "$PAYIGNROOT"
+check "drill ignored: install.sh really does copy an ignored file into the box" 0 \
+  "TOKEN=hunter2" cat "$PAYIGNROOT/share/current/secrets.env"
+# ...and git says the tree is clean, which is why every reader in the record
+# block was blind to it: the two subjects disagreed, and the copy is the one
+# that gets drilled.
+check "drill ignored: ...while the dirty path list calls that tree clean" 1 "" \
+  pay "record_tree_dirty '$PAYIGN'"
+check "drill ignored: the reader lists it, in git's own '!!' notation" 0 \
+  "!! secrets.env" pay "record_tree_ignored '$PAYIGN'"
+# So the drill refuses it, and the refusal is about what is actually there: a
+# 'dirty worktree' headline would send the operator to the one reader that
+# cannot see the file.
+check "drill ignored: a tree carrying one is refused" 2 \
+  "REFUSING to drill a tree git is not showing you" \
+  pay "preflight_tree '$PAYIGN' 0"
+check "drill ignored: ...naming the path" 2 "!! secrets.env" \
+  pay "preflight_tree '$PAYIGN' 0"
+check "drill ignored: ...and saying it would be installed" 2 \
+  "copied into the box" pay "preflight_tree '$PAYIGN' 0"
+check "drill ignored: ...and pointing at the escape hatch" 2 "allow-dirty" \
+  pay "preflight_tree '$PAYIGN' 0"
+check "drill ignored: --allow-dirty drills it, and says what it will install" 0 \
+  "!! secrets.env" pay "preflight_tree '$PAYIGN' 1"
+# A tree that is BOTH dirty and carrying one names both lists. The first version
+# of this returned on the dirty list and never mentioned the second, which is
+# the half that can be a secrets file.
+check "drill ignored: a tree that is both dirty and ignoring names both" 2 \
+  "!! secrets.env" \
+  pay "printf 'edit\n' >> '$PAYIGN/README.md'; preflight_tree '$PAYIGN' 0"
+check "drill ignored: ...and the dirty path with it" 2 "README.md" \
+  pay "preflight_tree '$PAYIGN' 0"
+git -C "$PAYIGN" checkout -q -- README.md
+# The latch treats it as dirtiness, because that is what it is: the tree in the
+# box is not the commit, so the record's ref field cannot claim to be either.
+payign_latch() {   # payign_latch <field> [snippet]
+  bash -c "set -u; . '$RECFN'; . '$PREFN'
+    TREE_DIRTY=''; TREE_DIRTY_PATHS=''
+    REC_TREE_REPO=''; REC_TREE_REF=''; REC_TREE_SHA=''; TREE_IDENT=''
+    ${2:-}
+    tree_ident_latch '$PAYIGN'
+    printf '[%s]' \"\$$1\""
+}
+PAYIGNSHA="$(git -C "$PAYIGN" rev-parse --short=7 HEAD)"
+check "drill ignored: the latch calls that tree dirty" 0 "[1]" payign_latch TREE_DIRTY
+check "drill ignored: ...so the record's ref field is stamped" 0 "[$PAYIGNSHA-dirty]" \
+  payign_latch REC_TREE_REF
+check "drill ignored: ...and the NOTE's paths carry it, marked" 0 "!! secrets.env" \
+  payign_latch TREE_DIRTY_PATHS
+# ...and the witness digests its CONTENT, so a secrets file rewritten between the
+# measurement and the copy moves the guard exactly like a tracked file does.
+check "drill ignored: a rewrite inside an ignored file moves the witness" 1 \
+  "changed in the window" \
+  bash -c "set -u; . '$RECFN'; . '$PREFN'
+    TREE_DIRTY=''; TREE_DIRTY_PATHS=''
+    REC_TREE_REPO=''; REC_TREE_REF=''; REC_TREE_SHA=''; TREE_IDENT=''
+    tree_ident_latch '$PAYIGN'
+    printf 'TOKEN=rotated\n' > '$PAYIGN/secrets.env'
+    tree_ident_verify '$PAYIGN' 'in the window'"
+check "drill ignored: ...which the dirty path list still cannot see" 1 "" \
+  pay "record_tree_dirty '$PAYIGN'"
+
+# The wiring, the same shape the window guards get: the attestation can be
+# perfect and never called, or called and its verdict dropped.
+attest_follows_install() {
+  # shellcheck disable=SC2016  # both patterns are literal text in drill.sh
+  ( set -u
+    local ins att
+    ins="$(grep -nF 'BOX_INSTALL_SOURCE="$CHECKOUT" bash "$CHECKOUT/install.sh"' \
+           "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+    att="$(grep -nF 'payload_attest "$CHECKOUT" "$BOX_SHARE/current" || exit 1' \
+           "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+    [ -n "$att" ] || { echo "the payload is never attested, or the verdict is dropped"; exit 1; }
+    [ "$att" -gt "$ins" ] || { echo "the attestation at $att runs before the install at $ins"; exit 1; } )
+}
+check "drill payload: the attestation runs after the install, and exits" 0 "" \
+  attest_follows_install
+# It attests the INSTALL ROOT, not the staging tree or the checkout twice — a
+# comparison of the checkout with itself passes forever and proves nothing.
+# shellcheck disable=SC2016  # the call is literal text in drill.sh
+check "drill payload: ...against what landed, not against the source twice" 0 \
+  'payload_attest "$CHECKOUT" "$BOX_SHARE/current"' \
+  grep -F 'payload_attest "$CHECKOUT"' "$ROOT/drill/drill.sh"
 
 # All three run before the consent prompt and before the first phase, for the
 # reason the record-path guard does: an operator who cannot run this must find
