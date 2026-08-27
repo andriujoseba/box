@@ -6617,6 +6617,82 @@ check "drill latch: a commit mid-drill does not move the recorded SHA" 0 \
 # commit every assertion above and below it names.
 git -C "$RECGIT" reset -q --hard "$RECGITSHA"
 
+# --- the window between the measurement and the copy (round 3, #225) ---------
+# The latch above fixes WHEN the tree is read. It does not fix the tree: the
+# latch runs before the consent prompt and install.sh copies minutes later, and
+# in between the checkout is an ordinary directory. Everything the latch protects
+# the record from at summary time can happen inside that window instead, and
+# stage 2's re-run of the preflight does not see it — --allow-dirty waves a newly
+# dirty tree through, a commit or a switch leaves a CLEAN tree it passes with
+# nothing to say, and a rewrite inside an already-dirty path moves no path list.
+#
+# So the window is guarded by a witness rather than by a path list, and these
+# drive it through the same extracted blocks the script runs.
+window() {   # window <snippet> → the guard's verdict after that snippet
+  latch "tree_ident_latch '$RECGIT'
+         $1
+         tree_ident_verify '$RECGIT' 'in the window'"
+}
+check "drill window: a tree that did not move passes" 0 "" window ':'
+# The negative that keeps the guard from being a tripwire on ordinary work: the
+# window CLOSES at the copy. What the operator does after it is their business,
+# and the record already describes what was taken.
+check "drill window: ...and the digest of an unmoved tree is stable" 0 "[same]" \
+  latch "a=\"\$(record_tree_ident '$RECGIT')\"
+         b=\"\$(record_tree_ident '$RECGIT')\"
+         [ \"\$a\" = \"\$b\" ] && printf '[same]'"
+
+# codex's case, driven: clean at the latch, a non-bin/box path appears before the
+# copy. Under --allow-dirty stage 2's preflight has nothing to say about it, so
+# this guard is the only thing between that tree and a record calling it clean.
+check "drill window: a file appearing after the latch is refused" 1 \
+  "changed in the window" window "touch '$RECGIT/after-latch'"
+# The fixture is shared, and a file left behind would be latched by the next
+# check rather than appearing after it — which is a pass for the wrong reason.
+rm -f "$RECGIT/after-latch"
+check "drill window: ...and the refusal names the tree the record would have named" 1 \
+  "$RECGITSHA" window "touch '$RECGIT/after-latch'"
+rm -f "$RECGIT/after-latch"
+# A commit and a switch both leave a tree the preflight is happy with, which is
+# why neither is caught anywhere else. The record would name the tree from
+# before the move while the box holds the tree from after it.
+check "drill window: a commit after the latch is refused" 1 "changed in the window" \
+  window "git -C '$RECGIT' commit -q --allow-empty -m 'in-window' >/dev/null 2>&1"
+git -C "$RECGIT" reset -q --hard "$RECGITSHA"
+check "drill window: a branch switch after the latch is refused" 1 "changed in the window" \
+  window "git -C '$RECGIT' switch -q -c in-window-branch >/dev/null 2>&1"
+git -C "$RECGIT" switch -q "$RECGITREF" >/dev/null 2>&1
+git -C "$RECGIT" branch -q -D in-window-branch >/dev/null 2>&1
+# THE case a path list cannot see, and the reason the witness is a digest of the
+# content rather than of `git status`: the tree is dirty before the latch and
+# dirty after it, in the same path, and the bytes install.sh copies are not the
+# bytes that were measured.
+printf 'first\n' >> "$RECGIT/tracked"
+check "drill window: a rewrite inside an already-dirty path is refused" 1 \
+  "changed in the window" window "printf 'second\n' >> '$RECGIT/tracked'"
+# ...and that case is invisible to the path list, which is the whole point: the
+# check above would not exist if record_tree_dirty could answer it.
+check "drill window: ...which the dirty PATH LIST cannot see" 0 "[same]" \
+  latch "a=\"\$(record_tree_dirty '$RECGIT')\"
+         printf 'second\n' >> '$RECGIT/tracked'
+         b=\"\$(record_tree_dirty '$RECGIT')\"
+         [ \"\$a\" = \"\$b\" ] && printf '[same]'"
+git -C "$RECGIT" checkout -q -- tracked
+# A path CLEANED in the window moves the record the other way — the run would
+# install a clean tree under a '-dirty' stamp naming paths that are no longer
+# there — and is refused for the same reason.
+check "drill window: a path cleaned after the latch is refused" 1 \
+  "changed in the window" \
+  latch "printf 'uncommitted\n' >> '$RECGIT/tracked'
+         tree_ident_latch '$RECGIT'
+         git -C '$RECGIT' checkout -q -- tracked
+         tree_ident_verify '$RECGIT' 'in the window'"
+git -C "$RECGIT" checkout -q -- tracked
+# An unlatched witness is the guard disabled by silence, which is the one way a
+# check like this fails without ever printing anything. It fails like a mismatch.
+check "drill window: an empty witness is a FATAL, not a pass" 1 \
+  "never latched" latch "tree_ident_verify '$RECGIT' 'in the window'"
+
 # --- and the wiring, because the latch can be correct and still bypassed -----
 # Everything above drives functions. The consumers that matter are on the
 # script's own path — the summary's record_collect call and the dirty-tree NOTE
@@ -6627,6 +6703,13 @@ git -C "$RECGIT" reset -q --hard "$RECGITSHA"
 # tree again. That is the defect as a property rather than as a scenario, and
 # it is what stops the NOTE quietly going back to a live `git status` (round 2,
 # #225).
+#
+# It names EVERY reader, not just the one round 2 was about. The property is
+# "nothing past the re-exec asks git about the tree", and spelling it as one
+# function's name made it "nothing past the re-exec asks git about the tree's
+# DIRTINESS" — a re-added record_tree_sha there would have gone straight past it
+# (round 3, #225). Each of the five asks git the same question about the same
+# subject and each is wrong in the same place.
 no_tree_read_after_reexec() {
   ( set -u
     local rex line
@@ -6637,7 +6720,7 @@ no_tree_read_after_reexec() {
       [ -z "$line" ] && continue
       [ "$line" -gt "$rex" ] \
         && { echo "line $line re-reads the tree after the re-exec at $rex"; exit 1; }
-    done < <(grep -nE '^[^#]*record_tree_dirty' "$ROOT/drill/drill.sh")
+    done < <(grep -nE '^[^#]*record_tree_(dirty|sha|ref|repo|ident)' "$ROOT/drill/drill.sh")
     exit 0 )
 }
 check "drill latch: nothing past the re-exec asks git about the tree again" 0 "" \
@@ -6646,6 +6729,38 @@ check "drill latch: nothing past the re-exec asks git about the tree again" 0 ""
 # refusal and the latch, both of which run before anything is installed.
 check "drill latch: ...and the reads that remain are the two before the install" 0 "2" \
   bash -c "grep -cE '^[^#]*record_tree_dirty \"\\\$1\"' '$ROOT/drill/drill.sh'"
+
+# The window guard has the same shape of hole: it can be perfectly correct and
+# never called, or called on one side of the install only. Both of its calls are
+# on the script's own path, so what is asserted is that they BRACKET the install
+# — one before it, where a refusal costs nothing, one after the copy, which is
+# the half no earlier check can reach (round 3, #225).
+guard_brackets_install() {
+  # shellcheck disable=SC2016  # the install line is literal text in drill.sh
+  ( set -u
+    local ins pre post
+    ins="$(grep -nF 'BOX_INSTALL_SOURCE="$CHECKOUT" bash "$CHECKOUT/install.sh"' \
+           "$ROOT/drill/drill.sh" | head -1 | cut -d: -f1)"
+    [ -n "$ins" ] || { echo "the install is never run"; exit 1; }
+    pre="$(grep -nE '^[^#]*tree_ident_verify .* \|\| exit 1' "$ROOT/drill/drill.sh" \
+           | awk -F: -v i="$ins" '$1 < i' | wc -l)"
+    post="$(grep -nE '^[^#]*tree_ident_verify .* \|\| exit 1' "$ROOT/drill/drill.sh" \
+            | awk -F: -v i="$ins" '$1 > i' | wc -l)"
+    [ "$pre" -ge 1 ] || { echo "nothing verifies the tree before the install"; exit 1; }
+    [ "$post" -ge 1 ] || { echo "nothing verifies the tree after the copy"; exit 1; }
+    exit 0 )
+}
+check "drill window: the guard brackets the install, before it and after it" 0 "" \
+  guard_brackets_install
+# ...and it refuses rather than reports. A guard whose exit is dropped prints a
+# FATAL into a log nobody reads and drills on, which is the failure it exists to
+# prevent, wearing the message it would have printed.
+check "drill window: ...and both calls exit rather than warn" 0 "2" \
+  bash -c "grep -cE '^[^#]*tree_ident_verify \"\\\$CHECKOUT\" .* \\|\\| exit 1' '$ROOT/drill/drill.sh'"
+# The witness deliberately does NOT cross the re-exec: past the copy the tree is
+# free to move, so a second stage holding it could only refuse something legal.
+check "drill window: the witness does not cross the re-exec" 1 "" \
+  grep -qE 'DRILL_TREE_IDENT' "$ROOT/drill/drill.sh"
 
 # All three run before the consent prompt and before the first phase, for the
 # reason the record-path guard does: an operator who cannot run this must find
