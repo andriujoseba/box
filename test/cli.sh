@@ -6678,6 +6678,13 @@ check "drill window: ...which the dirty PATH LIST cannot see" 0 "[same]" \
          b=\"\$(record_tree_dirty '$RECGIT')\"
          [ \"\$a\" = \"\$b\" ] && printf '[same]'"
 git -C "$RECGIT" checkout -q -- tracked
+# The same blindness, one path-class over: an untracked file's CONTENT can be
+# rewritten between the latch and the copy without --porcelain moving either,
+# and install.sh copies untracked files like every other byte in the tree.
+touch "$RECGIT/stray-in-window"
+check "drill window: a rewrite inside an already-untracked file is refused" 1 \
+  "changed in the window" window "printf 'now with content\n' > '$RECGIT/stray-in-window'"
+rm -f "$RECGIT/stray-in-window"
 # A path CLEANED in the window moves the record the other way — the run would
 # install a clean tree under a '-dirty' stamp naming paths that are no longer
 # there — and is refused for the same reason.
@@ -6757,6 +6764,14 @@ check "drill window: the guard brackets the install, before it and after it" 0 "
 # prevent, wearing the message it would have printed.
 check "drill window: ...and both calls exit rather than warn" 0 "2" \
   bash -c "grep -cE '^[^#]*tree_ident_verify \"\\\$CHECKOUT\" .* \\|\\| exit 1' '$ROOT/drill/drill.sh'"
+# The install phase's own header is the first thing in the log that says which
+# tree this run drilled, and it used to read the SHA live — so it could name a
+# different commit than the record does, from a line printed seconds before the
+# copy (round 3, #225). It prints the latched field, like every other consumer.
+# shellcheck disable=SC2016  # the header is literal text in drill.sh
+check "drill window: the install header names the latched SHA, not a live read" 0 \
+  'phase - "Installing box from this checkout ($CHECKOUT @ $REC_TREE_SHA)"' \
+  grep -F 'Installing box from this checkout' "$ROOT/drill/drill.sh"
 # The witness deliberately does NOT cross the re-exec: past the copy the tree is
 # free to move, so a second stage holding it could only refuse something legal.
 check "drill window: the witness does not cross the re-exec" 1 "" \
