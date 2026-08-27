@@ -6548,7 +6548,7 @@ check "drill preflight: ...and the refusal prints the two lines that DO work" 2 
 latch() {   # latch <snippet> → the latched state after that snippet
   bash -c "set -u; . '$RECFN'; . '$PREFN'
     TREE_DIRTY=''; TREE_DIRTY_PATHS=''
-    REC_TREE_REPO=''; REC_TREE_REF=''; REC_TREE_SHA=''
+    REC_TREE_REPO=''; REC_TREE_REF=''; REC_TREE_SHA=''; TREE_IDENT=''
     $1"
 }
 latched() {   # latched <field> [snippet] → that field after latching the fixture

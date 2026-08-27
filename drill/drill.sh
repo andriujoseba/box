@@ -119,6 +119,12 @@ TREE_DIRTY_PATHS="${DRILL_TREE_DIRTY_PATHS:-}"
 REC_TREE_REPO="${DRILL_TREE_REPO:-}"
 REC_TREE_REF="${DRILL_TREE_REF:-}"
 REC_TREE_SHA="${DRILL_TREE_SHA:-}"
+# The witness the pre- and post-install guards compare against. This one does
+# NOT cross the re-exec, and that is the point: it guards the window between the
+# measurement and install.sh's copy, both of which are in stage 1. Past the copy
+# the checkout is free to move — the record already describes what was taken —
+# so a second stage holding this value could only ever refuse something legal.
+TREE_IDENT=''
 # KEEP crossed the exec as a bare `KEEP=`, which this line then set to 0 before
 # anything could read it: --keep-boxes was inert in the second stage — the whole
 # stage — so the teardown phase always ran and the record could never say the run
@@ -558,6 +564,39 @@ record_tree_dirty() {   # <dir> → the dirty paths on stdout; 0 when dirty
   printf '%s\n' "$out"
 }
 
+# The tree's CONTENT, as one comparable string (round 3, #225). The function
+# above answers which paths differ from the commit; it cannot answer what is
+# inside them, and between the moment the identity is latched and the moment
+# install.sh finishes copying, that is the whole question — a rewrite inside an
+# already-dirty path moves the bytes that get installed and moves nothing in a
+# path list. So this digests everything the record CLAIMS about the tree:
+#
+#   · HEAD and the ref, so a commit or a `git switch` in the window is visible;
+#   · --porcelain, so a path appearing or being cleaned is visible;
+#   · the tracked diff and the untracked files' own hashes, so a change of
+#     content with no change of status is visible.
+#
+# Content-addressed via git rather than sha256sum, because git is already the
+# hard dependency the preflight refuses without. Scoped to what git can see,
+# exactly like record_tree_dirty: an ignored file is not something the record
+# ever said anything about, so it is not something this can catch it lying about.
+record_tree_ident() {   # <dir> → one digest of the tree the record describes
+  {
+    git -C "$1" rev-parse HEAD 2>/dev/null
+    record_tree_ref "$1"; printf '\n'
+    git -C "$1" status --porcelain 2>/dev/null
+    git -C "$1" diff HEAD --binary 2>/dev/null
+    # -z, because a newline is legal in a path and a path list that cannot say
+    # so is a list an operator can forge. hash-object without -w computes and
+    # writes nothing: measuring the tree must not modify it.
+    git -C "$1" ls-files -o --exclude-standard -z 2>/dev/null \
+      | while IFS= read -r -d '' p; do
+          printf '%s ' "$p"
+          git -C "$1" hash-object -- "$1/$p" 2>/dev/null || printf 'unreadable\n'
+        done
+  } | git -C "$1" hash-object --stdin
+}
+
 # Is this a git checkout at all? Everything above answers 'unresolved', 'no
 # origin remote' or clean-looking for a tree git cannot read, and each of those
 # is a record that quietly says less than it appears to. The preflight asks this
@@ -848,7 +887,48 @@ tree_ident_latch() {   # <dir> — the tree fields a record carries, measured on
   REC_TREE_REPO="$(record_tree_repo "$1")"
   REC_TREE_SHA="$(record_tree_sha "$1")"
   REC_TREE_REF="$(record_tree_ref_stamped "$1" "$TREE_DIRTY")"
+  # The witness the two guards below compare against. Latched here with the
+  # fields it protects, because a witness taken at any other moment describes a
+  # tree the record does not.
+  TREE_IDENT="$(record_tree_ident "$1")"
   return 0
+}
+
+# THE WINDOW BETWEEN THE MEASUREMENT AND THE COPY (round 3, #225). The latch runs
+# before the consent prompt; install.sh copies the tree minutes later. In between
+# the checkout is an ordinary directory, and nothing else notices it move:
+# stage 2's preflight re-runs, but --allow-dirty waves a newly dirty tree
+# through, and a `git commit` or `git switch` leaves a CLEAN tree it passes with
+# nothing to say. Either way the box holds one tree and the record names another
+# — the untruth this issue exists to close, through the last door left open.
+#
+# It cannot be closed by measuring EARLIER; every earlier moment has the same
+# window after it. It is closed by measuring AGAIN once the bytes are settled and
+# refusing when the two answers differ. Called on both sides of the install,
+# because the window has two halves and only one of them can be refused cheaply:
+# before it, the operator's think-time, where the host is still untouched; after
+# it, the copy itself, which no earlier check can cover.
+tree_ident_verify() {   # <dir> <when> — 0 when the tree is still the latched one
+  local now
+  # An empty witness is not "nothing to check": it is the latch bypassed, which
+  # is the guard disabled by silence. It fails like a mismatch.
+  if [ -z "$TREE_IDENT" ]; then
+    echo "drill: FATAL — the tree's identity was never latched ($2)." >&2
+    echo "  tree_ident_latch runs beside the preflight and must precede any" >&2
+    echo "  install; reaching this line without it is a bug in drill.sh." >&2
+    return 1
+  fi
+  now="$(record_tree_ident "$1")"
+  [ "$now" = "$TREE_IDENT" ] && return 0
+  echo "drill: FATAL — $1 changed $2." >&2
+  echo "  The record names the tree measured before the install: $REC_TREE_REF" >&2
+  echo "  ($REC_TREE_SHA). The checkout is no longer that tree, so a record" >&2
+  echo "  written now would name a commit that is NOT what ran — including" >&2
+  echo "  under --allow-dirty, where the stamp describes the paths as they" >&2
+  echo "  were when they were measured." >&2
+  echo "  Leave the checkout alone for the length of the run, and re-run:" >&2
+  echo "    bash drill/drill.sh --yes" >&2
+  return 1
 }
 # <<< drill preflight
 
@@ -985,7 +1065,10 @@ EOF
   # drill's duration, which is why the stamp is taken below it and not above.
   DRILL_T0="$(date +%s)"
 
-  phase - "Installing box from this checkout ($CHECKOUT @ $(record_tree_sha "$CHECKOUT"))"
+  # The LATCHED sha, not a fresh one: the header and the record name the same
+  # tree or the header is the first thing in the log that is wrong about which
+  # tree this run drilled (round 3, #225).
+  phase - "Installing box from this checkout ($CHECKOUT @ $REC_TREE_SHA)"
 
   # Sudo, up front and out loud. Later calls run unattended, and a password
   # prompt swallowed by a '-qq' redirect looks exactly like a hang. This now
@@ -1038,8 +1121,20 @@ EOF
   # and the one CI installs through. Phase I is untouched in substance —
   # install.sh still runs the host setup itself, which is the whole of what
   # #64's contract asserts.
+  #
+  # The two guards around it close the window between the latch and the copy
+  # (round 3, #225). The first one is the whole of the operator's think-time —
+  # the consent prompt and `sudo -v` above — and it refuses with the host still
+  # untouched, so a tree that moved in that window is never installed at all.
+  tree_ident_verify "$CHECKOUT" "between its measurement and the install" || exit 1
   BOX_INSTALL_SOURCE="$CHECKOUT" bash "$CHECKOUT/install.sh" \
     || { echo "install failed"; exit 1; }
+  # ...and the second is the copy itself, the only half of the window no earlier
+  # check can reach: install.sh reads the tree while this line's subject is free
+  # to be edited, and the bytes that landed are then neither answer. There is a
+  # wasted install behind this refusal, which is the price of catching it at all
+  # — and a wasted install is cheaper than a record nobody can trust.
+  tree_ident_verify "$CHECKOUT" "while install.sh was copying it" || exit 1
   export PATH="$BOX_BINDIR:$PATH"
 
   # ASSERT WHAT LANDED — never trust that the install obeyed us.
