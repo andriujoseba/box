@@ -7017,10 +7017,25 @@ git -C "$PAYIGN" add .gitignore
 git -C "$PAYIGN" commit -q -m 'ignore a directory too'
 mkdir -p "$PAYIGN/ignored"
 for i in $(seq 1 25); do printf 'x\n' > "$PAYIGN/ignored/f$i"; done
-check "drill ignored: a refusal lists 20 paths, not 26" 2 "…and 6 more" \
+check "drill ignored: a refusal says how many it is not printing" 2 "…and 6 more" \
   pay "preflight_tree '$PAYIGN' 0"
+# ...and PRINTS twenty. The trailer alone is not the assertion: a printer that
+# lists all 26 and then says '…and 6 more' satisfies the check above and caps
+# nothing, which is exactly what the mutation that survived this check did.
+ignored_lines() {   # <how> → '[n]', the '!!' lines a refusal or the latch shows
+  local n
+  case "$1" in
+    refusal) n="$(pay "preflight_tree '$PAYIGN' 0" 2>&1 | grep -c '^    !!')" ;;
+    carried) n="$(payign_latch TREE_DIRTY_PATHS 2>&1 | grep -c '!! ')" ;;
+  esac
+  printf '[%s]' "$n"
+}
+check "drill ignored: ...and prints exactly TREE_PATHS_MAX of them" 0 "[20]" \
+  ignored_lines refusal
 check "drill ignored: ...and the carried list is capped the same way" 0 "…and 6 more" \
   payign_latch TREE_DIRTY_PATHS
+check "drill ignored: ...to exactly TREE_PATHS_MAX paths, not 26" 0 "[20]" \
+  ignored_lines carried
 # The measurement is over all of them: capping the list must not cap the fact.
 check "drill ignored: ...while the tree is still dirty on the 26th" 0 "[1]" \
   payign_latch TREE_DIRTY
