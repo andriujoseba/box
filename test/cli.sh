@@ -6617,6 +6617,36 @@ check "drill latch: a commit mid-drill does not move the recorded SHA" 0 \
 # commit every assertion above and below it names.
 git -C "$RECGIT" reset -q --hard "$RECGITSHA"
 
+# --- and the wiring, because the latch can be correct and still bypassed -----
+# Everything above drives functions. The consumers that matter are on the
+# script's own path — the summary's record_collect call and the dirty-tree NOTE
+# raised at the top of stage 2 — and neither is inside an extracted block, so
+# what is asserted about them is WHERE THEY READ FROM. The rule is one line
+# long: after the drill has re-exec'd into the group, install.sh has already
+# copied the checkout, so no acting line past that point may ask git about the
+# tree again. That is the defect as a property rather than as a scenario, and
+# it is what stops the NOTE quietly going back to a live `git status` (round 2,
+# #225).
+no_tree_read_after_reexec() {
+  ( set -u
+    local rex line
+    rex="$(grep -nE '^[[:space:]]*reexec_in_group[[:space:]]*$' "$ROOT/drill/drill.sh" \
+           | head -1 | cut -d: -f1)"
+    [ -n "$rex" ] || { echo "the re-exec is never called"; exit 1; }
+    while IFS=: read -r line _; do
+      [ -z "$line" ] && continue
+      [ "$line" -gt "$rex" ] \
+        && { echo "line $line re-reads the tree after the re-exec at $rex"; exit 1; }
+    done < <(grep -nE '^[^#]*record_tree_dirty' "$ROOT/drill/drill.sh")
+    exit 0 )
+}
+check "drill latch: nothing past the re-exec asks git about the tree again" 0 "" \
+  no_tree_read_after_reexec
+# ...and the guard is not vacuous: the reads that DO exist are the preflight's
+# refusal and the latch, both of which run before anything is installed.
+check "drill latch: ...and the reads that remain are the two before the install" 0 "2" \
+  bash -c "grep -cE '^[^#]*record_tree_dirty \"\\\$1\"' '$ROOT/drill/drill.sh'"
+
 # All three run before the consent prompt and before the first phase, for the
 # reason the record-path guard does: an operator who cannot run this must find
 # out in the first second, not in the summary forty minutes on.

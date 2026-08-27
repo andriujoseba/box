@@ -155,9 +155,16 @@ was asked for (#225): the repository is `git remote get-url origin` reduced to
 branch is `git rev-parse --abbrev-ref HEAD`, recorded as `detached` where there
 is none, and the SHA is `git rev-parse HEAD`. They used to be the `--repo` and
 `--ref` arguments with the SHA resolved off a *remote*, which described what
-had been requested rather than what ran. Where `--allow-dirty` was given the
-ref field reads `<sha>-dirty` and the invocation carries the flag, so a record
-that cannot be reproduced from the commit it names says so on its face.
+had been requested rather than what ran. Where the worktree was dirty the ref
+field reads `<sha>-dirty` and the invocation carries `--allow-dirty`, so a
+record that cannot be reproduced from the commit it names says so on its face.
+
+All four are measured **before the install**, in the first seconds of the run,
+and then carried to the end of it — because the tree a record describes is the
+one `install.sh` copied, and the checkout is local and mutable and the drill
+runs on top of it for forty minutes. Commit, stash or switch branches while a
+drill is going and the record still names what was drilled, not what your
+worktree happens to say when the summary prints.
 
 What it emits is a **skeleton**: it says so in its own last paragraph, and that
 paragraph is deleted by whoever writes what the findings *mean* for the
