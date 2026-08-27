@@ -34,11 +34,14 @@ meant to. Keep using it for what it has always been for.
 - **What ran** — which drill, how many probes, `drill/drill.sh` invocation.
 - **On what host** — the machine, the OS, the Incus version. "Real hardware"
   is the claim; name the hardware.
-- **The pinned candidate refs** — the exact `BOX_REF` / `CAST_REF` under
-  test, and the other repos' commit SHAs. A drill that does not say what it
-  drilled proves nothing later. Box's record names no converger ref since
-  #214: box installs nothing into a guest, so there is no such ref to pin and
-  naming one would claim a dependency box does not have.
+- **The candidate refs** — the exact box checkout ref / `CAST_REF` under test,
+  and the other repos' commit SHAs. A drill that does not say what it drilled
+  proves nothing later. Box's is no longer a ref anyone pins: since #225 the
+  drill measures repo, ref and SHA off the checkout it runs from, so the
+  record names the tree that ran rather than the one an operator meant to
+  name. And box's record names no converger ref since #214: box installs
+  nothing into a guest, so there is no such ref to pin and naming one would
+  claim a dependency box does not have.
 - **The shared run ID**, so this record reconciles with the sibling repos'.
 - **The numbers** — passed, failed, how long it took.
 - **What failed**, plainly.

@@ -182,19 +182,30 @@ check "install.sh is valid bash" 0 "" bash -n "$ROOT/install.sh"
 # print what it resolved — the same "run the pure block in isolation" trick rig
 # uses for its embedded dump script. Fail closed: a mangled extraction is caught
 # by the /opt/box grep below before any resolution is trusted.
-DBLOCK="$(mktemp)"
-awk '/id -u.*-eq 0/{f=1} f{print} f&&/^fi$/{exit}' "$ROOT/install.sh" > "$DBLOCK"
-# The $DEST/$BINDIR here are LITERAL text appended into the extracted block — they
-# must expand when that block RUNS, not when this printf writes it. Hence single
-# quotes; SC2016 is the intent.
-# shellcheck disable=SC2016
-printf '\nprintf "DEST=%%s BINDIR=%%s\\n" "$DEST" "$BINDIR"\n' >> "$DBLOCK"
+# Written as functions because the drill's own preflight is checked against this
+# same block 6,000 lines below, and $DBLOCK does not survive that far (it is
+# removed the moment this section is done with it). Two spellings of one
+# extraction is the thing that drifts, so there is one spelling.
+extract_dest_block() {   # → path to a runnable copy of install.sh's uid block
+  local f; f="$(mktemp)"
+  awk '/id -u.*-eq 0/{f=1} f{print} f&&/^fi$/{exit}' "$ROOT/install.sh" > "$f"
+  # The $DEST/$BINDIR here are LITERAL text appended into the extracted block —
+  # they must expand when that block RUNS, not when this printf writes it. Hence
+  # single quotes; SC2016 is the intent.
+  # shellcheck disable=SC2016
+  printf '\nprintf "DEST=%%s BINDIR=%%s\\n" "$DEST" "$BINDIR"\n' >> "$f"
+  printf '%s' "$f"
+}
+run_dest_block() {   # run_dest_block <block> <uid> [extra env assignments...]
+  local block="$1" uid="$2"; shift 2
+  FAKE_UID="$uid" HOME=/home/tester PATH="$SHIMDIR:$PATH" env "$@" bash "$block"
+}
+DBLOCK="$(extract_dest_block)"
 check "install.sh: DEST block extracted (guards the awk)" 0 "/opt/box" cat "$DBLOCK"
 check "install.sh: the extracted DEST block is valid bash" 0 "" bash -n "$DBLOCK"
 
 dest() { # dest <uid> [extra env assignments...] — resolve DEST/BINDIR
-  local uid="$1"; shift
-  FAKE_UID="$uid" HOME=/home/tester PATH="$SHIMDIR:$PATH" env "$@" bash "$DBLOCK"
+  run_dest_block "$DBLOCK" "$@"
 }
 # Root: the global path — a system tree other users can read (#71).
 check "install.sh: root → DEST=/opt/box"           0 "DEST=/opt/box"          dest 0
@@ -5950,7 +5961,28 @@ check "drill tree: a detached HEAD is named as one, never recorded as 'HEAD'" 0 
                     printf '[%s]' \"\$(record_tree_ref '$RECGIT')\""
 check "drill tree: ...and the SHA is unchanged by the detach" 0 "[$RECGITSHA]" \
   rec "printf '[%s]' \"\$(record_tree_sha '$RECGIT')\""
+# A candidate is detached ONTO something. drills/README.md's release procedure
+# is `git checkout release/0.10.0` then drill, and that tag is the name the
+# retired --ref flag used to be handed — so the record keeps saying it rather
+# than falling back to the word for having no name at all (round 1, #225).
+git -C "$RECGIT" tag v0.0.1-drilltest
+check "drill tree: a detached HEAD exactly on a tag records the TAG" 0 \
+  "[v0.0.1-drilltest]" \
+  rec "printf '[%s]' \"\$(record_tree_ref '$RECGIT')\""
+# Only an EXACT match. `describe` would happily answer "two commits past the
+# tag" for a tree that is not the tag, and a record that blurs the two is worse
+# than one that admits the tree has no name.
+check "drill tree: ...but a commit PAST the tag is 'detached', not the tag" 0 \
+  "[detached]" \
+  rec "git -C '$RECGIT' commit -q --allow-empty -m past >/dev/null 2>&1
+       printf '[%s]' \"\$(record_tree_ref '$RECGIT')\""
+git -C "$RECGIT" tag -d v0.0.1-drilltest >/dev/null
 git -C "$RECGIT" checkout -q trunk
+# A BRANCH still wins outright: --abbrev-ref answers, and no tag is consulted.
+git -C "$RECGIT" tag v0.0.2-drilltest
+check "drill tree: a branch checkout still records the branch, tag or no tag" 0 \
+  "[trunk]" rec "printf '[%s]' \"\$(record_tree_ref '$RECGIT')\""
+git -C "$RECGIT" tag -d v0.0.2-drilltest >/dev/null
 
 # The repository, off origin. The record has always carried owner/repo, so the
 # four URL shapes git hands out reduce to it and old records stay comparable.
@@ -5968,10 +6000,45 @@ check "drill tree: ...and an scp-style ssh remote, which is how a fork is cloned
   "[andriujoseba/box]" recrepo git@github.com:andriujoseba/box.git
 check "drill tree: ...and an ssh:// URL" 0 "[andriujoseba/box]" \
   recrepo ssh://git@github.com/andriujoseba/box.git
+# USERINFO. A clone made by CI or a credential helper carries user[:token]@ in
+# front of the host, and it is still GitHub. A version of this that prefix-
+# matched whole URLs classified these as private hosts and wrote them VERBATIM
+# into drills/<version>.md — a committed file — so a token in an origin URL
+# became a token in git history. None of the four shapes above carries userinfo,
+# which is exactly why none of them caught it (round 1, #225).
+check "drill tree: an https origin with a user still reduces to owner/repo" 0 \
+  "[heavy-duty/box]" recrepo https://someuser@github.com/heavy-duty/box.git
+check "drill tree: ...and one carrying a TOKEN, which is the leak" 0 \
+  "[heavy-duty/box]" \
+  recrepo https://x-access-token:ghp_notarealtoken@github.com/heavy-duty/box.git
+check "drill tree: ...and an scp-style remote whose user is not 'git'" 0 \
+  "[andriujoseba/box]" recrepo someuser@github.com:andriujoseba/box.git
+check "drill tree: ...and an ssh:// URL with no user at all" 0 \
+  "[andriujoseba/box]" recrepo ssh://github.com/andriujoseba/box.git
+# The property is not "no github.com credential reaches a record", it is that NO
+# credential does: a private host's URL is carried verbatim, and verbatim used to
+# include the token. So the verbatim arm is rebuilt from the URL's own parts —
+# scheme, host, path, everything the record wants — minus the userinfo.
+norecred() {   # norecred <url> <secret> — 0 when <secret> is NOT in the field
+  local out; out="$(recrepo "$1")"
+  case "$out" in
+    *"$2"*) echo "the record field carries the credential: $out"; return 1 ;;
+  esac
+  printf '%s' "$out"
+}
+check "drill tree: a private host keeps its scheme, host and path" 0 \
+  "[https://git.example.invalid/mirrors/box.git]" \
+  norecred https://ci:s3cr3t@git.example.invalid/mirrors/box.git s3cr3t
+check "drill tree: ...and a GitHub token cannot reach the field either" 0 "" \
+  norecred https://x-access-token:ghp_notarealtoken@github.com/heavy-duty/box.git \
+  ghp_notarealtoken
 # Anything that is not GitHub is carried VERBATIM. Mangling a path or a private
 # host into owner/repo would put a repository in the record that does not exist.
 check "drill tree: a non-GitHub remote is recorded verbatim, not mangled" 0 \
   "[/srv/mirrors/box.git]" recrepo /srv/mirrors/box.git
+check "drill tree: ...and so is an ssh:// one on a private host" 0 \
+  "[ssh://git.example.invalid/mirrors/box.git]" \
+  recrepo ssh://git@git.example.invalid/mirrors/box.git
 git -C "$RECGIT" remote set-url origin https://github.com/heavy-duty/box.git
 # No origin at all is stated rather than left blank: a blank field in a record
 # reads as a formatting slip, and this one is a fact about the checkout.
@@ -6348,14 +6415,14 @@ check "drill preflight: ...and BOX_BIN, the same way" 0 "BINDIR=/srv/bin" \
 # install.sh resolves it" is a claim about two files, so both are run and their
 # answers compared. A copy that drifts is what put the drill one directory away
 # from the installer in the first place.
-DBLOCK2="$(mktemp)"
-awk '/id -u.*-eq 0/{f=1} f{print} f&&/^fi$/{exit}' "$ROOT/install.sh" > "$DBLOCK2"
-# shellcheck disable=SC2016  # LITERAL text, expanded when the extracted block runs
-printf '\nprintf "DEST=%%s BINDIR=%%s\\n" "$DEST" "$BINDIR"\n' >> "$DBLOCK2"
+# The same extraction the install.sh section ran, through the same function —
+# its $DBLOCK was removed up there, so this needs its own copy, not its own
+# spelling of how to make one.
+DBLOCK2="$(extract_dest_block)"
 resolvers_agree() {   # resolvers_agree <uid> [env...]
   local uid="$1"; shift
   local a b
-  a="$(FAKE_UID="$uid" HOME=/home/tester PATH="$SHIMDIR:$PATH" env "$@" bash "$DBLOCK2")"
+  a="$(run_dest_block "$DBLOCK2" "$uid" "$@")"
   b="$(paths "$uid" "$@")"
   [ "$a" = "$b" ] || { echo "install.sh says [$a], drill.sh says [$b]"; return 1; }
 }

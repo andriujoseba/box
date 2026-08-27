@@ -415,35 +415,74 @@ record_tree_sha() {   # <dir> → the seven-char commit, or 'unresolved'
   esac
 }
 
-record_tree_ref() {   # <dir> → the branch, or 'detached' where there is none
-  local ref
+record_tree_ref() {   # <dir> → the branch, the tag, or 'detached' for neither
+  local ref tag
   ref="$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   # A detached HEAD — which is what a `git checkout <tag>` leaves, and how a
   # release candidate is most often drilled — answers the literal string HEAD.
-  # 'HEAD' names no tree to a later reader; 'detached' at least says why the
-  # field is empty, and the SHA beside it is the fact that matters there.
+  # 'HEAD' names no tree to a later reader, so ask the other question git can
+  # answer here: a candidate is detached ONTO something, and drills/README.md's
+  # own release procedure detaches onto a release tag. That tag is the name the
+  # retired --ref flag used to be handed, so recording it keeps the field
+  # saying what an operator would have typed. Only an exact match counts — a
+  # `describe` of "three commits past v0.10.0" is a different tree, and a
+  # record that blurs the two is worse than one that admits it has no name.
   case "$ref" in
-    ''|HEAD) printf 'detached' ;;
-    *)       printf '%s' "$ref" ;;
+    ''|HEAD)
+      tag="$(git -C "$1" describe --tags --exact-match HEAD 2>/dev/null)"
+      # 'detached' at least says WHY the field names nothing, and the SHA
+      # beside it is the fact that carries there anyway.
+      if [ -n "$tag" ]; then printf '%s' "$tag"; else printf 'detached'; fi ;;
+    *) printf '%s' "$ref" ;;
   esac
 }
 
-# The repository, off origin. GitHub's two URL forms and an optional .git suffix
-# reduce to the owner/repo every record before this one carried by hand, so old
+# The repository, off origin. A GitHub URL in any of the shapes git hands out
+# reduces to the owner/repo every record before this one carried by hand, so old
 # and new records stay comparable and a FORK is visible as one — the case this
 # issue was measured on, where the 0.10.0 candidate lived on andriujoseba/box.
 # Anything that is not a GitHub URL is carried VERBATIM rather than mangled into
 # that shape: a record naming a path or a private host says so.
+#
+# The URL is taken APART rather than prefix-matched, and that is the whole
+# subtlety. A clone made by CI or a credential helper carries `user:token@` in
+# front of the host, which is still GitHub — a version of this that matched
+# `https://github.com/*` sent that URL to the verbatim arm and wrote the token
+# into drills/<version>.md, a file this repo COMMITS as release evidence, so
+# the leak was a revocation and not a formatting slip. Splitting the authority
+# off first fixes the classification and the leak with one cut, and the
+# verbatim arm is rebuilt without its userinfo too: the property worth having
+# is that NO credential reaches a record, not that no github.com one does.
 record_tree_repo() {   # <dir> → owner/repo, the remote URL, or a stated absence
-  local url
+  local url host path
   url="$(git -C "$1" remote get-url origin 2>/dev/null)"
   [ -n "$url" ] || { printf 'no origin remote'; return 0; }
   case "$url" in
-    https://github.com/*|http://github.com/*|git@github.com:*|ssh://git@github.com/*)
-      url="${url#*github.com}"; url="${url#[:/]}"; url="${url%.git}"
-      printf '%s' "${url%/}" ;;
-    *) printf '%s' "$url" ;;
+    *://*)   # scheme://[userinfo@]host[:port]/path
+      path="${url#*://}"; host="${path%%/*}"
+      case "$path" in */*) path="${path#*/}" ;; *) path='' ;; esac ;;
+    *:*)     # [user@]host:path — the scp-style form, which has no scheme
+      host="${url%%:*}"; path="${url#*:}" ;;
+    *)       # a plain filesystem path: no authority, so nothing to take apart
+      printf '%s' "$url"; return 0 ;;
   esac
+  # Userinfo lives ONLY in the authority, and a literal @ inside one has to be
+  # percent-encoded, so the LAST @ is the delimiter and the longest match is
+  # the right cut. Everything before it is a credential and none of a record's
+  # business; everything after it is the host the record should name.
+  host="${host##*@}"
+  # The port is matched off but kept: github.com:22 is github.com, while a
+  # private host's port is part of what the verbatim arm is for.
+  case "${host%%:*}" in
+    github.com) path="${path%.git}"; printf '%s' "${path%/}" ;;
+    # Rebuilt, not echoed: this is $url minus the userinfo and nothing else.
+    *) case "$url" in
+         *://*) printf '%s://%s' "${url%%://*}" "$host"
+                if [ -n "$path" ]; then printf '/%s' "$path"; fi ;;
+         *)     printf '%s:%s' "$host" "$path" ;;
+       esac ;;
+  esac
+  return 0
 }
 
 # The paths git reports as changed, one per line — the message the refusal
@@ -1001,6 +1040,13 @@ export PATH="$BOX_BINDIR:$PATH"
 # and not a FAIL — the operator asked for this with --allow-dirty and the record
 # is stamped for it; what the note adds is WHICH paths, which the stamp cannot
 # carry (D5, #225).
+#
+# This is the SECOND read of the tree's dirtiness, the stamp in record_collect()
+# being the first, and they are deliberately independent: both describe the tree
+# as it is, not the flag the operator typed, so neither latches the other's
+# answer. A tree cleaned between them therefore emits an unstamped record with
+# no note beside it — which is the honest reading of a tree that is now clean,
+# and the reason to prefer measuring twice to remembering once.
 if [ "$ALLOW_DIRTY" = 1 ] && dirty_paths="$(record_tree_dirty "$CHECKOUT")"; then
   note "the worktree was DIRTY and --allow-dirty was given: this run drilled uncommitted work, and the record's ref field is stamped '-dirty' because it cannot be reproduced from the commit it names — $(printf '%s' "$dirty_paths" | tr '\n' ';')"
 fi
