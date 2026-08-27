@@ -166,6 +166,17 @@ runs on top of it for forty minutes. Commit, stash or switch branches while a
 drill is going and the record still names what was drilled, not what your
 worktree happens to say when the summary prints.
 
+There is one window that carrying a measurement cannot cover: between the
+moment the tree is measured and the moment `install.sh` finishes copying it,
+the checkout is still an ordinary directory, and a change there moves the bytes
+that get installed rather than the tree the record describes. So the drill
+**verifies the tree has not moved** on both sides of the install — before it,
+where nothing has been installed yet, and again once the copy returns — and
+refuses rather than emitting a record it cannot stand behind. The check is on
+the content, not on `git status`: rewriting a file that was already dirty
+changes what lands and changes no path list. Leave the checkout alone for the
+length of a run; everything after the install is yours again.
+
 What it emits is a **skeleton**: it says so in its own last paragraph, and that
 paragraph is deleted by whoever writes what the findings *mean* for the
 release. A generated file that reads like a finished one is worse than no file
