@@ -56,8 +56,13 @@ it emits them rather than leaving them to be retyped out of coloured terminal
 output at the end of a forty-minute run (#152):
 
 ```
-bash drill/drill.sh --ref release/0.10.0 --emit-record drills/0.10.0.md
+git checkout release/0.10.0
+bash drill/drill.sh --emit-record drills/0.10.0.md
 ```
+
+The checkout is the subject: the drill installs the tree it runs from and there
+is no ref to pass it, so the `git checkout` above is what selects the candidate
+and the record's ref fields are measured back off it (#225).
 
 - **`--run-id <id>`** (or `DRILL_RUN_ID`) pins the ID this release set's three
   records share. Unset, the drill generates `drill-<version>-<date>-01` — bump
@@ -109,7 +114,8 @@ Copy the shape, not the number.
 
 ## What ran
 
-`bash drill/drill.sh --ref release/9.9.9` — the full end-to-end: install the
+`bash drill/drill.sh` — run from a checkout of `release/9.9.9`, the full
+end-to-end: install the
 stack, mint every template cold, snapshot and restore, uninstall to zero
 residue. Then `drill/multiuser.sh` for the two-user grant matrix.
 

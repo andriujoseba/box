@@ -772,11 +772,13 @@ bash drill/wipe.sh      # scorched earth: strip BOTH name generations, images an
 ```
 
 To drill something other than latest `main` — a release ref, or a PR branch
-on a fork:
+on a fork — **check it out and run the drill there**. The drill installs the
+tree it runs from and takes no ref (#225):
 
 ```sh
-bash drill/drill.sh --ref <branch-or-tag>
-bash drill/drill.sh --repo <owner>/<repo> --ref <branch>   # a PR under review
+git checkout <branch-or-tag>                    # a release candidate
+git fetch <fork-remote> <branch> && git checkout FETCH_HEAD   # a PR under review
+bash drill/drill.sh
 ```
 
 The doctor reads ground truth, not config claims — the kernel's `isolated on`

@@ -465,7 +465,10 @@ record_tree_dirty() {   # <dir> → the dirty paths on stdout; 0 when dirty
 # that already knows it is holding a checkout.
 record_tree_is_git() {   # <dir> → 0 when git can read <dir> as a work tree
   command -v git >/dev/null 2>&1 || return 1
-  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1
+  # git answers 128 for "not a repository", and a caller reading this as a
+  # question deserves a yes or a no rather than git's own exit codes.
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  return 0
 }
 
 # drills/README.md's worked example writes "41 minutes wall clock". $SECONDS

@@ -19,6 +19,20 @@ git clone https://github.com/heavy-duty/box && cd box
 bash drill/drill.sh --yes      # run and forget; omit --yes to be asked first
 ```
 
+**Those two lines drill what you cloned**, and that is the whole contract of
+the harness: check out the branch or tag you mean, run the drill, done. The
+tree under test is the checkout — the drill installs it by running the
+`install.sh` beside it, and there is no flag that points it at another tree
+(#225). Until then `--repo`/`--ref` defaulted to `heavy-duty/box@main` and the
+network supplied the subject while the checkout supplied only the harness, so
+this example drilled `main` from whatever branch you were standing on.
+
+The run **refuses a dirty worktree**, naming the paths, because the record it
+emits names a commit and an uncommitted edit makes that a lie; `--allow-dirty`
+drills it anyway and stamps the record's ref field `-dirty`. It also **refuses
+to run as root**: box installs by uid, and every phase here assumes the
+ordinary operator account you would use box from. It calls `sudo` itself.
+
 Exit 0 means every check passed **and** the run was not short — a phase that
 never executed used to report a clean sweep, and does not any more (#153).
 Roughly 20–40 minutes, most of it cold boxes.
@@ -34,7 +48,7 @@ including an operator's own boxes on a shared host.
 | flag / variable | what it does |
 |---|---|
 | `--yes`, `-y` | skip the consent prompt (CI, or you've read the header) |
-| `--repo <owner/repo>`, `--ref <ref>` | drill a fork or a branch rather than `heavy-duty/box@main` |
+| `--allow-dirty` | run with an uncommitted worktree; the emitted record's ref field is stamped `-dirty`, because a record that cannot be reproduced must say so on its face |
 | `--keep-boxes` | leave the boxes up to poke at; the teardown probe is then a **declared skip** and the floor drops by exactly its one probe |
 | `--emit-record <path>` | write the release record skeleton (#152) |
 | `--run-id <id>` | pin the ID box's, rig's and cast's records for one release share; unset, it generates `drill-<version>-<date>-01` and prints it early |
@@ -43,7 +57,7 @@ including an operator's own boxes on a shared host.
 | `NO_COLOR` | drop the ANSI, as does any stdout that is not a terminal — a record is pasted at least as often as it is read |
 
 `--help` prints the script's own header block. That block **is** the help text
-(`sed -n '2,54p' "$0"`), so a line added above it moves the window: keep the
+(`sed -n '2,69p' "$0"`), so a line added above it moves the window: keep the
 two together. `test/cli.sh` checks both halves of that — the window still covers
 the whole phase list, and the range quoted here and in `CONTRIBUTING.md` is the
 range the script runs, read out of the script rather than trusted.
@@ -130,10 +144,20 @@ bash drill/drill.sh --yes --emit-record drills/0.10.0.md
 writes [`drills/README.md`](../drills/README.md)'s six-item record with every
 field the harness already knows filled in: the run ID, the host (CPU, RAM, OS,
 kernel, Incus version, and whether it was itself virtualised), the candidate
-refs **and the SHAs they resolve to**, the invocation that reproduces the run,
+ref **and its SHA**, the invocation that reproduces the run,
 the numbers against the floor, the wall clock, the findings, and the isolation
 audit answers. Everything else in this file used to be retyped by hand out of
 ANSI-coloured terminal output at the end of a forty-minute run.
+
+**The ref fields are MEASURED from the checkout**, not echoed back from what
+was asked for (#225): the repository is `git remote get-url origin` reduced to
+`owner/repo` — anything that is not a GitHub URL is carried verbatim — the
+branch is `git rev-parse --abbrev-ref HEAD`, recorded as `detached` where there
+is none, and the SHA is `git rev-parse HEAD`. They used to be the `--repo` and
+`--ref` arguments with the SHA resolved off a *remote*, which described what
+had been requested rather than what ran. Where `--allow-dirty` was given the
+ref field reads `<sha>-dirty` and the invocation carries the flag, so a record
+that cannot be reproduced from the commit it names says so on its face.
 
 What it emits is a **skeleton**: it says so in its own last paragraph, and that
 paragraph is deleted by whoever writes what the findings *mean* for the
