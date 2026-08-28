@@ -4445,6 +4445,37 @@ case "$*" in
   *"admin init --preseed"*|*"acl edit"*|*"profile edit"*)
     if [ -n "${FAKE_INCUS_LOG:-}" ]; then sed 's/^/  | /' >> "$FAKE_INCUS_LOG"; else cat >/dev/null; fi ;;
 esac
+# The #229 convergence is the first thing setup-host says in project scope, so
+# the shim learns the '--project <name>' prefix here and every pattern below
+# stays written in the bare form the rest of the script uses. Logged above
+# first, so the assertions still read the exact command line that was sent.
+proj=default
+if [ "${1:-}" = --project ]; then proj="$2"; shift 2; fi
+# The profile store is STATEFUL, and only when FAKE_PROFILE_STATE says so —
+# every case that predates #229 leaves it unset and keeps answering from
+# FAKE_HAVE_*. It has to be stateful because the claims under test are "the
+# old name is gone after", "the second run is a no-op" and "every project,
+# not just default", and none of those can be read off a log of calls made
+# against a store that never changes. Incus's own two refusals are modelled:
+# a rename onto an existing name fails (cmd/incusd/profiles.go), and an
+# in-use profile cannot be deleted.
+if [ -n "${FAKE_PROFILE_STATE:-}" ]; then
+  pf() { printf '%s/%s.%s' "$FAKE_PROFILE_STATE" "$proj" "$1"; }
+  case "$*" in
+    "profile show "*)   [ -f "$(pf "$3")" ] || exit 1 ; exit 0 ;;
+    "profile create "*) : > "$(pf "$3")" ; exit 0 ;;
+    "profile rename "*)
+      [ -f "$(pf "$3")" ] || exit 1
+      if [ -f "$(pf "$4")" ]; then
+        echo "Error: Profile \"$4\" already exists" >&2; exit 1
+      fi
+      mv "$(pf "$3")" "$(pf "$4")" ; exit 0 ;;
+    "profile delete "*)
+      [ -z "${FAKE_OLD_PROFILE_IN_USE:-}" ] || exit 1
+      rm -f "$(pf "$3")" ; exit 0 ;;
+    "project list --format csv") printf '%s\n' "${FAKE_PROJECTS:-}" ; exit 0 ;;
+  esac
+fi
 case "$*" in
   "storage show default")         [ -n "${FAKE_HAVE_STORAGE:-}" ] || exit 1 ;;
   # The live pool's placement (#180): FAKE_POOL_SOURCE unset answers the way a
@@ -5160,6 +5191,120 @@ check "setup-host: ...and reaches --minimal to do it" 0 "" \
   grep -q 'admin init --minimal' "$W180/p7.log"
 rm -f "$POOLFN" "$PLACEDFN"
 rm -rf "$W180"
+
+# ---------------------------------------------------------------------------
+# #229 — the placement contract's rename, converged. Driven end to end against
+# the stateful profile store rather than grepped, because every claim here is
+# about what the host HOLDS afterwards: the old name gone, the new one there,
+# in every project, and a second run silent. A log of calls cannot say that.
+#
+# What these cases deliberately do NOT assert is that attached boxes keep their
+# placement across the rename. That is Incus's behaviour, not this script's,
+# and it was answered where it lives (#229 D6): instances_profiles stores the
+# association by profile id and the rename is an UPDATE of the name column
+# alone, on main and on the stable-6.0 line setup-host installs. What IS
+# asserted here is the consequence for this script — that it makes no
+# reassignment pass, because none is owed.
+# ---------------------------------------------------------------------------
+W229="$(mktemp -d)"
+s229() { # s229 <name> <profile-file...> — a fresh store; 'project.profile' each
+  local d="$W229/$1"; shift
+  rm -rf "$d"; mkdir -p "$d"
+  local p; for p; do : > "$d/$p"; done
+  printf '%s' "$d"
+}
+run229() { # run229 <store> <log> [VAR=val ...] — the real setup-host over it
+  local store="$1" log="$2"; shift 2
+  rm -f "$log"
+  runsetup "FAKE_PROFILE_STATE=$store" "FAKE_INCUS_LOG=$log" \
+           FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 \
+           BOX_SUBNET=10.89.0.0/24 "FAKE_IP4_DEFAULT=$D_INBOX" "FAKE_IP4_ADDRS=$A_GUEST" \
+           "$@"
+}
+# The listing a granted host answers with: Incus marks the session's own
+# project by appending " (current)" to the name.
+P229="$(printf 'default (current)\nuser-1000')"
+
+# The upgrade: a 0.9.x host, one granted user, both projects on the old name.
+S229="$(s229 up default.box-net user-1000.box-net)"
+run229 "$S229" "$W229/up.log" "FAKE_PROJECTS=$P229" > "$W229/up.out" 2>&1
+check "setup-host: an upgrading host renames the contract in 'default' (#229)" 0 \
+  "renamed box-net -> box-profile in the default project" cat "$W229/up.out"
+check "setup-host: ...and in the granted user's project too, not just 'default'" 0 \
+  "renamed box-net -> box-profile in project user-1000" cat "$W229/up.out"
+check "setup-host: ...leaving box-profile in 'default'" 0 "" test -f "$S229/default.box-profile"
+check "setup-host: ...and no box-net anywhere" 1 "" \
+  bash -c 'ls "'"$S229"'" | grep -q "\.box-net$"'
+check "setup-host: ...the user project's copy converged as well" 0 "" \
+  test -f "$S229/user-1000.box-profile"
+check "setup-host: ...and the run still finished" 0 "Host ready" cat "$W229/up.out"
+# No reassignment pass is owed, and none is made — the rename carries every
+# attached box with it (D6). A 'profile assign' here would be the second
+# mechanism D3 refuses, arrived at from the other direction.
+check "setup-host: ...making no reassignment pass, because none is owed (D6)" 1 "" \
+  grep -q 'profile assign' "$W229/up.log"
+# Order is load-bearing: the convergence runs BEFORE the create-if-missing and
+# the edit, or the edit lands on a profile the rename is about to collide with.
+check "setup-host: the rename precedes the profile edit it feeds" 0 "" bash -c '
+  log="'"$W229"'/up.log"
+  r="$(grep -n "profile rename box-net box-profile" "$log" | head -1 | cut -d: -f1)"
+  e="$(grep -n "profile edit box-profile" "$log" | head -1 | cut -d: -f1)"
+  [ -n "$r" ] && [ -n "$e" ] && [ "$r" -lt "$e" ]'
+# The second run is the acceptance criterion in one line.
+run229 "$S229" "$W229/again.log" "FAKE_PROJECTS=$P229" > "$W229/again.out" 2>&1
+check "setup-host: a second consecutive run says nothing about the rename" 1 "" \
+  grep -q "box-net" "$W229/again.out"
+check "setup-host: ...and makes no rename or delete call at all" 1 "" \
+  grep -q -e "profile rename" -e "profile delete" "$W229/again.log"
+
+# The " (current)" strip. The listing below marks a user project current, which
+# a real admin run never produces — what it drives is the strip itself, and
+# unstripped the name reaches no project at all, so BOTH renames vanish
+# silently. That silence is the failure this case exists to make loud.
+S229C="$(s229 cur user-1000.box-net user-1001.box-net)"
+run229 "$S229C" "$W229/cur.log" \
+  "FAKE_PROJECTS=$(printf 'user-1000 (current)\nuser-1001')" > "$W229/cur.out" 2>&1
+check "setup-host: the ' (current)' marker is stripped before the name is used" 0 "" \
+  test -f "$S229C/user-1000.box-profile"
+check "setup-host: ...and the unmarked project beside it converges too" 0 "" \
+  test -f "$S229C/user-1001.box-profile"
+
+# The interrupted upgrade: both names present. The new one wins, and the case
+# is decided before any rename is attempted — Incus refuses a rename onto an
+# existing name, so the other order would die here under 'set -e'.
+S229B="$(s229 both default.box-net default.box-profile)"
+run229 "$S229B" "$W229/both.log" "FAKE_PROJECTS=default (current)" > "$W229/both.out" 2>&1
+check "setup-host: both names present — the stale box-net is removed (#229 D4)" 0 \
+  "removed the stale box-net in the default project" cat "$W229/both.out"
+check "setup-host: ...and the run does not die on the rename incus would refuse" 0 \
+  "Host ready" cat "$W229/both.out"
+check "setup-host: ...having attempted no rename at all in that case" 1 "" \
+  grep -q 'profile rename' "$W229/both.log"
+check "setup-host: ...leaving only box-profile" 1 "" test -f "$S229B/default.box-net"
+
+# ...and when the stale one cannot be deleted, something is still placed on it.
+# Incus refuses to delete an in-use profile, and that is a human's problem to
+# see, not a silent pass — but it does not stop the rest of the stack.
+S229U="$(s229 inuse default.box-net default.box-profile)"
+run229 "$S229U" "$W229/inuse.log" "FAKE_PROJECTS=default (current)" \
+  FAKE_OLD_PROFILE_IN_USE=1 > "$W229/inuse.out" 2>&1
+check "setup-host: an undeletable box-net is named, not swallowed" 0 \
+  "carries BOTH box-profile and box-net" cat "$W229/inuse.out"
+check "setup-host: ...naming the command that says what is still on it" 0 \
+  "profile show box-net" cat "$W229/inuse.out"
+check "setup-host: ...and the rest of the stack still converges" 0 "Host ready" \
+  cat "$W229/inuse.out"
+
+# The fresh host never sees the rename branch at all.
+S229F="$(s229 fresh)"
+run229 "$S229F" "$W229/fresh.log" "FAKE_PROJECTS=default (current)" > "$W229/fresh.out" 2>&1
+check "setup-host: a fresh host creates box-profile and never renames" 1 "" \
+  grep -q 'profile rename' "$W229/fresh.log"
+check "setup-host: ...saying nothing about an old name it never had" 1 "" \
+  grep -q 'box-net' "$W229/fresh.out"
+check "setup-host: ...and the contract is there afterwards" 0 "" \
+  test -f "$S229F/default.box-profile"
+rm -rf "$W229"
 
 rm -rf "$W80" "$SETUPSHIM"
 
