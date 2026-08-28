@@ -168,7 +168,15 @@ if incus project show "$project" >/dev/null 2>&1 </dev/null; then
     incus --project "$project" image delete "$fp" </dev/null
   done < <(incus --project "$project" image list --format csv --columns f 2>/dev/null)
 
+  # Both names, for one release (#229 D7). install.sh skips host setup on an
+  # upgrade, so a host upgraded to this release still carries box-net in every
+  # granted project until an admin runs 'box setup-host' by hand — and in that
+  # window a project holding one is NOT empty, so the delete below fails and
+  # names three probes (list / image list / storage volume list) that are all
+  # empty, because the blocker is a profile none of them shows. The box-net
+  # line comes out with the rest of D7's compatibility, one release from now.
   incus --project "$project" profile delete box-profile >/dev/null 2>&1 </dev/null || true
+  incus --project "$project" profile delete box-net >/dev/null 2>&1 </dev/null || true  # pre-0.10.0 name (#229)
   incus project delete "$project" </dev/null \
     || { echo "box revoke: could not delete $project — something is still in it (incus --project $project list / image list / storage volume list)" >&2; exit 1; }
   echo "purge: project $project removed"

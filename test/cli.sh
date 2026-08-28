@@ -5254,7 +5254,7 @@ rm -rf "$W180"
 # name what was renamed announces nothing. drills/ is exempt for the reason
 # drill/RUNS.md is: a release record says what that release actually carried,
 # and rewriting one would have 0.9.1 shipping a profile it never had.
-OLDNAME_KEEP='^(CHANGELOG\.md|changelog\.d/.*\.md|drill/RUNS\.md|drills/.*\.md|host/setup-host\.sh|host/teardown-host\.sh|drill/doctor\.sh|drill/wipe\.sh|test/cli\.sh)$'
+OLDNAME_KEEP='^(CHANGELOG\.md|changelog\.d/.*\.md|drill/RUNS\.md|drills/.*\.md|host/setup-host\.sh|host/teardown-host\.sh|host/revoke-user\.sh|drill/doctor\.sh|drill/wipe\.sh|test/cli\.sh)$'
 OLDSWEEP="$(mktemp)"
 git -C "$ROOT" ls-files | grep -vE "$OLDNAME_KEEP" > "$OLDSWEEP"
 oldname_survivors() { # oldname_survivors [root] — prints offenders; 0 if any
@@ -5283,7 +5283,7 @@ printf 'incus network create boxnet ipv4.address=10.88.0.1/24\n' > "$OLDFIX/bin/
 check "rename: ...while 'boxnet' itself is untouched by it (the boundary)" 1 "" \
   oldname_survivors "$OLDFIX"
 rm -rf "$OLDFIX"
-for f in host/setup-host.sh host/teardown-host.sh drill/doctor.sh drill/wipe.sh; do
+for f in host/setup-host.sh host/teardown-host.sh host/revoke-user.sh drill/doctor.sh drill/wipe.sh; do
   check "rename: $f handles the old name on purpose, and still does" 0 "" \
     grep -qw -- 'box-net' "$ROOT/$f"
 done
