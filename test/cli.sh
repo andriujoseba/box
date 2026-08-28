@@ -6885,6 +6885,58 @@ check "drill payload: a symlink pointing elsewhere is refused" 1 "link ->" \
   pay "payload_attest '$PAYSRC' '$PAYDST'"
 rm -f "$PAYSRC/link" "$PAYDST/link"
 
+# --- the manifest cannot be forged by a path (round 5, #225) -----------------
+# codex's construction, built here. A newline is legal in a path, so a
+# '<path> <hash>' LINE cannot say where a record ends: a source whose only file
+# sits under a directory named `a <hash-of-alpha>` + newline + `.` prints the
+# same two lines as a destination holding top-level `a` and `b`. Different
+# payloads, one verdict, on the check whose whole claim is byte identity.
+PAYNL="$PAYWORK/newline"; mkdir -p "$PAYNL/src" "$PAYNL/dst"
+PAYNLA="$(printf alpha | git hash-object --stdin)"
+PAYNLDIR="$(printf './a %s\n.' "$PAYNLA")"     # the forged record boundary
+mkdir -p "$PAYNL/src/$PAYNLDIR"
+printf beta  > "$PAYNL/src/$PAYNLDIR/b"
+printf alpha > "$PAYNL/dst/a"
+printf beta  > "$PAYNL/dst/b"
+check "drill payload: codex's forged-boundary pair is REFUSED" 1 \
+  "the installed tree is not the tree this checkout holds" \
+  pay "payload_attest '$PAYNL/src' '$PAYNL/dst'"
+# ...and the delta says so readably: the path is escaped for display, so the
+# operator reads one line per record even when a file name holds a newline.
+check "drill payload: ...and the delta escapes the forged path, not the verdict" 1 \
+  "\$'./a $PAYNLA\\n./b'" pay "payload_attest '$PAYNL/src' '$PAYNL/dst'"
+# The converse, which is what stops the fix being 'reds on anything with a
+# newline in it': the same awkward path on both sides is still a faithful copy.
+PAYNL2="$PAYWORK/newline-ok"; mkdir -p "$PAYNL2/src" "$PAYNL2/dst"
+mkdir -p "$PAYNL2/src/$PAYNLDIR" "$PAYNL2/dst/$PAYNLDIR"
+printf beta > "$PAYNL2/src/$PAYNLDIR/b"
+printf beta > "$PAYNL2/dst/$PAYNLDIR/b"
+check "drill payload: a newline path copied faithfully still attests" 0 "" \
+  pay "payload_attest '$PAYNL2/src' '$PAYNL2/dst'"
+# The encoding itself, so a regression to lines reds on its own rather than
+# waiting for someone to rebuild the collision: three NUL-terminated fields per
+# file, and a manifest that is a FILE because bash drops NUL from a $( ).
+check "drill payload: the manifest is NUL-delimited, three fields per file" 0 "[3n]" \
+  bash -c "set -u; . '$RECFN'; . '$PREFN'
+    m=\"\$(mktemp)\"; payload_list '$PAYSRC' \"\$m\"
+    nul=\$(tr -dc '\\0' < \"\$m\" | wc -c)
+    f=\$(cd '$PAYSRC' && find . -name .git -prune -o -path ./INSTALLED_FROM -prune -o \\
+          \\( -type f -o -type l \\) -print | wc -l)
+    [ \"\$f\" -gt 0 ] && [ \"\$nul\" -eq \$((f * 3)) ] && printf '[3n]'"
+check "drill payload: ...and nothing in it is separated by a newline" 0 "[0nl]" \
+  bash -c "set -u; . '$RECFN'; . '$PREFN'
+    m=\"\$(mktemp)\"; payload_list '$PAYSRC' \"\$m\"
+    [ \"\$(tr -dc '\\n' < \"\$m\" | wc -c)\" -eq 0 ] && printf '[0nl]'"
+# A symlink target may end in a newline, which \$( ) would eat — so the two
+# targets below differ by exactly the byte a careless reader drops.
+ln -sfn $'sub\n' "$PAYSRC/nlink"
+ln -sfn 'sub'    "$PAYDST/nlink"
+check "drill payload: a symlink target's trailing bytes are compared, not trimmed" 1 \
+  "nlink ->" pay "payload_attest '$PAYSRC' '$PAYDST'"
+rm -f "$PAYSRC/nlink" "$PAYDST/nlink"
+check "drill payload: ...and the pair attests again once both links are gone" 0 "" \
+  pay "payload_attest '$PAYSRC' '$PAYDST'"
+
 # codex's reproduction, RUN. A tar shim appends a marker to the source's
 # README.md immediately before the real tar reads it and restores the file the
 # moment tar returns, which is the mutation-during-copy the two-instant guards
@@ -6937,6 +6989,38 @@ PAYOKROOT="$PAYWORK/ok-root"
 pay_install "$PAYABA" "$PAYOKROOT"
 check "drill payload: an honest real install attests, end to end" 0 "" \
   pay "payload_attest '$PAYABA' '$PAYOKROOT/share/current'"
+
+# --- the two sides agree about .git and about filters (round 5, #225) --------
+# `tar --exclude=.git` is UNANCHORED: it matches any path component, so a
+# vendored repository is not copied either. A prune of the top-level .git alone
+# would red this install — which is faithful — after the wipe, the install and
+# the host setup had already been spent (claude, round 5).
+PAYNEST="$PAYWORK/nested"; mk_git_tree "$PAYNEST"
+mkdir -p "$PAYNEST/vendor"; git init -q "$PAYNEST/vendor"
+printf 'lib\n' > "$PAYNEST/vendor/lib.txt"
+PAYNESTROOT="$PAYWORK/nested-root"
+pay_install "$PAYNEST" "$PAYNESTROOT"
+check "drill payload: install.sh copied the vendored tree's FILES" 0 "lib" \
+  cat "$PAYNESTROOT/share/current/vendor/lib.txt"
+check "drill payload: ...and not the vendored .git, which it excludes by name" 1 "" \
+  test -e "$PAYNESTROOT/share/current/vendor/.git"
+check "drill payload: ...so a nested repository attests, it does not FATAL" 0 "" \
+  pay "payload_attest '$PAYNEST' '$PAYNESTROOT/share/current'"
+# hash-object reads .gitattributes on the checkout side and CANNOT on the
+# install side, which is under no repository. A `text` attribute would hash the
+# same bytes two ways and red every honest install, in the voice of the defect
+# this guard exists to catch — so both sides read --no-filters (claude, round 5).
+PAYATTR="$PAYWORK/attrs"; mk_git_tree "$PAYATTR"
+printf '* text=auto\n' > "$PAYATTR/.gitattributes"
+printf 'crlf\r\nlines\r\n' > "$PAYATTR/crlf.txt"
+git -C "$PAYATTR" add -A 2>/dev/null   # `text=auto` warns about the CRLF; that
+git -C "$PAYATTR" commit -q -m 'attributes and a CRLF file'   # warning IS the point
+PAYATTRROOT="$PAYWORK/attrs-root"
+pay_install "$PAYATTR" "$PAYATTRROOT"
+check "drill payload: the CRLF bytes really did land unconverted" 0 "" \
+  cmp -s "$PAYATTR/crlf.txt" "$PAYATTRROOT/share/current/crlf.txt"
+check "drill payload: ...and a .gitattributes text filter does not red the install" 0 "" \
+  pay "payload_attest '$PAYATTR' '$PAYATTRROOT/share/current'"
 
 # --- the files git hides and install.sh copies (round 4, #225) ---------------
 # `tar -C "$SRC" --exclude=.git` excludes the VCS state and NOTHING else, so an
