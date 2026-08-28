@@ -265,9 +265,17 @@ to drill (the nested-box trap of #80, the network, `dns.mode`, the profile's
 NIC keys, the ACL, the firewall drop, the storage pool, the bridge ports as the
 *kernel* sees them, leftover boxes, the host resolver, and whether a box can
 still resolve DNS). `--fix` converges what an aborted run left behind:
-restoring `dns.mode=none`, unsetting the vetoed NIC filtering keys, removing
-the `@internal` ACL rule, deleting leftover drill boxes. Users reach the same
-script as `box doctor`.
+restoring `dns.mode=none` and `ipv6.address=none`, converging a drifted
+`ipv4.address` back to the address the bridge actually holds, unsetting the
+vetoed NIC filtering keys, removing the `@internal` ACL rule, deleting leftover
+drill boxes. Users reach the same script as `box doctor`.
+
+One key is conditional, and the verdict says so rather than passing silently:
+writing `ipv4.address` **renumbers** the bridge, so `--fix` refuses while any
+instance is attached and names what has to happen first. The verdict separates
+the two classes for that reason — a report saying "3 problem(s), run `--fix`"
+where `--fix` can only reach two is advice this tool already knows the end of
+(#227).
 
 **Iterating on the drill?** Read [RUNS.md](RUNS.md) first — it is the run log:
 what the audit has answered so far, the bugs the drill has found in box, the
