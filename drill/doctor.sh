@@ -314,6 +314,14 @@ if [ "$TIER" = restricted ]; then
     [ "$iso" = "true" ] \
       && ok "security.port_isolation = true (as shipped)" \
       || no "security.port_isolation is NOT set in your box-profile profile — re-grant refreshes it: ask an admin to re-run 'box grant $(id -un)'"
+  elif incus profile show box-net >/dev/null 2>&1 </dev/null; then
+    # The tier IS granted — it is wearing the pre-0.10.0 name (#229). Saying
+    # "not granted" here would send the operator at the wrong fix: a re-grant
+    # would install box-profile beside the stale box-net rather than converge
+    # it, and the user would be told nothing about the copy left behind.
+    no "your project carries box-net, the pre-0.10.0 name for the placement contract — the tier is granted, but this project did not converge"
+    inf "fix:  an admin runs:  box setup-host   (it converges every project, this one included)"
+    hold "the rename in your project — converging it is admin-owned, and this tier cannot write another project's profiles"
   else
     no "no box-profile profile in your project — the restricted tier is granted per user"
     inf "fix:  an admin runs:  box grant $(id -un)"
@@ -495,6 +503,11 @@ fi
 # reported beside it, because the migration tool could still re-home the boxes
 # that referenced it; with that tool retired (#226), naming it here would tell
 # the operator to perform a migration this tool can no longer perform.
+#
+# That reasoning is why claude-dev stays unreported and box-net does not: the
+# test is whether a fix exists to name, not how old the name is. setup-host
+# converges box-net in every project, so the drift check below names a lever
+# the operator actually holds.
 PROFILES=""
 incus profile show box-profile >/dev/null 2>&1 && PROFILES="box-profile"
 head_ "Profile — the NIC is the isolation contract"
@@ -527,6 +540,30 @@ if [ -n "$PROFILES" ]; then
   inf "resources are per-box since 0.4.0 (stamped from the template at mint; BOX_CPU/BOX_MEMORY override)"
 else
   inf "box-profile does not exist (a fresh host — setup-host.sh will create it)"
+fi
+
+# A surviving box-net is drift, and unlike claude-dev above it is drift this
+# host can still fix: setup-host converges the rename in every project, so the
+# report names a fix that exists. It is reported in both the have- and
+# have-not-box-profile cases, because both are real — a host that never
+# converged carries only box-net, and one whose convergence was interrupted
+# carries the pair. Every project, since 'box grant' installs a copy into each
+# user-<uid> one and a stale copy there is exactly the residue the rename set
+# out to stop leaving behind (#229 D5).
+STALE=""
+while IFS= read -r project; do
+  [ -n "$project" ] || continue
+  incus --project "$project" profile show box-net >/dev/null 2>&1 </dev/null \
+    && STALE="$STALE${STALE:+ }$project"
+done < <(incus project list --format csv 2>/dev/null </dev/null | cut -d, -f1 | sed 's/ (current)$//' || true)
+if [ -n "$STALE" ]; then
+  no "box-net still exists — the pre-0.10.0 name for this profile, in: $STALE"
+  inf "boxes placed on it are still isolated; the fault is two names one hyphen"
+  inf "apart, which is what the rename removed (#229)."
+  inf "fix:  box setup-host   (renames it in every project; attached boxes keep their placement)"
+  hold "the rename — converging it is setup-host's job, and doing it here would be a second mechanism for one convergence"
+else
+  ok "no stale box-net — the placement contract has one name on this host"
 fi
 
 # The pool is read off the profile that PLACES every box (profiles/box-profile.yaml
