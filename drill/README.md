@@ -94,15 +94,23 @@ else's contract.
 ### Phase M is gone, and so is the migration it drilled
 
 There used to be an eighth phase. **M** built a faithful pre-0.4.0 stack —
-the old bridge on 10.87, the ancestor profile, a box wearing the old tag —
-purely so the host migration script could be proven to re-home it. Ten probes
-and a cold VM's wall clock, spent on a transition no user is left to take, so
-the phase and the tool were retired together (#226): a migration path with no
-drill behind it is a claim this repository does not make.
+`claudenet` on 10.87, the `claude-dev` profile, a box wearing the old
+`user.claudebox=1` tag — purely so the host migration script could be proven
+to re-home it. Ten probes and a cold VM's wall clock, spent on a transition no
+user is left to take, so the phase and the tool were retired together (#226):
+a migration path with no drill behind it is a claim this repository does not
+make.
 
-**If a host is still on the pre-0.4.0 stack, migrate it before taking this
-release** — install box `0.9.1` or earlier, run its host-migration verb, then
-upgrade. This release ships no migration path and no way to build one.
+**If a host still carries `claudenet` or any box tagged `user.claudebox=1`,
+migrate it before taking this release** — install box `0.9.1` or earlier, run
+its host-migration verb, then upgrade. This release ships no migration path
+and no way to build one.
+
+What the drill no longer *builds* is the whole of the cut. `box` still
+recognises a pre-rename box under every verb, `host/teardown-host.sh` still
+removes `claudenet`, `host/setup-host.sh` still refuses to claim 10.87 over a
+live one, and `drill/wipe.sh` still sweeps the old generation off a drill host
+— those clear what is on the host, which is not what the drill built.
 
 ### Phase D is a statement now, not a rehearsal
 
