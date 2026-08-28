@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# wipe.sh — scorched earth for drill hosts. Remove EVERY trace of box and of
-# pre-0.4.0 claudebox, so the next drill run starts from a truly bare host and
-# its verdict means something.
+# wipe.sh — scorched earth for drill hosts. Remove EVERY trace of box, so the
+# next drill run starts from a truly bare host and its verdict means something.
+# The pre-0.4.0 generation was swept here too until #226 retired the migration
+# path; nothing the drill builds wears those names now.
 #
 #   bash drill/wipe.sh                   # asks first; KEEPS cached images (an
 #                                        # image is upstream's artifact — wiping
@@ -40,13 +41,12 @@ say()  { printf 'wipe: %s\n' "$*"; }
 
 if [ "$YES" -ne 1 ]; then
   cat <<EOF
-This wipes EVERY trace of box/claudebox from this host ($(hostname)):
-  · every instance tagged user.box=1 or user.claudebox=1
+This wipes EVERY trace of box from this host ($(hostname)):
+  · every instance tagged user.box=1
   · every instance the drill has ever named (drill, clone, archive, peer,
     payroll, cbprobe, cbcopy, cbnotours, tpl)
-  · networks boxnet + claudenet, ACLs box-isolate + claude-isolate
-  · profiles box-net + claude-dev
-  · firewall units, scripts and nft tables of BOTH name generations
+  · the boxnet network, the box-isolate ACL, the box-net profile
+  · firewall units, scripts and nft tables
 $( [ "$PURGE_STORAGE" = 1 ] && echo "  · the 'default' storage pool AND its cached images (--purge-storage)" \
                             || echo "  · (cached images are KEPT — the next mint stays fast; --purge-storage removes them with the pool)" )
 Uncommitted work inside any box is LOST. Only do this on a drill host.
@@ -60,14 +60,12 @@ fi
 command -v incus >/dev/null || { say "incus is not installed — nothing box-shaped can exist; only firewall crumbs checked."; }
 
 if command -v incus >/dev/null; then
-  # --- instances: both tags, then every name the drill has ever used --------
+  # --- instances: the tag, then every name the drill has ever used ----------
   # One delete at a time — a multi-name 'incus delete' aborts at the first
   # missing name (drill trap 5).
-  for tag in "user.box=1" "user.claudebox=1"; do
-    for i in $(incus list "$tag" -f csv -c n 2>/dev/null); do
-      timeout -k 5 60 incus delete -f "$i" >/dev/null 2>&1 \
-        && say "deleted instance $i ($tag)" || say "instance $i: delete FAILED — look at it by hand"
-    done
+  for i in $(incus list "user.box=1" -f csv -c n 2>/dev/null); do
+    timeout -k 5 60 incus delete -f "$i" >/dev/null 2>&1 \
+      && say "deleted instance $i" || say "instance $i: delete FAILED — look at it by hand"
   done
   for n in drill clone archive peer payroll cbprobe cbcopy cbnotours tpl; do
     incus info "$n" >/dev/null 2>&1 || continue
@@ -75,16 +73,12 @@ if command -v incus >/dev/null; then
       && say "deleted untagged drill instance $n" || say "instance $n: delete FAILED — look at it by hand"
   done
 
-  # --- profiles, networks, ACLs — both generations ---------------------------
-  for p in box-net claude-dev; do
-    incus profile delete "$p" >/dev/null 2>&1 && say "deleted profile $p"
-  done
-  for net in boxnet claudenet; do
-    incus network delete "$net" >/dev/null 2>&1 && say "deleted network $net"
-  done
-  for acl in box-isolate claude-isolate; do
-    incus network acl delete "$acl" >/dev/null 2>&1 && say "deleted ACL $acl"
-  done
+  # --- profile, network, ACL -------------------------------------------------
+  # The pre-rename generation was swept here too until the migration path was
+  # retired (#226): nothing on this host builds it, so nothing has to clear it.
+  incus profile delete box-net >/dev/null 2>&1 && say "deleted profile box-net"
+  incus network delete boxnet >/dev/null 2>&1 && say "deleted network boxnet"
+  incus network acl delete box-isolate >/dev/null 2>&1 && say "deleted ACL box-isolate"
 
   # --- cached images: NOT wiped by default -----------------------------------
   # An image is upstream's artifact, content-addressed by fingerprint — not a
@@ -108,12 +102,12 @@ if command -v incus >/dev/null; then
 fi
 
 # --- firewall: units, scripts, nft tables, UFW and Docker crumbs -------------
-for unit in box-firewall claudebox-firewall; do
+for unit in box-firewall; do
   sudo systemctl disable --now "$unit.service" >/dev/null 2>&1 && say "disabled $unit.service"
   sudo rm -f "/etc/systemd/system/$unit.service" "/usr/local/sbin/$unit"
 done
 sudo systemctl daemon-reload
-for t in "inet box" "bridge box" "inet claudebox" "bridge claudebox"; do
+for t in "inet box" "bridge box"; do
   # shellcheck disable=SC2086 # the table spec is two words by design
   sudo nft delete table $t >/dev/null 2>&1 && say "deleted nft table $t"
 done
@@ -143,7 +137,7 @@ if command -v ufw >/dev/null; then
 fi
 
 if [[ "$ufw_status" == *"Status: active"* ]]; then
-  for net in boxnet claudenet; do
+  for net in boxnet; do
     while :; do
       numbered="$(sudo ufw status numbered 2>/dev/null || true)"
       line="$(printf '%s\n' "$numbered" | grep -m1 "on $net" || true)"
@@ -155,7 +149,7 @@ if [[ "$ufw_status" == *"Status: active"* ]]; then
   done
 fi
 if command -v docker >/dev/null; then
-  for net in boxnet claudenet; do
+  for net in boxnet; do
     sudo iptables -D DOCKER-USER -i "$net" -j ACCEPT 2>/dev/null && say "removed DOCKER-USER -i $net"
     sudo iptables -D DOCKER-USER -o "$net" -j ACCEPT 2>/dev/null && say "removed DOCKER-USER -o $net"
   done
@@ -164,13 +158,11 @@ fi
 # --- verdict: assert the ABSENCE, don't trust the removals' exit codes -------
 left=""
 if command -v incus >/dev/null; then
-  for tag in "user.box=1" "user.claudebox=1"; do
-    [ -n "$(incus list "$tag" -f csv -c n 2>/dev/null)" ] && left="$left instances($tag)"
-  done
-  for net in boxnet claudenet; do incus network show "$net" >/dev/null 2>&1 && left="$left $net"; done
-  for p in box-net claude-dev; do incus profile show "$p" >/dev/null 2>&1 && left="$left $p"; done
+  [ -n "$(incus list "user.box=1" -f csv -c n 2>/dev/null)" ] && left="$left instances(user.box=1)"
+  incus network show boxnet >/dev/null 2>&1 && left="$left boxnet"
+  incus profile show box-net >/dev/null 2>&1 && left="$left box-net"
 fi
-for t in "inet box" "bridge box" "inet claudebox" "bridge claudebox"; do
+for t in "inet box" "bridge box"; do
   # shellcheck disable=SC2086
   sudo nft list table $t >/dev/null 2>&1 && left="$left nft:${t// /-}"
 done
@@ -178,4 +170,4 @@ if [ -n "$left" ]; then
   say "NOT clean — still present:$left"
   exit 1
 fi
-say "clean — no trace of box or claudebox remains. The drill will rebuild everything."
+say "clean — no trace of box remains. The drill will rebuild everything."

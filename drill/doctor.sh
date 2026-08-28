@@ -284,8 +284,7 @@ if [ "$TIER" = restricted ]; then
   fi
 
   head_ "Can one of your boxes actually resolve DNS?"
-  probe="$({ incus list "user.box=1" --format csv --columns ns 2>/dev/null
-             incus list "user.claudebox=1" --format csv --columns ns 2>/dev/null; } \
+  probe="$(incus list "user.box=1" --format csv --columns ns 2>/dev/null \
            | awk -F, '$2 == "RUNNING" { print $1; exit }')"
   if [ -n "$probe" ]; then
     inf "probing inside '$probe':"
@@ -399,16 +398,15 @@ if command -v ufw >/dev/null 2>&1; then
   fi
 fi
 
-# box-net is the placement contract since the 0.4.0 rename; claude-dev is its
-# pre-rename ancestor and may linger while legacy boxes still reference it.
-# Check whichever exist — an unisolated NIC is a fault on either.
+# box-net is the placement contract. The pre-rename ancestor profile used to be
+# reported beside it, because the migration tool could still re-home the boxes
+# that referenced it; with that tool retired (#226), naming it here would tell
+# the operator to perform a migration this tool can no longer perform.
 PROFILES=""
 incus profile show box-net >/dev/null 2>&1 && PROFILES="box-net"
-incus profile show claude-dev >/dev/null 2>&1 && PROFILES="$PROFILES claude-dev"
 head_ "Profile — the NIC is the isolation contract"
 if [ -n "$PROFILES" ]; then
   for p in $PROFILES; do
-    [ "$p" = claude-dev ] && inf "claude-dev is legacy (pre-rename boxes still reference it)"
     iso="$(incus profile device get "$p" eth0 security.port_isolation 2>/dev/null)"
     if [ "$iso" = "true" ]; then
       ok "$p: security.port_isolation = true — boxes cannot reach each other at L2"
@@ -590,10 +588,8 @@ if [ "$PIN" = 1 ]; then
 fi
 
 head_ "Can a box actually resolve DNS?"
-# Any box will do — the drill's names are not the only boxes on a host, and
-# a pre-rename box (legacy tag) is as good a probe as a new one.
-probe="$({ incus list "user.box=1" --format csv --columns ns 2>/dev/null
-           incus list "user.claudebox=1" --format csv --columns ns 2>/dev/null; } \
+# Any box will do — the drill's names are not the only boxes on a host.
+probe="$(incus list "user.box=1" --format csv --columns ns 2>/dev/null \
          | awk -F, '$2 == "RUNNING" { print $1; exit }')"
 if [ -n "$probe" ] && [ "$FIX" != 1 ]; then
   # Stdin MUST be pinned to /dev/null: with a TTY on stdin, 'incus exec' goes
