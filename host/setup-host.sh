@@ -846,9 +846,8 @@ fi
 # ago, and a warning that scrolled away is a warning nobody read (#227).
 if [ -n "${BOXNET_IPV4_DRIFT:-}" ]; then
   echo "WARNING: boxnet's ipv4.address is still $BOXNET_IPV4_DRIFT, not $BOX_GW/24 —" >&2
-  echo "         instances are attached and this run refused to renumber a live bridge." >&2
-  echo "         stop them and re-run, or see the 'boxnet:' warning above for the" >&2
-  echo "         single command that converges it." >&2
+  echo "         this run refused to renumber the bridge. See the WARNING further up" >&2
+  echo "         for why, and for the single command that converges it." >&2
 fi
 
 echo "Host ready. Launch with: box new --name <box>"
