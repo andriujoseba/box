@@ -4456,7 +4456,12 @@ case "$*" in
   "storage get default volatile.initial_source")
                                   printf '%s\n' "${FAKE_POOL_INITIAL_SOURCE:-}" ;;
   *"admin init --preseed"*)       [ -z "${FAKE_PRESEED_FAIL:-}" ] || exit 1 ;;
-  "network show boxnet")          [ -n "${FAKE_HAVE_BOXNET:-}" ]  || exit 1 ;;
+  # 'show' answers with the network's yaml, which is where used_by lives — the
+  # read that decides whether ipv4.address may be converged at all (#227). An
+  # existence probe that wants no body just leaves FAKE_BOXNET_SHOW unset.
+  "network show boxnet")          [ -n "${FAKE_HAVE_BOXNET:-}" ]  || exit 1
+                                  printf '%s\n' "${FAKE_BOXNET_SHOW:-}" ;;
+  "network get boxnet ipv4.address") printf '%s\n' "${FAKE_BOXNET_IPV4:-}" ;;
   "network acl show box-isolate") [ -n "${FAKE_HAVE_ACL:-}" ]     || exit 1 ;;
   "profile show box-net")         [ -n "${FAKE_HAVE_PROFILE:-}" ] || exit 1 ;;
 esac
@@ -4544,6 +4549,130 @@ check "setup-host: ...the bridge follows the pick" 0 "" \
   grep -qF 'network create boxnet ipv4.address=10.89.0.1/24' "$W80/g3.log"
 check "setup-host: ...the ACL carve-out follows the pick" 0 "" \
   grep -qF 'destination: 10.89.0.1/32' "$W80/g3.log"
+# The create path writes the contract keys itself, so it must not converge on
+# top of its own create — a fresh host is one write, not two.
+check "setup-host: ...and the fresh path does not converge on top of its create" 1 "" \
+  grep -qF 'network set boxnet ipv6.address' "$W80/g3.log"
+
+# --- used_by_instances: is anything ATTACHED to the bridge? (#227) ----------
+# The read that decides whether setup-host may converge ipv4.address, and
+# whether doctor's --fix may. Pure text in, names out — the valid_subnet seam,
+# driven against canned 'incus network show' output.
+UBFN="$(mktemp)"
+awk '/^used_by_instances\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$UBFN"
+check "used_by_instances: extracted from setup-host.sh (guards the awk)" 0 "used_by" cat "$UBFN"
+check "used_by_instances: the extracted function is valid bash" 0 "" bash -n "$UBFN"
+# doctor.sh carries the same function, as it carries yaml_scalar. The two
+# scripts ship and run independently, so the copies are diffed rather than
+# trusted — a drift here makes the two tools disagree about whether a bridge
+# may be renumbered, which is the one question they must not disagree on.
+UBFN2="$(mktemp)"
+awk '/^used_by_instances\(\) \{/,/^\}/' "$ROOT/drill/doctor.sh" > "$UBFN2"
+check "used_by_instances: doctor.sh carries it too" 0 "used_by" cat "$UBFN2"
+check "used_by_instances: the two copies are byte-identical" 0 "" cmp -s "$UBFN" "$UBFN2"
+rm -f "$UBFN2"
+
+ub()      { bash -c ". '$UBFN'; used_by_instances \"\$1\"" _ "$1"; }
+ubempty() { [ -z "$(ub "$1")" ]; }
+
+# The measured 2026-08-27 shape: three profile entries, no instance. The
+# restricted tier's per-user profile copies are why the bridge cannot simply be
+# deleted and rebuilt — and they are NOT instances, so they do not block a
+# converge.
+UB_PROFILES='config:
+  ipv4.address: 10.88.0.1/24
+name: boxnet
+used_by:
+- /1.0/profiles/box-net
+- /1.0/profiles/box-net?project=user-1000
+- /1.0/profiles/box-net?project=user-1001
+managed: true'
+UB_ATTACHED='name: boxnet
+used_by:
+- /1.0/instances/work
+- /1.0/profiles/box-net
+- /1.0/instances/scratch?project=user-1000
+managed: true'
+check "used_by_instances: profiles alone are not an attachment" 0 "" ubempty "$UB_PROFILES"
+check "used_by_instances: an empty list is not an attachment" 0 "" ubempty 'name: boxnet
+used_by: []
+managed: true'
+check "used_by_instances: no used_by key at all is not an attachment" 0 "" \
+  ubempty 'name: boxnet
+managed: true'
+check "used_by_instances: nothing at all in is nothing out" 0 "" ubempty ""
+check "used_by_instances: an attached instance is named" 0 "work" ub "$UB_ATTACHED"
+check "used_by_instances: ...project-qualified where Incus qualifies it" 0 \
+  "scratch (project user-1000)" ub "$UB_ATTACHED"
+check "used_by_instances: ...and the profile beside them is not reported as one" 0 "" \
+  bash -c '. "'"$UBFN"'"; ! used_by_instances "$1" | grep -q box-net' _ "$UB_ATTACHED"
+check "used_by_instances: ...two instances in, two lines out" 0 "" \
+  bash -c '. "'"$UBFN"'"; [ "$(used_by_instances "$1" | wc -l)" -eq 2 ]' _ "$UB_ATTACHED"
+# A list that ENDS is a list that ends: a later top-level key with its own
+# entries must not read as more of used_by.
+check "used_by_instances: a later list does not leak into the answer" 0 "" \
+  bash -c '. "'"$UBFN"'"; [ "$(used_by_instances "$1")" = work ]' _ 'used_by:
+- /1.0/instances/work
+locations:
+- /1.0/instances/not-a-user'
+rm -f "$UBFN"
+
+# --- boxnet's contract keys are CONVERGED, not written once (#227) ----------
+# The create arguments used to be the only place ipv4.address, ipv4.nat and
+# ipv6.address were ever written, so a drifted bridge was detected by every
+# tool here and repaired by none. Driven through the same shims as the #80
+# cases above: an existing bridge must come out at contract.
+W227="$(mktemp -d)"
+# Nothing attached: every key converges, and the bridge is not re-created.
+check "setup-host: an existing boxnet is converged, not left alone" 0 "Host ready" \
+  runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88" \
+           FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           FAKE_BOXNET_SHOW="$UB_PROFILES" FAKE_INCUS_LOG="$W227/drift.log"
+check "setup-host: ...ipv6.address=none is set on the EXISTING bridge" 0 "" \
+  grep -qF 'network set boxnet ipv6.address=none ipv4.nat=true' "$W227/drift.log"
+check "setup-host: ...and the drifted ipv4.address is converged to the pick" 0 "" \
+  grep -qF 'network set boxnet ipv4.address=10.88.0.1/24' "$W227/drift.log"
+check "setup-host: ...without re-creating the bridge" 1 "" \
+  grep -qF 'network create boxnet' "$W227/drift.log"
+check "setup-host: ...saying so, with the value it replaced" 0 "converged <unset> -> 10.88.0.1/24" \
+  runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88" \
+           FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           FAKE_BOXNET_SHOW="$UB_PROFILES"
+
+# Idempotence: the second consecutive run finds the key at contract and does
+# not write it. The file's header claims idempotence; converging must not cost
+# it. (ipv6/ipv4.nat are set unconditionally by design — setting a key to the
+# value it already holds is what 'converge' means here, as for the ACL.)
+runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88" \
+         FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+         FAKE_BOXNET_SHOW="$UB_PROFILES" FAKE_BOXNET_IPV4=10.88.0.1/24 \
+         FAKE_INCUS_LOG="$W227/again.log" >/dev/null 2>&1
+check "setup-host: a second run leaves ipv4.address alone (idempotence)" 1 "" \
+  grep -qF 'network set boxnet ipv4.address' "$W227/again.log"
+check "setup-host: ...and says nothing about it" 1 "" \
+  grep -qF 'ipv4.address converged' "$W227/again.log"
+check "setup-host: ...while still converging the unconditional keys" 0 "" \
+  grep -qF 'network set boxnet ipv6.address=none ipv4.nat=true' "$W227/again.log"
+
+# Attached: the renumber is refused, out loud, and the run still succeeds. A
+# tool that silently renumbers a running fleet is worse than one that will not.
+RUNATT=(runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88"
+        FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1
+        FAKE_BOXNET_SHOW="$UB_ATTACHED")
+check "setup-host: a drifted ipv4.address with boxes attached still exits 0" 0 "Host ready" \
+  "${RUNATT[@]}" FAKE_INCUS_LOG="$W227/att.log"
+check "setup-host: ...having changed the address not at all" 1 "" \
+  grep -qF 'network set boxnet ipv4.address' "$W227/att.log"
+check "setup-host: ...while the unconditional keys were converged anyway" 0 "" \
+  grep -qF 'network set boxnet ipv6.address=none ipv4.nat=true' "$W227/att.log"
+check "setup-host: ...naming the drift" 0 "boxnet's ipv4.address is <unset>" "${RUNATT[@]}"
+check "setup-host: ...naming what is attached" 0 "work" "${RUNATT[@]}"
+check "setup-host: ...including the one in another project" 0 "scratch (project user-1000)" \
+  "${RUNATT[@]}"
+check "setup-host: ...and the exact command that converges it once they are down" 0 \
+  "incus network set boxnet ipv4.address 10.88.0.1/24" "${RUNATT[@]}"
+check "setup-host: ...restated at the end, where it has not scrolled away" 0 \
+  "is still <unset>" "${RUNATT[@]}"
 
 # --- Where the pool LIVES (#180) -------------------------------------------
 # pool_block is pure — driver and source in, the preseed's storage block out —
