@@ -4500,9 +4500,15 @@ if [ "${1:-}" = --project ]; then proj="$2"; shift 2; fi
 # not the same host as one with no grants. Unset, it answers what a working
 # daemon on a grant-less host says: 'default (current)', never an empty stream.
 # A test that wants the empty one asks for it with FAKE_PROJECTS= (#229 round 2).
+# FAKE_PROJECT_LIST_PARTIAL is the third answer, and the one neither of the
+# other two can stand in for: a row on stdout and a non-zero exit after it. A
+# condition that reads emptiness alone passes it, so it is what keeps the
+# status check in this file's 'if' from being deleted as redundant (#229 round 3).
 case "$*" in
   "project list --format csv")
     [ -z "${FAKE_PROJECT_LIST_FAIL:-}" ] || { echo "Error: not authorized" >&2; exit 1; }
+    [ -z "${FAKE_PROJECT_LIST_PARTIAL:-}" ] || {
+      printf 'default (current)\n'; echo "Error: connection reset" >&2; exit 1; }
     printf '%s\n' "${FAKE_PROJECTS-default (current)}" ; exit 0 ;;
 esac
 # The profile store is STATEFUL, and only when FAKE_PROFILE_STATE says so —
@@ -5510,6 +5516,23 @@ check "setup-host: an EMPTY project list is the same ignorance, not a grant-less
   "could not be listed" run229 "$S229E" "$W229/empty.log" "FAKE_PROJECTS="
 check "setup-host: ...and the user project's old name is still there, unexamined" 0 "" \
   test -f "$S229E/user-1000.box-net"
+# And the third: a listing that emits a row and THEN fails. Neither case above
+# reaches it — one is non-zero with nothing on stdout, the other is zero with
+# nothing — so a condition that tests emptiness alone passes both and lets this
+# one through, converging 'default' off a partial answer and reporting on the
+# granted users as though they had been enumerated. The doctor carried exactly
+# that gap into round 3; the same case is driven on both tools now, because the
+# two loops are a pair and the shape has to be held in both (#229 round 3).
+S229P="$(s229 partlist default.box-net user-1000.box-net)"
+check "setup-host: a project list that fails AFTER a row is unread too, not partial truth" 1 \
+  "could not be listed" run229 "$S229P" "$W229/part.log" "FAKE_PROJECTS=$P229" \
+  FAKE_PROJECT_LIST_PARTIAL=1
+run229 "$S229P" "$W229/part.log" "FAKE_PROJECTS=$P229" FAKE_PROJECT_LIST_PARTIAL=1 \
+  > "$W229/part.out" 2>&1 || true
+check "setup-host: ...never printing Host ready over the row it did not get" 1 "" \
+  grep -q "Host ready" "$W229/part.out"
+check "setup-host: ...and the granted project the listing never reached is untouched" 0 "" \
+  test -f "$S229P/user-1000.box-net"
 
 # The fresh host never sees the rename branch at all.
 S229F="$(s229 fresh)"
@@ -5897,8 +5920,16 @@ case "$*" in
   # — which is the answer every case above this one wants. FAKE_DOC_PROJECTS_FAIL
   # is the daemon that will not answer at all, which is a different host from
   # one with nothing to report (#229 round 2).
+  #
+  # FAKE_DOC_PROJECTS_PARTIAL is the OTHER way the read fails, and the one an
+  # emptiness test cannot see: a row on stdout and a non-zero exit after it.
+  # It answers 'default (current)' — the row a listing that dies mid-write is
+  # likeliest to have already emitted, and the one that walks the doctor into
+  # its success arm with the user-<uid> projects never enumerated (#229 round 3).
   "project list --format csv")
     [ -z "${FAKE_DOC_PROJECTS_FAIL:-}" ] || { echo "Error: not authorized" >&2; exit 1; }
+    [ -z "${FAKE_DOC_PROJECTS_PARTIAL:-}" ] || {
+      printf 'default (current)\n'; echo "Error: connection reset" >&2; exit 1; }
     printf '%s\n' "${FAKE_DOC_PROJECTS:-default (current)}" ;;
   *"profile show box-net")
     p=default; [ "$1" = --project ] && p="$2"
@@ -6085,6 +6116,27 @@ check "doctor: ...naming the daemon, not the host, as what to check" 1 \
   "incus project list" docblind
 check "doctor: ...and --fix holds rather than reporting on projects it cannot name" 1 \
   "--fix cannot reach this: the box-net check" docblindfix
+
+# The second shape of the same ignorance, and the one an emptiness test cannot
+# see: a listing that writes a row and THEN fails. The fake above exits
+# non-zero with nothing on stdout, so a condition that reads emptiness alone
+# still catches it — this one exits non-zero having already printed
+# 'default (current)', which is a NONEMPTY answer from a daemon that never
+# finished enumerating. Read by emptiness, the doctor sweeps that one project,
+# finds no box-net in it, and certifies a host whose user-<uid> projects were
+# never listed. So the status is checked as well as the output, and this is the
+# case that holds it (#229 round 3).
+docpart()    { ( FAKE_DOC_PROJECTS_PARTIAL=1; export FAKE_DOC_PROJECTS_PARTIAL; rundoctor "$D229" ) }
+docpartfix() { ( FAKE_DOC_PROJECTS_PARTIAL=1; export FAKE_DOC_PROJECTS_PARTIAL; rundoctor "$D229" --fix ) }
+check "doctor: a project list that fails AFTER a row is unread too, not clean (#229)" 1 \
+  "the project list could not be read" docpart
+docpartsays() { docpart | grep -q "$1"; }
+check "doctor: ...and the nonempty partial answer earns no 'no stale box-net'" 1 "" \
+  docpartsays "no stale box-net"
+check "doctor: ...saying a partial listing is not the host's inventory" 1 \
+  "not the host's inventory" docpart
+check "doctor: ...and --fix holds on it exactly as on the silent refusal" 1 \
+  "--fix cannot reach this: the box-net check" docpartfix
 unset DOC_SHOW
 
 # ---------------------------------------------------------------------------

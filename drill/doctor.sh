@@ -572,15 +572,19 @@ fi
 # asked. Same rule as the bridge's 'network show' above (#227) — an unreadable
 # read is not an empty result — and unreadable includes an empty answer, since
 # a daemon that can list projects at all lists 'default' (#229, round 2).
+#
+# BOTH halves of "could not be read" are checked, and the assignment sits in
+# the 'if' for exactly that reason: the status has to survive to be one of
+# them. A '|| true' out here would decide the branch on emptiness alone, and a
+# daemon that writes a row and THEN fails — 'default (current)' is the likeliest
+# such row — would be certified off a listing that stopped early. Two projects
+# hold this stack's residue and only one of them got enumerated, so the sweep
+# below would report on the wrong half of a host and call it clean. The same
+# condition setup-host uses for the same listing, written the same way, because
+# the two loops are a pair (#229, round 3).
 STALE=""
-PROJECT_CSV="$(incus project list --format csv 2>/dev/null </dev/null || true)"
-if [ -z "$PROJECT_CSV" ]; then
-  no "the project list could not be read, so whether box-net survives anywhere is unknown"
-  inf "'incus project list' answered nothing — not even the default project, which"
-  inf "every working daemon lists. This is the daemon, not a clean host."
-  inf "fix:  check the daemon (incus project list), then run the doctor again"
-  hold "the box-net check — it cannot report on projects it cannot name"
-else
+if PROJECT_CSV="$(incus project list --format csv 2>/dev/null </dev/null)" \
+   && [ -n "$PROJECT_CSV" ]; then
   while IFS= read -r project; do
     [ -n "$project" ] || continue
     incus --project "$project" profile show box-net >/dev/null 2>&1 </dev/null \
@@ -596,6 +600,13 @@ else
   else
     ok "no stale box-net — the placement contract has one name on this host"
   fi
+else
+  no "the project list could not be read, so whether box-net survives anywhere is unknown"
+  inf "'incus project list' failed, or answered nothing — and nothing is a failure"
+  inf "too: every working daemon lists the default project. Either way this is the"
+  inf "daemon, not a clean host, and a partial listing is not the host's inventory."
+  inf "fix:  check the daemon (incus project list), then run the doctor again"
+  hold "the box-net check — it cannot report on projects it cannot name"
 fi
 
 # The pool is read off the profile that PLACES every box (profiles/box-profile.yaml
