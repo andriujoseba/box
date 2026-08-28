@@ -3678,7 +3678,10 @@ case "$*" in
     [ -n "${FAKE_CFG:-}" ] || exit 0
     key="$*"; key="${key##* }"
     awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_CFG" ;;
-  *"--columns P") printf '"box-profile"\n' ;;   # already on the contract, no re-home
+  # The profile list the artifact rode in with. Default: already on the
+  # contract, so no re-home. FAKE_ART_PROFILES drives the artifacts that are
+  # not — which is how a pre-rename export is tested without new code (#229).
+  *"--columns P") printf '%s\n' "${FAKE_ART_PROFILES:-\"box-profile\"}" ;;
 esac
 exit 0
 SHIM
@@ -4240,6 +4243,32 @@ check "help info: says the id outlives a rename (#181)" 0 "outlives a rename" \
   "$BOX" help info
 check "help import: names the fresh id it draws (#181)" 0 "fresh box id" \
   "$BOX" help import
+
+# --- #229 D3: a pre-rename artifact needs no compatibility branch -----------
+# An export from 0.9.x names the profile as it was before the rename. It falls
+# into the re-home branch that has always been there for anything not on this
+# host's contract — the same door a pre-0.4.0 artifact takes — and the message
+# names what the artifact asked for, read off the artifact rather than written
+# anywhere in bin/box.
+#
+# The proof that no compatibility code was added is not in this case, it is in
+# this case passing beside the corpus guard above: bin/box contains no
+# occurrence of the old name at all, so there is nothing in it that could be
+# special-casing one. Adding a branch would be a second mechanism for a case
+# the first already covers.
+importbox_old() { ( FAKE_ART_PROFILES='"box-net"'; export FAKE_ART_PROFILES; importbox "$@" ) }
+OLDLOG="$IWORK/oldname.log"
+check "import: a pre-rename artifact is re-homed onto the contract (#229 D3)" 0 \
+  "re-homed onto the box-profile profile" importbox_old "$OLDLOG" "$MINTED_ART"
+check "import: ...and the message names what the artifact said, not a constant" 0 \
+  "the artifact said 'box-net'" importbox_old "$OLDLOG" "$MINTED_ART"
+check "import: ...by the assign that was already there" 0 "" \
+  grep -qF 'profile assign work box-profile' "$OLDLOG"
+# The other side of the same branch: an artifact already on the contract is
+# left alone, so 're-home' is a response to a mismatch and not something every
+# import does.
+check "import: an artifact already on the contract is not re-homed" 1 "" \
+  grep -qF 'profile assign' "$ILOG"
 
 rm -rf "$ISHIM" "$IWORK"
 
