@@ -6074,7 +6074,8 @@ check "doctor: ...registering a STATED refusal, since --fix cannot reach it" 1 \
 # below it — "the placement contract has one name on this host" — would be a
 # clean bill of health for a question nobody asked. The doctor's own rule from
 # #227, one check over: an unreadable read is not an empty result.
-docblind() { ( FAKE_DOC_PROJECTS_FAIL=1; export FAKE_DOC_PROJECTS_FAIL; rundoctor "$D229" "$@" ) }
+docblind()    { ( FAKE_DOC_PROJECTS_FAIL=1; export FAKE_DOC_PROJECTS_FAIL; rundoctor "$D229" ) }
+docblindfix() { ( FAKE_DOC_PROJECTS_FAIL=1; export FAKE_DOC_PROJECTS_FAIL; rundoctor "$D229" --fix ) }
 check "doctor: an unreadable project list is DIRTY, not 'no stale box-net' (#229)" 1 \
   "the project list could not be read" docblind
 docblindsays() { docblind | grep -q "$1"; }
@@ -6083,7 +6084,7 @@ check "doctor: ...and it does NOT claim the contract has one name" 1 "" \
 check "doctor: ...naming the daemon, not the host, as what to check" 1 \
   "incus project list" docblind
 check "doctor: ...and --fix holds rather than reporting on projects it cannot name" 1 \
-  "--fix cannot reach this: the box-net check" docblind --fix
+  "--fix cannot reach this: the box-net check" docblindfix
 unset DOC_SHOW
 
 # ---------------------------------------------------------------------------
