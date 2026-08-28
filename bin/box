@@ -165,7 +165,6 @@ CMDS=(
   "grant^<user>^^Admin: give a host user the restricted tier — their own boxes, on the hardened boxnet^fn:cmd_grant^"
   "revoke^<user> [--purge]^^Admin: take the restricted tier back (--purge also deletes their boxes)^fn:cmd_revoke^"
   "teardown-host^[--purge-incus]^^Remove the box host stack (both name generations)^fn:cmd_teardown_host^"
-  "migrate-host^--box <n> | --all-boxes | --retire-legacy^^Move a host from the pre-0.4.0 stack onto box^fn:cmd_migrate_host^"
   "versions^^^List the installed box versions — the current default and the running one^fn:cmd_versions^"
   "use^<version>^^Switch the default box version (refuses while boxes exist)^fn:cmd_use^"
   "uninstall^[<version>] [--all] [--purge-host]^^Remove one installed version, or the whole install — asks first, asserts the absence^fn:cmd_uninstall^"
@@ -631,7 +630,7 @@ snapshots). What box then re-stamps is THIS host's truth:
 
   · the user.box=1 boundary tag (a legacy user.claudebox=1 stays honored)
   · the box-net placement — re-assigned if the artifact's profile list
-    differs, the same move migrate-host makes re-homing a legacy box
+    differs — the placement contract is this host's, not the artifact's
   · a fresh machine identity (reset_identity, exactly like a clone), so its
     DHCP lease can never collide with the box it was exported from
   · a fresh box id (user.box.id, #181) — importing is minting, and the box
@@ -910,16 +909,6 @@ and pre-0.4.0). Asks first.
   box teardown-host --purge-incus  # ...and uninstall Incus too
 EOF
 ;;
-    migrate-host) cat <<'EOF'
-Move a host from the pre-0.4.0 'claudebox' stack onto 'box'. Re-homing
-preserves a box's authed state (no re-login) — it only re-tags and reassigns
-the profile, then verifies the box works on its new network leg.
-
-  box migrate-host --box <name>    # re-home one legacy box
-  box migrate-host --all-boxes     # re-home every legacy box
-  box migrate-host --retire-legacy # remove the old stack (once no legacy box remains)
-EOF
-;;
     versions) cat <<'EOF'
 List the versions installed under this install root — install.sh lands each
 one side by side at <root>/versions/<v>, and a 'current' symlink tracks the
@@ -1031,7 +1020,7 @@ while [ $# -gt 0 ]; do
       if [ "$cmd" = expose ]; then args+=("$1"); shift; continue; fi
       # the host verbs delegate their flags to the scripts they wrap;
       # uninstall parses its own (--all, --purge-host) the same way
-      case "$cmd" in setup-host|teardown-host|migrate-host|grant|revoke|uninstall) args+=("$1"); shift; continue ;; esac
+      case "$cmd" in setup-host|teardown-host|grant|revoke|uninstall) args+=("$1"); shift; continue ;; esac
       if [ "$cmd" = exec ] || [ "$cmd" = incus ]; then
         usage_error "unknown option: $1 — a command's own flags go after --, as in '$(synopsis_of "$cmd")'"
       fi
@@ -2846,7 +2835,7 @@ cmd_import() {
   # Placement: the artifact carries its profile list, but the isolation
   # contract is THIS host's box-net profile. A box export already says
   # box-net; anything else (a pre-0.4.0 artifact, a hand-rolled export) gets
-  # re-assigned — the same move migrate-host makes re-homing a legacy box.
+  # re-assigned to it, whatever the artifact asked for.
   # (An artifact naming a profile this host lacks fails inside 'incus import'
   # above, with incus's own error naming the profile — honest enough.)
   # Two traps in reading the list: a bare name filter PREFIX-matches (asking
@@ -2901,7 +2890,7 @@ cmd_doctor() {
 # The host lifecycle scripts, as first-class verbs — nobody should have to know
 # where the install tree keeps its scripts. Each execs the installed script
 # with its flags passed through; the script owns its own behavior (setup-host's
-# incus-admin re-login dance, teardown's confirmation, migrate's per-box work).
+# incus-admin re-login dance, teardown's confirmation, revoke's --purge).
 host_script() {   # $1 = script basename under host/
   local script="$root/host/$1"
   [ -f "$script" ] || die "$1 not found at $script — re-run install.sh"
@@ -2909,7 +2898,6 @@ host_script() {   # $1 = script basename under host/
 }
 cmd_setup_host()    { host_script setup-host.sh; }
 cmd_teardown_host() { host_script teardown-host.sh; }
-cmd_migrate_host()  { host_script migrate-host.sh; }
 cmd_grant()         { host_script grant-user.sh; }
 cmd_revoke()        { host_script revoke-user.sh; }
 
