@@ -388,7 +388,11 @@ if incus network show boxnet >/dev/null 2>&1; then
   # setup-host, and it stays there.
   ipv4="$(incus network get boxnet ipv4.address 2>/dev/null)"
   live="$(ip -4 -o addr show dev boxnet 2>/dev/null | awk '{ print $4; exit }')"
-  attached="$(used_by_instances "$(incus network show boxnet 2>/dev/null)")"
+  # A 'show' that answers nothing is not an empty used_by list — the bridge
+  # described itself one line ago, so silence here is the daemon, not the
+  # fleet, and the safe reply to "may I renumber?" under ignorance is no.
+  boxnet_show="$(incus network show boxnet 2>/dev/null)"
+  attached="$(used_by_instances "$boxnet_show")"
   if [ -n "$ipv4" ] && { [ -z "$live" ] || [ "$ipv4" = "$live" ]; }; then
     ok "ipv4.address = $ipv4 — the ACL carve-out, the firewall and the drill all read this key"
   else
@@ -402,7 +406,9 @@ if incus network show boxnet >/dev/null 2>&1; then
     # unconditionally safe: every attached box holds a lease on the old subnet.
     # A tool that silently renumbers a running fleet is worse than one that
     # will not — so refuse, out loud, and let the operator choose the moment.
-    if [ -n "$attached" ]; then
+    if [ -z "$boxnet_show" ]; then
+      hold "ipv4.address — 'incus network show boxnet' answered nothing, so what is attached is unknown; check the daemon, then re-run --fix"
+    elif [ -n "$attached" ]; then
       hold "ipv4.address — $(printf '%s\n' "$attached" | wc -l | tr -d ' ') instance(s) attached to boxnet and writing this key renumbers the bridge; stop them, then re-run --fix"
       inf "attached: $(printf '%s\n' "$attached" | tr '\n' ' ')"
     elif [ -z "$live" ]; then

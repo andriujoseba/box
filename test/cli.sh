@@ -4635,6 +4635,8 @@ check "setup-host: ...and the drifted ipv4.address is converged to the pick" 0 "
   grep -qF 'network set boxnet ipv4.address=10.88.0.1/24' "$W227/drift.log"
 check "setup-host: ...without re-creating the bridge" 1 "" \
   grep -qF 'network create boxnet' "$W227/drift.log"
+check "setup-host: ...and dns.mode=none with it, so both drifted keys land at contract" 0 "" \
+  grep -qF 'network set boxnet dns.mode=none' "$W227/drift.log"
 check "setup-host: ...saying so, with the value it replaced" 0 "converged <unset> -> 10.88.0.1/24" \
   runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88" \
            FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
@@ -4674,6 +4676,16 @@ check "setup-host: ...and the exact command that converges it once they are down
   "incus network set boxnet ipv4.address 10.88.0.1/24" "${RUNATT[@]}"
 check "setup-host: ...restated at the end, where it has not scrolled away" 0 \
   "is still <unset>" "${RUNATT[@]}"
+
+# A 'show' that answers nothing is not an empty used_by list: the safe reply to
+# "may I renumber?" under ignorance is no, and it is said out loud.
+RUNBLIND=(runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88"
+          FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1)
+check "setup-host: an unreadable 'network show' does not read as 'nothing attached'" 0 \
+  "what is attached to the bridge is unknown" "${RUNBLIND[@]}" FAKE_INCUS_LOG="$W227/blind.log"
+check "setup-host: ...so the address is left alone" 1 "" \
+  grep -qF 'network set boxnet ipv4.address' "$W227/blind.log"
+check "setup-host: ...and the run still completes" 0 "Host ready" "${RUNBLIND[@]}"
 
 # --- Where the pool LIVES (#180) -------------------------------------------
 # pool_block is pure — driver and source in, the preseed's storage block out —
@@ -5584,6 +5596,11 @@ check "doctor: ...having converged ipv4.address to the address the bridge holds"
   "ipv4.address = 10.88.0.1/24" docfixed "$D1"
 drifted "$D1"
 check "doctor: ...and ipv6.address to none" 0 "ipv6.address = none" docfixed "$D1"
+drifted "$D1"
+# The key probe C6 reads, left at the value it reads for — the failure that
+# motivated the issue, observable without a full drill run.
+check "doctor: ...so 'incus network get boxnet ipv6.address' answers C6 correctly" 0 "" \
+  dockey "$D1" ipv6.address none
 
 # Attached: --fix must NOT renumber, and must say which key it left and why —
 # the doctor's version of a declared skip. The verdict has to distinguish the
@@ -5617,8 +5634,17 @@ check "doctor: with no live bridge address, --fix refuses and says who decides" 
   "'box setup-host' decides the subnet" docnolive "$D3" --fix
 check "doctor: ...and invents no address of its own" 0 "" docnolive_unwritten "$D3"
 
+# The same ignorance rule setup-host holds: a 'show' that answers nothing is
+# not an empty used_by list, and --fix may not renumber on it.
+DOC_SHOW=""
+D5="$DOCSTATE/blind"; drifted "$D5"
+check "doctor: an unreadable 'network show' holds the key rather than renumbering" 1 \
+  "what is attached is unknown" rundoctor "$D5" --fix
+check "doctor: ...and writes nothing" 0 "" dounwritten "$D5" ipv4.address
+
 # A bridge whose config and kernel disagree — the other half of the check. The
 # ACL carve-out reads the config key, so the two disagreeing is not cosmetic.
+DOC_SHOW="$UB_PROFILES"
 D4="$DOCSTATE/disagree"; drifted "$D4"
 printf '10.89.0.1/24' > "$D4/ipv4.address"
 check "doctor: config and kernel disagreeing about the gateway is a finding" 1 \

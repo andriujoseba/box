@@ -691,12 +691,23 @@ else
   # bridge that is about to be re-addressed in the same run.
   have_addr="$(incus network get boxnet ipv4.address 2>/dev/null || true)"
   if [ "$have_addr" != "$BOX_GW/24" ]; then
-    attached="$(used_by_instances "$(incus network show boxnet 2>/dev/null || true)")"
-    if [ -z "$attached" ]; then
+    BOXNET_IPV4_DRIFT="${have_addr:-<unset>}"
+    # An 'incus network show' that answers nothing is not an empty used_by
+    # list. The bridge described itself one line ago, so a silent answer here
+    # is the daemon, not the fleet — and the safe reply to "may I renumber?"
+    # under ignorance is no.
+    boxnet_show="$(incus network show boxnet 2>/dev/null || true)"
+    attached="$(used_by_instances "$boxnet_show")"
+    if [ -z "$boxnet_show" ]; then
+      echo "WARNING: boxnet's ipv4.address is $BOXNET_IPV4_DRIFT, and the contract for" >&2
+      echo "         this subnet is $BOX_GW/24 — but 'incus network show boxnet' answered" >&2
+      echo "         nothing, so what is attached to the bridge is unknown. Converging" >&2
+      echo "         RENUMBERS it, so nothing was changed. Check the daemon and re-run." >&2
+    elif [ -z "$attached" ]; then
       incus network set boxnet ipv4.address="$BOX_GW/24"
-      echo "boxnet: ipv4.address converged ${have_addr:-<unset>} -> $BOX_GW/24 (nothing attached)"
+      echo "boxnet: ipv4.address converged $BOXNET_IPV4_DRIFT -> $BOX_GW/24 (nothing attached)"
+      unset BOXNET_IPV4_DRIFT
     else
-      BOXNET_IPV4_DRIFT="${have_addr:-<unset>}"
       echo "WARNING: boxnet's ipv4.address is $BOXNET_IPV4_DRIFT, and the contract for" >&2
       echo "         this subnet is $BOX_GW/24. Converging it RENUMBERS the bridge, and" >&2
       echo "         these instances are attached to it:" >&2
