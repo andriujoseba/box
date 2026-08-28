@@ -184,8 +184,10 @@ be invisible to both. So the drill also **attests what landed** — every file
 `install.sh` copies, compared by content against the checkout, once the install
 reports success — and refuses when they differ, naming the files. That is the
 comparison whose subject is the bytes the next forty minutes will actually run
-(`.git` and the installer's own `INSTALLED_FROM` are not payload and are not
-compared; neither is a file's mode, which `install.sh` sets deliberately).
+(`.git` anywhere in the tree — `install.sh`'s exclude is unanchored, so a
+vendored repository is not copied either — and the installer's own
+`INSTALLED_FROM` are not payload and are not compared; neither is a file's
+mode, which `install.sh` sets deliberately).
 
 **Files git ignores are copied too.** `install.sh` excludes `.git` and nothing
 else, so a `secrets.env` beside your checkout is installed into the box while

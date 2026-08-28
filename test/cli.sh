@@ -6927,6 +6927,13 @@ check "drill payload: ...and nothing in it is separated by a newline" 0 "[0nl]" 
   bash -c "set -u; . '$RECFN'; . '$PREFN'
     m=\"\$(mktemp)\"; payload_list '$PAYSRC' \"\$m\"
     [ \"\$(tr -dc '\\n' < \"\$m\" | wc -c)\" -eq 0 ] && printf '[0nl]'"
+# The verdict is taken from the MANIFESTS, not from a rendering of them. Both
+# happen to be unambiguous today, so no fixture can tell the two apart — this is
+# the wiring check that keeps the rendering a view: it may be made prettier, or
+# lossy, without anyone discovering that the verdict was riding on it.
+check "drill payload: the verdict is cmp on the manifests, not on the view" 0 "" \
+  bash -c "grep -qF 'cmp -s \"\$a\" \"\$b\"' '$PREFN' \
+        && ! grep -qE 'payload_render.*=.*payload_render' '$PREFN'"
 # A symlink target may end in a newline, which \$( ) would eat — so the two
 # targets below differ by exactly the byte a careless reader drops.
 ln -sfn $'sub\n' "$PAYSRC/nlink"
