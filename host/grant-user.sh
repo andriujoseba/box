@@ -21,7 +21,7 @@
 #   5. allow snapshots (incus-user blocks them; box's clone workflow is built
 #      on them)
 #   6. allow backups (blocked too; 'box export' rides the backup API — #70)
-#   7. install the shipped box-net profile into their project
+#   7. install the shipped box-profile profile into their project
 #
 # Idempotent: every step converges, so re-running (including after a box
 # upgrade, to refresh the profile) is safe. incus-user never rewrites a
@@ -84,7 +84,7 @@ uid="$(id -u "$user")"
 #     it, no project appeared, and the grant died blaming a healthy
 #     incus-user. So the group step is a real convergence for everyone.
 #   · PROVISIONING — the user-<uid> project, the boxnet narrowing, the
-#     snapshot and backup allowances, the box-net profile installed INTO that
+#     snapshot and backup allowances, the box-profile profile installed INTO that
 #     project. An incus-admin member has none of it: box_tier() resolves them
 #     to 'admin' (bin/box), so they work in the SHARED default project next to
 #     root and every other admin, with no world of their own. This script is
@@ -247,7 +247,7 @@ fi
 # on incusbr-<uid>; while ANY profile references that bridge, the narrowing
 # below is rejected by incus's own validation. Removing the device is also
 # what it looks like: the default profile in this project places no network —
-# box-net is the only door, which is the placement contract working.
+# box-profile is the only door, which is the placement contract working.
 if incus --project "$project" profile device get default eth0 type >/dev/null 2>&1 </dev/null; then
   incus --project "$project" profile device remove default eth0 >/dev/null </dev/null
   echo "profile: removed the private-bridge eth0 from $project's default profile"
@@ -291,10 +291,10 @@ echo "backups: allowed ('box export' rides them, #70)"
 # 7. The placement contract itself, installed into their project. Created if
 # missing, refreshed unconditionally — same convergence discipline as
 # setup-host's own profile handling, so a box upgrade propagates by re-run.
-incus --project "$project" profile show box-net >/dev/null 2>&1 </dev/null \
-  || incus --project "$project" profile create box-net >/dev/null </dev/null
-incus --project "$project" profile edit box-net < "$here/profiles/box-net.yaml"
-echo "profile: box-net installed in $project"
+incus --project "$project" profile show box-profile >/dev/null 2>&1 </dev/null \
+  || incus --project "$project" profile create box-profile >/dev/null </dev/null
+incus --project "$project" profile edit box-profile < "$here/profiles/box-profile.yaml"
+echo "profile: box-profile installed in $project"
 
 # Prove the grant from the USER's side of the socket — the only side that
 # matters. This catches the failure the steps above cannot see one at a time:
@@ -304,11 +304,11 @@ echo "profile: box-net installed in $project"
 # would answer from the shared default project — a green that proves the
 # convergence nothing at all.
 if [ -n "$user_socket" ]; then
-  run_as_incus timeout 30 incus --project "$project" profile show box-net >/dev/null 2>&1 \
-    || { echo "box grant: converged, but $user cannot reach $project's box-net profile through incus-user — check journalctl -u incus-user" >&2; exit 1; }
+  run_as_incus timeout 30 incus --project "$project" profile show box-profile >/dev/null 2>&1 \
+    || { echo "box grant: converged, but $user cannot reach $project's box-profile profile through incus-user — check journalctl -u incus-user" >&2; exit 1; }
 else
-  run_as "$user" timeout 30 incus profile show box-net >/dev/null 2>&1 \
-    || { echo "box grant: converged, but $user cannot see the box-net profile through incus-user — check journalctl -u incus-user" >&2; exit 1; }
+  run_as "$user" timeout 30 incus profile show box-profile >/dev/null 2>&1 \
+    || { echo "box grant: converged, but $user cannot see the box-profile profile through incus-user — check journalctl -u incus-user" >&2; exit 1; }
 fi
 
 trap - EXIT   # converged and verified: the grant stands
@@ -334,7 +334,7 @@ if [ "$admin_member" -eq 1 ]; then
   # to unix.socket.user and lands in $project. Under the old no-op they would
   # have been left in NEITHER group — box_tier 'none', no socket at all, and
   # a converged project they could not open.
-  echo "granted: $user has their own converged project $project (boxnet-only, snapshots, backups, box-net)."
+  echo "granted: $user has their own converged project $project (boxnet-only, snapshots, backups, box-profile)."
   echo "         CAVEAT — $user is in 'incus-admin', which wins at the socket: this is a"
   echo "         DEFAULT PLACEMENT, not a confinement. They can reach the default project and"
   echo "         every other user's instances whenever they choose to."

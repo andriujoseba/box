@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reverse everything host/setup-host.sh created — and everything its pre-0.4.0
 # ancestor created, so one teardown cleans a host of any generation: all boxes
-# (both tags), the boxnet/claudenet networks + ACLs, the box-net/claude-dev
+# (both tags), the boxnet/claudenet networks + ACLs, the box-profile/claude-dev
 # profiles, and both generations of firewall units and nft tables.
 # Usage: ./host/teardown-host.sh [--purge-incus] [--yes]
 #   --purge-incus  also apt-purge Incus itself (skipped if non-box
@@ -55,7 +55,7 @@ for tag in "user.box=1" "user.claudebox=1"; do
   done
 done
 
-incus profile delete box-net 2>/dev/null || true
+incus profile delete box-profile 2>/dev/null || true
 incus profile delete claude-dev 2>/dev/null || true    # legacy, pre-0.4.0
 incus network delete boxnet 2>/dev/null || true
 incus network delete claudenet 2>/dev/null || true     # legacy, pre-0.4.0

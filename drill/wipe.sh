@@ -45,7 +45,7 @@ This wipes EVERY trace of box/claudebox from this host ($(hostname)):
   · every instance the drill has ever named (drill, clone, archive, peer,
     payroll, cbprobe, cbcopy, cbnotours, tpl)
   · networks boxnet + claudenet, ACLs box-isolate + claude-isolate
-  · profiles box-net + claude-dev
+  · profiles box-profile + claude-dev
   · firewall units, scripts and nft tables of BOTH name generations
 $( [ "$PURGE_STORAGE" = 1 ] && echo "  · the 'default' storage pool AND its cached images (--purge-storage)" \
                             || echo "  · (cached images are KEPT — the next mint stays fast; --purge-storage removes them with the pool)" )
@@ -76,7 +76,7 @@ if command -v incus >/dev/null; then
   done
 
   # --- profiles, networks, ACLs — both generations ---------------------------
-  for p in box-net claude-dev; do
+  for p in box-profile claude-dev; do
     incus profile delete "$p" >/dev/null 2>&1 && say "deleted profile $p"
   done
   for net in boxnet claudenet; do
@@ -168,7 +168,7 @@ if command -v incus >/dev/null; then
     [ -n "$(incus list "$tag" -f csv -c n 2>/dev/null)" ] && left="$left instances($tag)"
   done
   for net in boxnet claudenet; do incus network show "$net" >/dev/null 2>&1 && left="$left $net"; done
-  for p in box-net claude-dev; do incus profile show "$p" >/dev/null 2>&1 && left="$left $p"; done
+  for p in box-profile claude-dev; do incus profile show "$p" >/dev/null 2>&1 && left="$left $p"; done
 fi
 for t in "inet box" "bridge box" "inet claudebox" "bridge claudebox"; do
   # shellcheck disable=SC2086

@@ -258,7 +258,7 @@ jobs:
           sudo /usr/local/bin/box uninstall --all --purge-host --force
           # zero residue: the daemon's state...
           ! sudo incus network show boxnet
-          ! sudo incus profile show box-net
+          ! sudo incus profile show box-profile
           ! sudo incus network acl show box-isolate
           # ...the firewall and its boot persistence...
           ! sudo nft list table inet box

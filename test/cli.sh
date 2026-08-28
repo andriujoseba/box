@@ -1834,7 +1834,7 @@ driver_under_inherit_errexit() {
     shopt -s inherit_errexit
     incus() {
       case "$*" in
-        "profile device get box-net root pool") printf "boxpool\n" ;;
+        "profile device get box-profile root pool") printf "boxpool\n" ;;
         *) printf "incus: not authorized\n" >&2; return 1 ;;
       esac
     }
@@ -1857,7 +1857,7 @@ pris() { # pris <driver> <instance> [VAR=VAL...]
   env "$@" DRIVER="$driver" INSTANCE="$instance" PRISFN="$PRISFN" bash -c '
     incus() {
       case "$*" in
-        "profile device get box-net root pool") printf "boxpool\n" ;;
+        "profile device get box-profile root pool") printf "boxpool\n" ;;
         "storage show boxpool")
           [ "$DRIVER" = none ] && return 1
           printf "name: boxpool\ndriver: %s\n" "$DRIVER" ;;
@@ -1942,7 +1942,7 @@ took() { # took <driver> <label> [VAR=VAL...] — did THIS run create the mark?
   env "$@" DRIVER="$driver" LABEL="$label" PRISFN="$PRISFN" bash -c '
     incus() {
       case "$*" in
-        "profile device get box-net root pool") printf "boxpool\n" ;;
+        "profile device get box-profile root pool") printf "boxpool\n" ;;
         "storage show boxpool")
           [ "$DRIVER" = none ] && return 1
           printf "name: boxpool\ndriver: %s\n" "$DRIVER" ;;
@@ -2061,8 +2061,8 @@ check "expose: the restricted guard precedes the first incus call" 0 "" bash -c 
 # to setup-host they cannot run). The pre-flight lives in require_stack()
 # since #70 gave it a second caller (import lands on the same contract), so
 # assert both halves: the helper holds the probe, and cmd_new calls it.
-check "require_stack: probes the box-net profile" 0 "" bash -c '
-  awk "/^require_stack\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "incus profile show box-net"'
+check "require_stack: probes the box-profile profile" 0 "" bash -c '
+  awk "/^require_stack\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "incus profile show box-profile"'
 check "require_stack: the restricted fix names box grant" 0 "" bash -c '
   awk "/^require_stack\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "box grant"'
 check "new: pre-flights the stack (require_stack)" 0 "" bash -c '
@@ -2077,7 +2077,7 @@ check "grant: allows snapshots (the clone workflow)" 0 "" \
   grep -qF 'restricted.snapshots allow' "$ROOT/host/grant-user.sh"
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "grant: installs the SHIPPED profile into the project" 0 "" \
-  grep -qF 'profile edit box-net < "$here/profiles/box-net.yaml"' "$ROOT/host/grant-user.sh"
+  grep -qF 'profile edit box-profile < "$here/profiles/box-profile.yaml"' "$ROOT/host/grant-user.sh"
 check "grant: unpins the private-bridge eth0 from the default profile" 0 "" \
   grep -qF 'profile device remove default eth0' "$ROOT/host/grant-user.sh"
 check "grant: an incus-admin member is provisioned, not refused (#99)" 1 "" \
@@ -2136,7 +2136,7 @@ check "revoke: purge removes the trust-store certificate" 0 "" \
 # #99: an incus-admin member is PROVISIONED, not refused. The distinction the
 # old refusal missed is permission (the 'incus' group — theirs already, and
 # stronger) versus provisioning (the user-<uid> project, the boxnet narrowing,
-# snapshots, backups, the box-net profile — theirs not at all). Grepping the
+# snapshots, backups, the box-profile profile — theirs not at all). Grepping the
 # new prose would prove only that the prose exists, so both tier scripts are
 # DRIVEN end to end under shims, the same seam setup-host is driven through:
 # every incus and sudo call is logged, and the assertions are made against
@@ -2229,8 +2229,8 @@ check "grant: their project still gets snapshots" 0 "" \
   grep -qF 'project set user-1000 restricted.snapshots allow' "$A/incus.log"
 check "grant: their project still gets backups" 0 "" \
   grep -qF 'project set user-1000 restricted.backups allow' "$A/incus.log"
-check "grant: box-net is still installed INTO their project" 0 "" \
-  grep -qF -- '--project user-1000 profile edit box-net' "$A/incus.log"
+check "grant: box-profile is still installed INTO their project" 0 "" \
+  grep -qF -- '--project user-1000 profile edit box-profile' "$A/incus.log"
 # The socket pin (#99's teeth): incus's client takes the DAEMON socket when it
 # is writable, and only falls back to unix.socket.user when it is not — so for
 # an incus-admin member an unpinned touch never reaches incus-user at all, and
@@ -2238,7 +2238,7 @@ check "grant: box-net is still installed INTO their project" 0 "" \
 check "grant: the touch is pinned at incus-user's socket (the admin socket would win)" 0 "" \
   grep -qF "INCUS_SOCKET=$W99/incusdir/unix.socket.user" "$A/sudo.log"
 check "grant: the user-side proof names their project (an unqualified show proves nothing)" 0 "" \
-  grep -qF -- '--project user-1000 profile show box-net' "$A/sudo.log"
+  grep -qF -- '--project user-1000 profile show box-profile' "$A/sudo.log"
 # The socket existence probe rides $SUDO, like revoke's: /var/lib/incus is not
 # traversable by a non-root admin, and a bare [ -e ] there false-fails into an
 # exit that blames incus-user for a socket that is present (#101 review).
@@ -3678,7 +3678,7 @@ case "$*" in
     [ -n "${FAKE_CFG:-}" ] || exit 0
     key="$*"; key="${key##* }"
     awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_CFG" ;;
-  *"--columns P") printf '"box-net"\n' ;;   # already on the contract, no re-home
+  *"--columns P") printf '"box-profile"\n' ;;   # already on the contract, no re-home
 esac
 exit 0
 SHIM
@@ -4463,7 +4463,7 @@ case "$*" in
                                   printf '%s\n' "${FAKE_BOXNET_SHOW:-}" ;;
   "network get boxnet ipv4.address") printf '%s\n' "${FAKE_BOXNET_IPV4:-}" ;;
   "network acl show box-isolate") [ -n "${FAKE_HAVE_ACL:-}" ]     || exit 1 ;;
-  "profile show box-net")         [ -n "${FAKE_HAVE_PROFILE:-}" ] || exit 1 ;;
+  "profile show box-profile")         [ -n "${FAKE_HAVE_PROFILE:-}" ] || exit 1 ;;
 esac
 exit 0
 SHIM
@@ -4576,7 +4576,7 @@ ub()          { bash -c ". '$UBFN'; used_by_instances \"\$1\"" _ "$1"; }
 ubempty()     { [ -z "$(ub "$1")" ]; }
 ubis()        { [ "$(ub "$1")" = "$2" ]; }
 ubcount()     { [ "$(ub "$1" | wc -l)" -eq "$2" ]; }
-ubnoprofile() { ! ub "$1" | grep -q box-net; }
+ubnoprofile() { ! ub "$1" | grep -q box-profile; }
 
 # The measured 2026-08-27 shape: three profile entries, no instance. The
 # restricted tier's per-user profile copies are why the bridge cannot simply be
@@ -4586,14 +4586,14 @@ UB_PROFILES='config:
   ipv4.address: 10.88.0.1/24
 name: boxnet
 used_by:
-- /1.0/profiles/box-net
-- /1.0/profiles/box-net?project=user-1000
-- /1.0/profiles/box-net?project=user-1001
+- /1.0/profiles/box-profile
+- /1.0/profiles/box-profile?project=user-1000
+- /1.0/profiles/box-profile?project=user-1001
 managed: true'
 UB_ATTACHED='name: boxnet
 used_by:
 - /1.0/instances/work
-- /1.0/profiles/box-net
+- /1.0/profiles/box-profile
 - /1.0/instances/scratch?project=user-1000
 managed: true'
 check "used_by_instances: profiles alone are not an attachment" 0 "" ubempty "$UB_PROFILES"
@@ -5395,8 +5395,8 @@ rm -f "$PFFN"
 # that PLACES every box, and the whole section is informational. Placement is
 # a choice, not a fault — a DIRTY line here would red every stock host on the
 # day it shipped, and the verdict is what the drill reads.
-check "doctor: the pool is read off the box-net profile, not guessed" 0 "" \
-  grep -qF 'incus profile device get box-net root pool' "$ROOT/drill/doctor.sh"
+check "doctor: the pool is read off the box-profile profile, not guessed" 0 "" \
+  grep -qF 'incus profile device get box-profile root pool' "$ROOT/drill/doctor.sh"
 # shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "doctor: the placement section reports through pool_findings" 0 "" \
   grep -qF 'pool_findings "$POOL_SHOW"' "$ROOT/drill/doctor.sh"
@@ -5528,9 +5528,9 @@ case "$*" in
   "network acl show box-isolate")
     printf 'egress:\n- action: allow\n  destination: %s/32\n- action: drop\n  destination: 10.0.0.0/8\n' \
       "${FAKE_ACL_GW:-10.88.0.1}" ;;
-  "profile show box-net") ;;
-  "profile device get box-net eth0 security.port_isolation") printf 'true\n' ;;
-  "profile device get box-net root pool")                    printf 'default\n' ;;
+  "profile show box-profile") ;;
+  "profile device get box-profile eth0 security.port_isolation") printf 'true\n' ;;
+  "profile device get box-profile root pool")                    printf 'default\n' ;;
   "storage show default") printf 'config: {}\ndriver: dir\nname: default\n' ;;
   "config show "*)        exit 1 ;;   # no leftover drill boxes
   "list"|"list "*)        ;;          # daemon answers; no instances to probe

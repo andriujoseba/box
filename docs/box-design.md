@@ -43,7 +43,7 @@ snapshots, not a secrets store:
 - `box snapshot <n> [label]` — checkpoint after login + clone.
 - `box new --name <n2> --from <src>[/<snapshot>]` — clone an existing box
   or snapshot (authed state and all). Isolation is preserved: the clone keeps
-  the `box-net` profile + `boxnet` + ACL.
+  the `box-profile` profile + `boxnet` + ACL.
 - `box restore <n> <snapshot>` — roll a box back to a checkpoint.
 
 Log in once → snapshot → spin up authed boxes from it.
@@ -65,7 +65,7 @@ clone still lives on the same host. The off-host mechanism is `box export` /
 default, that survives `rm`, a host teardown, an upgrade, a move. The split
 of truths is the design: everything `incus import` restores is the artifact's
 (disk, config, snapshots); everything box re-stamps on import is the current
-host's (the `user.box=1` boundary tag, the `box-net` placement, a fresh
+host's (the `user.box=1` boundary tag, the `box-profile` placement, a fresh
 machine identity via the same `reset_identity` a clone gets, and the record
 that the trip happened). That last one is #131, and it is deliberately *not*
 `origin=import`: `origin` says how the instance came into **being** — mint or
@@ -164,7 +164,7 @@ forever — and wrapping them one at a time grows a worse `incus`. The rule:
 
 > **box owns a command when it must enforce an invariant Incus cannot see:**
 > the `user.box=1` boundary (never touch an instance we didn't mint), the
-> isolation stack (`box-net` profile + `boxnet` + ACL), or the creds-free
+> isolation stack (`box-profile` profile + `boxnet` + ACL), or the creds-free
 > snapshot→clone workflow. Everything else is Incus's job.
 
 The rule cuts both ways, and that's the point:
@@ -244,7 +244,7 @@ own Task-0 rehearsal:
   (`incusbr-<uid>`) — a stock NAT bridge with **none** of the hardening: no
   ACL, no `dns.mode=none`, no resolver pin, IPv6 on;
 - it blocks snapshots — box's entire reuse workflow;
-- the `box-net` profile lives in the default project, invisible to theirs.
+- the `box-profile` profile lives in the default project, invisible to theirs.
 
 So the tier is an **admin-run convergence** (`box grant <user>`), not a
 group membership: put them in `incus`, touch incus-user once as them (the

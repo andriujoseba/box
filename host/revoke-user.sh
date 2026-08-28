@@ -168,7 +168,7 @@ if incus project show "$project" >/dev/null 2>&1 </dev/null; then
     incus --project "$project" image delete "$fp" </dev/null
   done < <(incus --project "$project" image list --format csv --columns f 2>/dev/null)
 
-  incus --project "$project" profile delete box-net >/dev/null 2>&1 </dev/null || true
+  incus --project "$project" profile delete box-profile >/dev/null 2>&1 </dev/null || true
   incus project delete "$project" </dev/null \
     || { echo "box revoke: could not delete $project — something is still in it (incus --project $project list / image list / storage volume list)" >&2; exit 1; }
   echo "purge: project $project removed"

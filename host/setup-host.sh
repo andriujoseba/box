@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time host setup: install Incus, create the isolated network + ACL and
-# the box-net profile. Idempotent. Ubuntu 24.04 / Debian 13.
+# the box-profile profile. Idempotent. Ubuntu 24.04 / Debian 13.
 set -euo pipefail
 
 self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -287,7 +287,7 @@ if [ "$(id -u)" -eq 0 ]; then
 elif ! id -nG | grep -qw incus-admin; then
   $SUDO usermod -aG incus-admin "$USER"
   # Then finish the job rather than adjourning it. Exiting 0 here was a
-  # success-shaped no-op: no boxnet, no ACL, no box-net profile, no firewall —
+  # success-shaped no-op: no boxnet, no ACL, no box-profile profile, no firewall —
   # and the burden of knowing that on the reader of a NOTE (#63). 'sg' runs us
   # again with the new group in our credentials, no re-login, one invocation.
   # The guard makes that at most one hop: if sg somehow lands without the
@@ -393,7 +393,7 @@ yaml_value() {
 #
 # One read answers "is anything attached?" because Incus computes used_by from
 # every instance's EXPANDED devices: a box that reaches boxnet through the
-# box-net profile — which is every box — is listed here by its own name, beside
+# box-profile profile — which is every box — is listed here by its own name, beside
 # the profiles. Reading the profile entries instead would need the names of the
 # restricted tier's per-user profile copies, which 'box grant' creates and this
 # script has never known. The profile entries are why the bridge cannot simply
@@ -666,7 +666,7 @@ fi
 # /24); the gateway and every rule below derive from it.
 #
 # Create if missing, then CONVERGE — the same shape as the ACL below and the
-# box-net profile at the end of this file, and for the same reason. The create
+# box-profile profile at the end of this file, and for the same reason. The create
 # arguments used to be the ONLY place these keys were written, so they ran on a
 # fresh host and never again: a bridge that drifted, or that predates a key,
 # was detected by every tool in this repo and repaired by none. Measured on a
@@ -822,15 +822,15 @@ $SUDO systemctl restart box-firewall.service
 $SUDO systemctl enable --now incus-user.socket 2>/dev/null \
   || echo "NOTE: could not enable incus-user.socket — 'box grant' (the restricted tier) needs it; this Incus may not ship incus-user (#74)." >&2
 
-# Profile — box-net, the placement contract: the isolated NIC and the root
+# Profile — box-profile, the placement contract: the isolated NIC and the root
 # disk, nothing a template controls (resources are stamped per-instance from
 # the template at mint time). A legacy claude-dev profile is left alone:
 # Incus refuses to delete an in-use profile, and pre-rename boxes reference
 # it until their last one is gone — teardown-host removes it then.
-if ! incus profile show box-net >/dev/null 2>&1; then
-  incus profile create box-net
+if ! incus profile show box-profile >/dev/null 2>&1; then
+  incus profile create box-profile
 fi
-incus profile edit box-net < "$here/profiles/box-net.yaml"
+incus profile edit box-profile < "$here/profiles/box-profile.yaml"
 
 # The sibling drop is the one rule whose absence is invisible: everything keeps
 # working, and boxes can simply reach each other. Assert it landed.

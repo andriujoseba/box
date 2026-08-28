@@ -74,8 +74,8 @@ re-stamps is the current host's:
   instance carrying neither tag is stamped `user.box=1` — importing is
   minting, and a minted box is ours to manage.
 - **The placement.** The artifact carries its profile list, but the
-  isolation contract is _this_ host's `box-net` profile. A box export
-  already says `box-net`; anything else is re-assigned (`incus profile
+  isolation contract is _this_ host's `box-profile` profile. A box export
+  already says `box-profile`; anything else is re-assigned (`incus profile
   assign` — the same move `migrate-host` makes re-homing a legacy box). An
   artifact naming a profile the host lacks fails inside `incus import` with
   incus's own error naming it. A fresh host without the stack at all is

@@ -170,7 +170,7 @@ yaml_value() {
 #
 # One read answers "is anything attached?" because Incus computes used_by from
 # every instance's EXPANDED devices: a box that reaches boxnet through the
-# box-net profile — which is every box — is listed here by its own name, beside
+# box-profile profile — which is every box — is listed here by its own name, beside
 # the profiles. Reading the profile entries instead would need the names of the
 # restricted tier's per-user profile copies, which 'box grant' creates and this
 # script has never known. (setup-host.sh carries the same pair as it does of
@@ -308,14 +308,14 @@ if [ "$TIER" = restricted ]; then
   fi
 
   head_ "Your project — is the tier granted?"
-  if incus profile show box-net >/dev/null 2>&1 </dev/null; then
-    ok "the box-net profile is in your project — 'box new' lands on the hardened boxnet"
-    iso="$(incus profile device get box-net eth0 security.port_isolation </dev/null 2>/dev/null)"
+  if incus profile show box-profile >/dev/null 2>&1 </dev/null; then
+    ok "the box-profile profile is in your project — 'box new' lands on the hardened boxnet"
+    iso="$(incus profile device get box-profile eth0 security.port_isolation </dev/null 2>/dev/null)"
     [ "$iso" = "true" ] \
       && ok "security.port_isolation = true (as shipped)" \
-      || no "security.port_isolation is NOT set in your box-net profile — re-grant refreshes it: ask an admin to re-run 'box grant $(id -un)'"
+      || no "security.port_isolation is NOT set in your box-profile profile — re-grant refreshes it: ask an admin to re-run 'box grant $(id -un)'"
   else
-    no "no box-net profile in your project — the restricted tier is granted per user"
+    no "no box-profile profile in your project — the restricted tier is granted per user"
     inf "fix:  an admin runs:  box grant $(id -un)"
   fi
   if incus network show boxnet >/dev/null 2>&1 </dev/null; then
@@ -491,12 +491,12 @@ if command -v ufw >/dev/null 2>&1; then
   fi
 fi
 
-# box-net is the placement contract. The pre-rename ancestor profile used to be
+# box-profile is the placement contract. The pre-rename ancestor profile used to be
 # reported beside it, because the migration tool could still re-home the boxes
 # that referenced it; with that tool retired (#226), naming it here would tell
 # the operator to perform a migration this tool can no longer perform.
 PROFILES=""
-incus profile show box-net >/dev/null 2>&1 && PROFILES="box-net"
+incus profile show box-profile >/dev/null 2>&1 && PROFILES="box-profile"
 head_ "Profile — the NIC is the isolation contract"
 if [ -n "$PROFILES" ]; then
   for p in $PROFILES; do
@@ -526,14 +526,14 @@ if [ -n "$PROFILES" ]; then
   done
   inf "resources are per-box since 0.4.0 (stamped from the template at mint; BOX_CPU/BOX_MEMORY override)"
 else
-  inf "box-net does not exist (a fresh host — setup-host.sh will create it)"
+  inf "box-profile does not exist (a fresh host — setup-host.sh will create it)"
 fi
 
-# The pool is read off the profile that PLACES every box (profiles/box-net.yaml
+# The pool is read off the profile that PLACES every box (profiles/box-profile.yaml
 # hardcodes root's pool), not guessed from the name setup-host creates — the
 # same read bin/box's storage_driver makes before taking a mark.
 head_ "Storage pool — the disk every box's root device rides on"
-POOL="$(incus profile device get box-net root pool 2>/dev/null)"
+POOL="$(incus profile device get box-profile root pool 2>/dev/null)"
 [ -n "$POOL" ] || POOL=default
 POOL_SHOW="$(incus storage show "$POOL" 2>/dev/null)"
 if [ -n "$POOL_SHOW" ]; then

@@ -3,7 +3,7 @@
 # template controls. Resources (limits.*) are per-instance, stamped from the
 # template's box.env at mint time; they do not belong here, because a profile
 # a template could point away from is a network a template could escape.
-name: box-net
+name: box-profile
 description: The box placement contract — isolated NIC + root disk, nothing else
 config: {}
 devices:
