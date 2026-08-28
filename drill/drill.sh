@@ -1039,40 +1039,80 @@ tree_ident_verify() {   # <dir> <when> — 0 when the tree is still the latched 
 # comparison whose subject is the bytes the drill is about to run.
 #
 # What it deliberately does NOT compare, each because it is not payload:
-#   · .git, which install.sh excludes (install.sh:213), excluded on both sides;
+#   · .git ANYWHERE in the tree. install.sh's `tar --exclude=.git`
+#     (install.sh:213) is an unanchored pattern, so it matches any path
+#     component and a vendored repository is never copied; pruning only the
+#     top-level one would red an install that was faithful (round 5, #225);
 #   · INSTALLED_FROM, which the installer WRITES into the version directory —
 #     the installer's own note about itself, asserted separately just above;
 #   · file MODES: install.sh chmods bin/box +x deliberately, and a mode is not
 #     a byte the drill runs;
 #   · empty directories, which carry no bytes either.
-payload_list() {   # <dir> → '<path> <hash>' per file, sorted; the copied payload
+#
+# THE MANIFEST IS NUL-DELIMITED, AND IT IS A FILE (round 5, #225). This began as
+# one `<path> <hash>` LINE per file, and a newline is legal in a path, so the
+# line could not say where a record ended: codex built a source whose only file
+# sat under a directory named `a <hash-of-alpha>` + newline + `.` against a
+# destination holding top-level `a` and `b`, and the two printed the SAME
+# listing. Different payloads, identical verdict, on the one check whose whole
+# claim is that these bytes are those bytes. Three NUL-terminated fields per
+# record — kind, value, path — so no field can contain its own delimiter, and
+# the path goes last because it is the field with the fewest guarantees. It has
+# to be a file rather than a string because bash drops NUL bytes from a command
+# substitution, which is what left the ambiguous encoding as the only option.
+payload_list() {   # <dir> <manifest> — NUL-delimited '<kind>\0<value>\0<path>\0'
   ( cd "$1" 2>/dev/null || exit 1
     # -print0 and a -z sort, because a newline is legal in a path. hash-object
     # needs no repository (it is a content hash) and writes nothing without -w,
-    # which is what lets the same reader run over an install root.
-    find . -path ./.git -prune -o -path ./INSTALLED_FROM -prune -o \
+    # which is what lets the same reader run over an install root. --no-filters
+    # because one side IS a repository and the other is not: a .gitattributes
+    # `text` or `filter` attribute would otherwise hash the same bytes two ways
+    # and red every honest install, in the voice of the defect this exists to
+    # catch. box carries no .gitattributes today; the symmetry should not rest
+    # on that staying true (round 5, #225).
+    find . -name .git -prune -o -path ./INSTALLED_FROM -prune -o \
          \( -type f -o -type l \) -print0 2>/dev/null \
       | LC_ALL=C sort -z \
       | while IFS= read -r -d '' p; do
           if [ -L "$p" ]; then
-            printf '%s -> %s\n' "$p" "$(readlink "$p")"
+            # $( ) strips trailing newlines and a target may end in one, so the
+            # sentinel keeps the target's bytes exactly; then the single newline
+            # readlink itself adds comes off.
+            t="$(readlink -- "$p" && printf x)"; t="${t%x}"; t="${t%$'\n'}"
+            printf 'l\0%s\0%s\0' "$t" "$p"
           else
-            printf '%s %s\n' "$p" "$(git hash-object -- "$p" 2>/dev/null || echo unreadable)"
+            printf 'f\0%s\0%s\0' \
+              "$(git hash-object --no-filters -- "$p" 2>/dev/null || echo unreadable)" "$p"
           fi
-        done )
+        done ) > "$2"
+}
+
+payload_render() {   # <manifest> → one line per record, for the DELTA only
+  # A view of the manifest and never what the verdict is taken from — that is
+  # `cmp` on the manifests themselves. The path is escaped, so a newline in one
+  # cannot forge a line here either, and the operator still reads a file name.
+  local kind value path
+  while IFS= read -r -d '' kind && IFS= read -r -d '' value \
+     && IFS= read -r -d '' path; do
+    if [ "$kind" = l ]; then printf '%q -> %q\n' "$path" "$value"
+    else                     printf '%q %s\n'    "$path" "$value"; fi
+  done < "$1"
 }
 
 payload_attest() {   # <checkout> <install root> — 0 when what landed IS the checkout
   local a b delta
-  a="$(payload_list "$1")"
-  b="$(payload_list "$2")"
-  [ -n "$a" ] || { echo "drill: FATAL — $1 holds no files to attest." >&2; return 1; }
-  [ "$a" = "$b" ] && return 0
+  a="$(mktemp)"; b="$(mktemp)"
+  payload_list "$1" "$a"
+  payload_list "$2" "$b"
+  [ -s "$a" ] || { echo "drill: FATAL — $1 holds no files to attest." >&2
+                   rm -f "$a" "$b"; return 1; }
+  cmp -s "$a" "$b" && { rm -f "$a" "$b"; return 0; }
   echo "drill: FATAL — the installed tree is not the tree this checkout holds." >&2
   echo "  Every file install.sh copies was compared by content. '<' is the" >&2
   echo "  checkout, '>' is $2:" >&2
-  delta="$(diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") 2>/dev/null \
+  delta="$(diff <(payload_render "$a") <(payload_render "$b") 2>/dev/null \
            | grep -E '^[<>]' | head -20)"
+  rm -f "$a" "$b"
   printf '%s\n' "${delta:-  (the two listings differ; diff is unavailable to say where)}" \
     | sed 's/^/    /' >&2
   echo "  The record would name a commit whose bytes are not the ones installed." >&2
