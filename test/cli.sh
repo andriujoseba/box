@@ -3681,7 +3681,10 @@ case "$*" in
   # The profile list the artifact rode in with. Default: already on the
   # contract, so no re-home. FAKE_ART_PROFILES drives the artifacts that are
   # not — which is how a pre-rename export is tested without new code (#229).
-  *"--columns P") printf '%s\n' "${FAKE_ART_PROFILES:-\"box-profile\"}" ;;
+  # The quoting is the shim's, not the caller's: incus quotes a CSV cell, and
+  # bin/box strips those quotes on the way in. Keeping them here means the
+  # variable holds a bare profile name, the way an artifact names one.
+  *"--columns P") printf '"%s"\n' "${FAKE_ART_PROFILES:-box-profile}" ;;
 esac
 exit 0
 SHIM
@@ -4256,7 +4259,7 @@ check "help import: names the fresh id it draws (#181)" 0 "fresh box id" \
 # occurrence of the old name at all, so there is nothing in it that could be
 # special-casing one. Adding a branch would be a second mechanism for a case
 # the first already covers.
-importbox_old() { ( FAKE_ART_PROFILES='"box-net"'; export FAKE_ART_PROFILES; importbox "$@" ) }
+importbox_old() { ( export FAKE_ART_PROFILES=box-net; importbox "$@" ) }
 OLDLOG="$IWORK/oldname.log"
 check "import: a pre-rename artifact is re-homed onto the contract (#229 D3)" 0 \
   "re-homed onto the box-profile profile" importbox_old "$OLDLOG" "$MINTED_ART"
