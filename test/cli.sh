@@ -5217,7 +5217,12 @@ rm -rf "$W180"
 # permitted to — an exception nobody checks is how a list like this rots into a
 # hole. The teardown and wipe halves come out one release after this one (D7),
 # and these lines are what makes that removal a stated act instead of a drift.
-OLDNAME_KEEP='^(CHANGELOG\.md|drill/RUNS\.md|drills/.*\.md|host/setup-host\.sh|host/teardown-host\.sh|drill/doctor\.sh|drill/wipe\.sh|test/cli\.sh)$'
+# changelog.d/ is exempt for the reason CHANGELOG.md is: a fragment IS the next
+# CHANGELOG.md section, staged, and an entry announcing a rename that may not
+# name what was renamed announces nothing. drills/ is exempt for the reason
+# drill/RUNS.md is: a release record says what that release actually carried,
+# and rewriting one would have 0.9.1 shipping a profile it never had.
+OLDNAME_KEEP='^(CHANGELOG\.md|changelog\.d/.*\.md|drill/RUNS\.md|drills/.*\.md|host/setup-host\.sh|host/teardown-host\.sh|drill/doctor\.sh|drill/wipe\.sh|test/cli\.sh)$'
 OLDSWEEP="$(mktemp)"
 git -C "$ROOT" ls-files | grep -vE "$OLDNAME_KEEP" > "$OLDSWEEP"
 oldname_survivors() { # oldname_survivors [root] — prints offenders; 0 if any
@@ -5237,7 +5242,7 @@ check "rename: no tracked file outside the exceptions still says the old name" 1
 # The guard's own test: one occurrence left in bin/box, the way the sweep
 # would fail, and the guard has to red on it.
 OLDFIX="$(mktemp -d)"; mkdir -p "$OLDFIX/bin"
-printf 'incus launch "$T_IMAGE" "$instance" --profile box-net\n' > "$OLDFIX/bin/box"
+printf 'incus launch the-image the-box --profile box-net\n' > "$OLDFIX/bin/box"
 check "rename: ...and the guard reds on one left in bin/box (the guard's own test)" 0 \
   "bin/box" oldname_survivors "$OLDFIX"
 # ...and does not red on the word it is one hyphen from, which is the whole
@@ -5291,11 +5296,14 @@ check "setup-host: ...making no reassignment pass, because none is owed (D6)" 1 
   grep -q 'profile assign' "$W229/up.log"
 # Order is load-bearing: the convergence runs BEFORE the create-if-missing and
 # the edit, or the edit lands on a profile the rename is about to collide with.
-check "setup-host: the rename precedes the profile edit it feeds" 0 "" bash -c '
-  log="'"$W229"'/up.log"
-  r="$(grep -n "profile rename box-net box-profile" "$log" | head -1 | cut -d: -f1)"
-  e="$(grep -n "profile edit box-profile" "$log" | head -1 | cut -d: -f1)"
-  [ -n "$r" ] && [ -n "$e" ] && [ "$r" -lt "$e" ]'
+rename_before_edit() { # rename_before_edit <log> — the convergence ran first
+  local log="$1" r e
+  r="$(grep -n 'profile rename box-net box-profile' "$log" | head -1 | cut -d: -f1)"
+  e="$(grep -n 'profile edit box-profile' "$log" | head -1 | cut -d: -f1)"
+  [ -n "$r" ] && [ -n "$e" ] && [ "$r" -lt "$e" ]
+}
+check "setup-host: the rename precedes the profile edit it feeds" 0 "" \
+  rename_before_edit "$W229/up.log"
 # The second run is the acceptance criterion in one line.
 run229 "$S229" "$W229/again.log" "FAKE_PROJECTS=$P229" > "$W229/again.out" 2>&1
 check "setup-host: a second consecutive run says nothing about the rename" 1 "" \
