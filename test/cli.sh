@@ -2847,6 +2847,18 @@ check "mint: --user reaches the stamp (#159, #214)" 0 "" \
 check "mint: makes NO network request of its own (#214)" 0 "0" \
   bash -c 'grep -c . "$1" || true' _ "$MLOG.curl"
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+# THE PLACEMENT CONTRACT, DRIVEN AT THE MINT (#229). Everything else that holds
+# 'box new' to 'box-profile' is a text search: the corpus guard reds on a stray
+# old name anywhere, and the drill catches it on metal once a release. Neither
+# watches the flag this call actually launches with, which is the one line the
+# whole rename exists to move — so a mint launching onto a profile the host no
+# longer has would ship green. The negative is its pair: the flag must not name
+# the old profile, and an assertion that only looked for the new name would stay
+# green beside a second --profile that re-introduced it.
+check "mint: launches ON the box-profile profile — the placement contract (#229)" 0 "" \
+  launch_has "$MLOG" ' --profile box-profile( |$)'
+check "mint: ...and the launch names the old profile nowhere (#229)" 1 "" \
+  launch_has "$MLOG" 'box-net'
 # The six keys that SURVIVED, named together: the absence block above says what
 # went, and this says what must not have gone with it.
 for k in schema version image mode created origin; do
@@ -5969,7 +5981,11 @@ case "$*" in
   "network acl show box-isolate")
     printf 'egress:\n- action: allow\n  destination: %s/32\n- action: drop\n  destination: 10.0.0.0/8\n' \
       "${FAKE_ACL_GW:-10.88.0.1}" ;;
-  "profile show box-profile") ;;
+  # FAKE_DOC_NO_PROFILE is the restricted tier's project WITHOUT the contract in
+  # it — either never granted, or granted under the old name. Unset (every case
+  # above and the whole admin path) the profile is there, which is what those
+  # cases mean by a healthy host (#229 round 5).
+  "profile show box-profile") [ -z "${FAKE_DOC_NO_PROFILE:-}" ] || exit 1 ;;
   "profile device get box-profile eth0 security.port_isolation") printf 'true\n' ;;
   "profile device get box-profile root pool")                    printf 'default\n' ;;
   # #229's drift probe, per project. FAKE_DOC_STALE names the projects that
@@ -6194,6 +6210,53 @@ check "doctor: ...saying a partial listing is not the host's inventory" 1 \
   "not the host's inventory" docpart
 check "doctor: ...and --fix holds on it exactly as on the silent refusal" 1 \
   "--fix cannot reach this: the box-net check" docpartfix
+
+# THE RESTRICTED TIER, DRIVEN (#229 round 5, @claude-bot-andresmgsl's N2). Its
+# three arms were read and not run: the tier exits at its own verdict long
+# before the admin sweep above, so not one of the cases above enters it. The
+# middle arm is the one that matters and the one nothing was holding — a
+# granted user whose project did not converge carries the tier under the OLD
+# name, and the obvious reading ("no profile, so not granted") sends them at a
+# re-grant, which installs box-profile BESIDE the stale copy instead of
+# converging it. That is a wrong fix offered to the person least able to see it
+# is wrong.
+docres()    { ( BOX_TIER=restricted; export BOX_TIER; rundoctor "$D229" ) }
+docresfix() { ( BOX_TIER=restricted; export BOX_TIER; rundoctor "$D229" --fix ) }
+docresold() { ( BOX_TIER=restricted FAKE_DOC_NO_PROFILE=1 FAKE_DOC_STALE=default
+                export BOX_TIER FAKE_DOC_NO_PROFILE FAKE_DOC_STALE
+                rundoctor "$D229" ) }
+docresnone() { ( BOX_TIER=restricted FAKE_DOC_NO_PROFILE=1
+                 export BOX_TIER FAKE_DOC_NO_PROFILE
+                 rundoctor "$D229" ) }
+# -e, because one of the strings asserted absent begins with a dash.
+docresoldsays() { docresold | grep -q -e "$1"; }
+# Arm 1 — the tier is granted under the new name, and this is the clean run.
+check "doctor restricted: a granted project reports the contract by its new name (#229)" 0 \
+  "the box-profile profile is in your project" docres
+check "doctor restricted: ...and that host is clean on this tier" 0 "clean" docres
+check "doctor restricted: ...with the admin levers named as admin's, not run" 0 \
+  "admin levers — ignored on this tier" docresfix
+# Arm 2 — granted, unconverged: the tier IS granted, wearing the pre-0.10.0 name.
+check "doctor restricted: a project still on box-net is DIRTY, not ungranted (#229)" 1 \
+  "the pre-0.10.0 name for the placement contract" docresold
+check "doctor restricted: ...saying the tier IS granted, this project did not converge" 1 \
+  "the tier is granted, but this project did not converge" docresold
+check "doctor restricted: ...naming setup-host, the lever that converges every project" 1 \
+  "box setup-host" docresold
+# The wrong fix, asserted absent. 'box grant' here would install box-profile
+# beside the survivor and tell the user nothing about what was left behind.
+check "doctor restricted: ...and NOT the re-grant, which would leave the old copy" 1 "" \
+  docresoldsays "the restricted tier is granted per user"
+# 'inf' and not 'hold', deliberately: HELD is rendered by the admin verdict this
+# tier exits before reaching, so a hold line here would be written and never
+# printed — and the banner has already said --fix is ignored on this tier.
+check "doctor restricted: ...registering no hold, which this tier could never print" 1 "" \
+  docresoldsays "--fix cannot reach"
+# Arm 3 — neither name: genuinely not granted, and here the re-grant IS the fix.
+check "doctor restricted: no profile at all is the ungranted case (#229)" 1 \
+  "no box-profile profile in your project" docresnone
+check "doctor restricted: ...and THAT one is fixed by a re-grant" 1 \
+  "box grant" docresnone
 unset DOC_SHOW
 
 # ---------------------------------------------------------------------------
