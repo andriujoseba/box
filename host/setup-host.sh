@@ -386,6 +386,39 @@ yaml_value() {
   yaml_scalar "$line"
 }
 
+# The INSTANCES named by a 'used_by:' list — one per line, project-qualified
+# where Incus qualifies them, nothing at all when none. Text in, names out, so
+# test/cli.sh drives it against canned 'incus network show' output the way it
+# drives valid_subnet and pool_block (#227).
+#
+# One read answers "is anything attached?" because Incus computes used_by from
+# every instance's EXPANDED devices: a box that reaches boxnet through the
+# box-net profile — which is every box — is listed here by its own name, beside
+# the profiles. Reading the profile entries instead would need the names of the
+# restricted tier's per-user profile copies, which 'box grant' creates and this
+# script has never known. The profile entries are why the bridge cannot simply
+# be deleted and rebuilt: clearing them to free the network breaks those grants
+# with no lever to restore them, so the bridge is converged in place.
+# doctor.sh carries a copy, as it does of yaml_scalar; test/cli.sh drives both.
+used_by_instances() {
+  printf '%s\n' "$1" | awk '
+    /^used_by:/ { in_list = 1; next }
+    in_list && /^-[[:space:]]/ {
+      url = $2
+      if (url !~ /^\/1\.0\/instances\//) next
+      sub(/^\/1\.0\/instances\//, "", url)
+      proj = ""
+      if (match(url, /\?project=/)) {
+        proj = substr(url, RSTART + 9)
+        url  = substr(url, 1, RSTART - 1)
+      }
+      print (proj == "" ? url : url " (project " proj ")")
+      next
+    }
+    in_list && /^[^[:space:]-]/ { in_list = 0 }
+  '
+}
+
 # One key of the live pool's config, or nothing. Two probes: 'get' answers with
 # an empty line for a key that was never recorded, which is indistinguishable
 # from a refusal, and 'show' is the read this script already prints its driver
@@ -631,8 +664,65 @@ fi
 # one subnet. BOX_SUBNET holds whatever choose_subnet decided above (an
 # explicit pin, the existing bridge, the default, or an auto-picked free
 # /24); the gateway and every rule below derive from it.
-incus network show boxnet >/dev/null 2>&1 || incus network create boxnet \
-  ipv4.address="$BOX_GW/24" ipv4.nat=true ipv6.address=none
+#
+# Create if missing, then CONVERGE — the same shape as the ACL below and the
+# box-net profile at the end of this file, and for the same reason. The create
+# arguments used to be the ONLY place these keys were written, so they ran on a
+# fresh host and never again: a bridge that drifted, or that predates a key,
+# was detected by every tool in this repo and repaired by none. Measured on a
+# real host 2026-08-27 while preparing the 0.10.0 drill — ipv4.address EMPTY,
+# ipv6.address SET, a combination no current create produces — where probe C6
+# reads ipv6.address and would have written "ipv6: ENABLED and uncovered" into
+# the release record as a finding against the release (#227).
+if ! incus network show boxnet >/dev/null 2>&1; then
+  incus network create boxnet \
+    ipv4.address="$BOX_GW/24" ipv4.nat=true ipv6.address=none
+else
+  # ipv4.address is the ONE key converged conditionally, and this is why: it
+  # RENUMBERS the bridge. Every attached box holds a lease on the old subnet
+  # and the gateway moves out from under it — the shape of #80's blackouts,
+  # bought this time by the tool that repairs them. So converge it only where
+  # nothing is attached; where something is, name the drift and leave it. A
+  # tool that silently renumbers a running fleet is worse than one that will
+  # not. choose_subnet stays the authority: $BOX_GW is the address it already
+  # decided (the bridge's own, on a bare re-run), never a second decision.
+  #
+  # It goes FIRST so the unconditional keys below are never set against a
+  # bridge that is about to be re-addressed in the same run.
+  have_addr="$(incus network get boxnet ipv4.address 2>/dev/null || true)"
+  if [ "$have_addr" != "$BOX_GW/24" ]; then
+    BOXNET_IPV4_DRIFT="${have_addr:-<unset>}"
+    # An 'incus network show' that answers nothing is not an empty used_by
+    # list. The bridge described itself one line ago, so a silent answer here
+    # is the daemon, not the fleet — and the safe reply to "may I renumber?"
+    # under ignorance is no.
+    boxnet_show="$(incus network show boxnet 2>/dev/null || true)"
+    attached="$(used_by_instances "$boxnet_show")"
+    if [ -z "$boxnet_show" ]; then
+      echo "WARNING: boxnet's ipv4.address is $BOXNET_IPV4_DRIFT, and the contract for" >&2
+      echo "         this subnet is $BOX_GW/24 — but 'incus network show boxnet' answered" >&2
+      echo "         nothing, so what is attached to the bridge is unknown. Converging" >&2
+      echo "         RENUMBERS it, so nothing was changed. Check the daemon and re-run." >&2
+    elif [ -z "$attached" ]; then
+      incus network set boxnet ipv4.address="$BOX_GW/24"
+      echo "boxnet: ipv4.address converged $BOXNET_IPV4_DRIFT -> $BOX_GW/24 (nothing attached)"
+      unset BOXNET_IPV4_DRIFT
+    else
+      echo "WARNING: boxnet's ipv4.address is $BOXNET_IPV4_DRIFT, and the contract for" >&2
+      echo "         this subnet is $BOX_GW/24. Converging it RENUMBERS the bridge, and" >&2
+      echo "         these instances are attached to it:" >&2
+      printf '%s\n' "$attached" | sed 's/^/           /' >&2
+      echo "         Nothing was changed. Stop them, then converge it — either by" >&2
+      echo "         re-running 'box setup-host' with nothing attached, or by hand:" >&2
+      echo "           incus network set boxnet ipv4.address $BOX_GW/24" >&2
+    fi
+  fi
+
+  # The isolation contract's own keys, converged unconditionally. Neither
+  # depends on the operator's subnet choice, and both are safe to set with
+  # instances attached — which is the whole difference from the key above.
+  incus network set boxnet ipv6.address=none ipv4.nat=true
+fi
 
 # ACL: default egress allow (internet), explicit drops for private space.
 # Gateway carve-out first so instance DNS (dnsmasq on the gateway) survives.
@@ -749,6 +839,15 @@ if $SUDO nft list table bridge box >/dev/null 2>&1; then
 else
   echo "WARNING: the box-to-box drop is NOT active — boxes can reach each other." >&2
   echo "         check: sudo /usr/local/sbin/box-firewall ; sudo nft list table bridge box" >&2
+fi
+
+# The one contract key this run deliberately left drifted, restated where it
+# will still be on screen: the detection happens ~100 lines of install output
+# ago, and a warning that scrolled away is a warning nobody read (#227).
+if [ -n "${BOXNET_IPV4_DRIFT:-}" ]; then
+  echo "WARNING: boxnet's ipv4.address is still $BOXNET_IPV4_DRIFT, not $BOX_GW/24 —" >&2
+  echo "         this run refused to renumber the bridge. See the WARNING further up" >&2
+  echo "         for why, and for the single command that converges it." >&2
 fi
 
 echo "Host ready. Launch with: box new --name <box>"

@@ -55,6 +55,17 @@ no()   { printf '  %sDIRTY%s %s\n' "$C_R" "$C_0" "$*"; bad=$((bad + 1)); }
 inf()  { printf '        %s\n' "$*"; }
 head_() { printf '\n%s%s%s\n' "$C_B" "$*" "$C_0"; }
 
+# What --fix will NOT touch, and why. A key the tool refuses to change is a
+# STATED refusal, never a silent pass — the same rule the drill's probe floor
+# and 'drill-recorded' hold: a check that cannot act says so. The verdict has
+# to be reachable, and it was not: a report saying "3 problem(s) — run
+# doctor.sh --fix" where --fix could only reach one sent the operator round a
+# loop this tool already knew the end of (#227). Every refusal registers here
+# in BOTH modes — whether --fix can reach a key is a property of the host's
+# state, not of the flag — and the verdict names each one.
+HELD=""
+hold() { HELD="$HELD${HELD:+$'\n'}$*"; inf "--fix cannot reach this: $*"; }
+
 # --- The #80 signature: a nested box stack squatting on the gateway ---------
 # setup-host run INSIDE a box builds a nested boxnet on the guest's own uplink
 # subnet. The measured mechanism, and the two lines this function reads for:
@@ -151,6 +162,36 @@ yaml_value() {
   local key="$1" show="$2" line
   line="$(printf '%s\n' "$show" | awk -v k="$key:" '$1 == k { sub(/^[[:space:]]*[^:]*:/, ""); print; exit }')"
   yaml_scalar "$line"
+}
+
+# The INSTANCES named by a 'used_by:' list — one per line, project-qualified
+# where Incus qualifies them, nothing at all when none. Text in, names out, so
+# test/cli.sh drives it against canned 'incus network show' output (#227).
+#
+# One read answers "is anything attached?" because Incus computes used_by from
+# every instance's EXPANDED devices: a box that reaches boxnet through the
+# box-net profile — which is every box — is listed here by its own name, beside
+# the profiles. Reading the profile entries instead would need the names of the
+# restricted tier's per-user profile copies, which 'box grant' creates and this
+# script has never known. (setup-host.sh carries the same pair as it does of
+# yaml_scalar: these two scripts ship and run independently.)
+used_by_instances() {
+  printf '%s\n' "$1" | awk '
+    /^used_by:/ { in_list = 1; next }
+    in_list && /^-[[:space:]]/ {
+      url = $2
+      if (url !~ /^\/1\.0\/instances\//) next
+      sub(/^\/1\.0\/instances\//, "", url)
+      proj = ""
+      if (match(url, /\?project=/)) {
+        proj = substr(url, RSTART + 9)
+        url  = substr(url, 1, RSTART - 1)
+      }
+      print (proj == "" ? url : url " (project " proj ")")
+      next
+    }
+    in_list && /^[^[:space:]-]/ { in_list = 0 }
+  '
 }
 
 # The report. It JUDGES NOTHING — every line here is informational and none of
@@ -334,7 +375,49 @@ if incus network show boxnet >/dev/null 2>&1; then
     inf "fix:  re-run:  box setup-host"
     [ "$FIX" = 1 ] && { incus network set boxnet dns.mode=none && inf "set: dns.mode=none"; }
   fi
-  inf "ipv4.address = $(incus network get boxnet ipv4.address 2>/dev/null)"
+  # ipv4.address was PRINTED here and never judged, in a section whose whole
+  # job is to judge — so a bridge that had lost the key read as a clean line.
+  # It is not cosmetic: the ACL carve-out check below, the UFW check, drill.sh's
+  # boxnet_gw and box-firewall all read this key, and an empty one makes each
+  # of them skip silently rather than fail. The contract is that the key agrees
+  # with the address the bridge actually holds — the same address choose_subnet
+  # reads, and the one every rule downstream is derived from (#227).
+  #
+  # The doctor never DECIDES a subnet: converging means writing back the
+  # address the bridge is already on. Deciding is choose_subnet's, in
+  # setup-host, and it stays there.
+  ipv4="$(incus network get boxnet ipv4.address 2>/dev/null)"
+  live="$(ip -4 -o addr show dev boxnet 2>/dev/null | awk '{ print $4; exit }')"
+  # A 'show' that answers nothing is not an empty used_by list — the bridge
+  # described itself one line ago, so silence here is the daemon, not the
+  # fleet, and the safe reply to "may I renumber?" under ignorance is no.
+  boxnet_show="$(incus network show boxnet 2>/dev/null)"
+  attached="$(used_by_instances "$boxnet_show")"
+  if [ -n "$ipv4" ] && { [ -z "$live" ] || [ "$ipv4" = "$live" ]; }; then
+    ok "ipv4.address = $ipv4 — the ACL carve-out, the firewall and the drill all read this key"
+  else
+    if [ -z "$ipv4" ]; then
+      no "ipv4.address = <unset> — nothing records the bridge's address, so every check derived from it silently passes"
+    else
+      no "ipv4.address = $ipv4 but the bridge holds $live — the config and the kernel disagree about the gateway"
+    fi
+    inf "fix:  re-run:  box setup-host   (it converges this key now, #227)"
+    # Writing it RENUMBERS the bridge, so it is the one key here that is not
+    # unconditionally safe: every attached box holds a lease on the old subnet.
+    # A tool that silently renumbers a running fleet is worse than one that
+    # will not — so refuse, out loud, and let the operator choose the moment.
+    if [ -z "$boxnet_show" ]; then
+      hold "ipv4.address — 'incus network show boxnet' answered nothing, so what is attached is unknown; check the daemon, then re-run --fix"
+    elif [ -n "$attached" ]; then
+      hold "ipv4.address — $(printf '%s\n' "$attached" | wc -l | tr -d ' ') instance(s) attached to boxnet and writing this key renumbers the bridge; stop them, then re-run --fix"
+      inf "attached: $(printf '%s\n' "$attached" | tr '\n' ' ')"
+    elif [ -z "$live" ]; then
+      hold "ipv4.address — the bridge holds no address here, so there is nothing to converge it TO; 'box setup-host' decides the subnet, this tool never does"
+    elif [ "$FIX" = 1 ]; then
+      incus network set boxnet ipv4.address="$live" \
+        && inf "set: ipv4.address=$live (the address the bridge already holds)"
+    fi
+  fi
   # Incus reports the network as "Created" whether or not anything is actually
   # SERVING it. Kill the daemon uncleanly (a wedge, an OOM, a SIGKILL) and it
   # can come back without respawning this network's dnsmasq — the bridge is up,
@@ -357,9 +440,19 @@ if incus network show boxnet >/dev/null 2>&1; then
         || inf "STILL missing — run teardown-host.sh and let the drill rebuild the network"
     }
   fi
+  # Unlike ipv4.address this one is unconditionally safe to write — it does not
+  # depend on the operator's subnet choice and setting it strands no lease — so
+  # --fix has an arm here. It had none, and that was the gap that made the
+  # verdict unreachable on the 2026-08-27 host: probe C6 reads exactly this key
+  # and would have recorded "ipv6: ENABLED and uncovered" against the release.
   ipv6="$(incus network get boxnet ipv6.address 2>/dev/null)"
-  [ "$ipv6" = none ] && ok "ipv6.address = none (the isolation contract — every ACL rule is IPv4-only)" \
-                     || no "ipv6.address = $ipv6 — IPv6 is on and NOT covered by any ACL rule"
+  if [ "$ipv6" = none ]; then
+    ok "ipv6.address = none (the isolation contract — every ACL rule is IPv4-only)"
+  else
+    no "ipv6.address = ${ipv6:-<unset>} — IPv6 is on and NOT covered by any ACL rule"
+    inf "fix:  re-run:  box setup-host   (it converges this key now, #227)"
+    [ "$FIX" = 1 ] && { incus network set boxnet ipv6.address=none && inf "set: ipv6.address=none"; }
+  fi
 else
   FRESH=1
   inf "boxnet does not exist (a fresh host — setup-host.sh will create it)"
@@ -645,9 +738,26 @@ if [ "$bad" -eq 0 ]; then
   exit 0
 fi
 printf '  %s%s problem(s)%s — this host is NOT fit to mint boxes (or to drill).\n' "$C_R" "$bad" "$C_0"
+# The verdict's advice has to be reachable (#227). Where --fix cannot reach a
+# finding, say which one and why here rather than offering a command that
+# leaves the count where it was: the two classes need different next moves —
+# one is a flag, the other is stopping the boxes (or an operator).
+if [ -n "$HELD" ]; then
+  printf '  %s of them need the boxes down first — --fix will not touch:\n' \
+    "$(printf '%s\n' "$HELD" | wc -l | tr -d ' ')"
+  while IFS= read -r held_line; do printf '    · %s\n' "$held_line"; done <<<"$HELD"
+fi
 if [ "$FIX" = 1 ]; then
-  printf '  reverted what could be reverted; re-run doctor to confirm.\n\n'
+  if [ -n "$HELD" ]; then
+    printf '  fixed what could be fixed; the line(s) above are yours to time.\n\n'
+  else
+    printf '  reverted what could be reverted; re-run doctor to confirm.\n\n'
+  fi
 else
-  printf '  run:  bash drill/doctor.sh --fix\n\n'
+  if [ -n "$HELD" ]; then
+    printf '  run:  bash drill/doctor.sh --fix   (it clears the rest)\n\n'
+  else
+    printf '  run:  bash drill/doctor.sh --fix\n\n'
+  fi
 fi
 exit 1

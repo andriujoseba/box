@@ -4456,7 +4456,12 @@ case "$*" in
   "storage get default volatile.initial_source")
                                   printf '%s\n' "${FAKE_POOL_INITIAL_SOURCE:-}" ;;
   *"admin init --preseed"*)       [ -z "${FAKE_PRESEED_FAIL:-}" ] || exit 1 ;;
-  "network show boxnet")          [ -n "${FAKE_HAVE_BOXNET:-}" ]  || exit 1 ;;
+  # 'show' answers with the network's yaml, which is where used_by lives — the
+  # read that decides whether ipv4.address may be converged at all (#227). An
+  # existence probe that wants no body just leaves FAKE_BOXNET_SHOW unset.
+  "network show boxnet")          [ -n "${FAKE_HAVE_BOXNET:-}" ]  || exit 1
+                                  printf '%s\n' "${FAKE_BOXNET_SHOW:-}" ;;
+  "network get boxnet ipv4.address") printf '%s\n' "${FAKE_BOXNET_IPV4:-}" ;;
   "network acl show box-isolate") [ -n "${FAKE_HAVE_ACL:-}" ]     || exit 1 ;;
   "profile show box-net")         [ -n "${FAKE_HAVE_PROFILE:-}" ] || exit 1 ;;
 esac
@@ -4544,6 +4549,143 @@ check "setup-host: ...the bridge follows the pick" 0 "" \
   grep -qF 'network create boxnet ipv4.address=10.89.0.1/24' "$W80/g3.log"
 check "setup-host: ...the ACL carve-out follows the pick" 0 "" \
   grep -qF 'destination: 10.89.0.1/32' "$W80/g3.log"
+# The create path writes the contract keys itself, so it must not converge on
+# top of its own create — a fresh host is one write, not two.
+check "setup-host: ...and the fresh path does not converge on top of its create" 1 "" \
+  grep -qF 'network set boxnet ipv6.address' "$W80/g3.log"
+
+# --- used_by_instances: is anything ATTACHED to the bridge? (#227) ----------
+# The read that decides whether setup-host may converge ipv4.address, and
+# whether doctor's --fix may. Pure text in, names out — the valid_subnet seam,
+# driven against canned 'incus network show' output.
+UBFN="$(mktemp)"
+awk '/^used_by_instances\(\) \{/,/^\}/' "$ROOT/host/setup-host.sh" > "$UBFN"
+check "used_by_instances: extracted from setup-host.sh (guards the awk)" 0 "used_by" cat "$UBFN"
+check "used_by_instances: the extracted function is valid bash" 0 "" bash -n "$UBFN"
+# doctor.sh carries the same function, as it carries yaml_scalar. The two
+# scripts ship and run independently, so the copies are diffed rather than
+# trusted — a drift here makes the two tools disagree about whether a bridge
+# may be renumbered, which is the one question they must not disagree on.
+UBFN2="$(mktemp)"
+awk '/^used_by_instances\(\) \{/,/^\}/' "$ROOT/drill/doctor.sh" > "$UBFN2"
+check "used_by_instances: doctor.sh carries it too" 0 "used_by" cat "$UBFN2"
+check "used_by_instances: the two copies are byte-identical" 0 "" cmp -s "$UBFN" "$UBFN2"
+rm -f "$UBFN2"
+
+ub()          { bash -c ". '$UBFN'; used_by_instances \"\$1\"" _ "$1"; }
+ubempty()     { [ -z "$(ub "$1")" ]; }
+ubis()        { [ "$(ub "$1")" = "$2" ]; }
+ubcount()     { [ "$(ub "$1" | wc -l)" -eq "$2" ]; }
+ubnoprofile() { ! ub "$1" | grep -q box-net; }
+
+# The measured 2026-08-27 shape: three profile entries, no instance. The
+# restricted tier's per-user profile copies are why the bridge cannot simply be
+# deleted and rebuilt — and they are NOT instances, so they do not block a
+# converge.
+UB_PROFILES='config:
+  ipv4.address: 10.88.0.1/24
+name: boxnet
+used_by:
+- /1.0/profiles/box-net
+- /1.0/profiles/box-net?project=user-1000
+- /1.0/profiles/box-net?project=user-1001
+managed: true'
+UB_ATTACHED='name: boxnet
+used_by:
+- /1.0/instances/work
+- /1.0/profiles/box-net
+- /1.0/instances/scratch?project=user-1000
+managed: true'
+check "used_by_instances: profiles alone are not an attachment" 0 "" ubempty "$UB_PROFILES"
+check "used_by_instances: an empty list is not an attachment" 0 "" ubempty 'name: boxnet
+used_by: []
+managed: true'
+check "used_by_instances: no used_by key at all is not an attachment" 0 "" \
+  ubempty 'name: boxnet
+managed: true'
+check "used_by_instances: nothing at all in is nothing out" 0 "" ubempty ""
+check "used_by_instances: an attached instance is named" 0 "work" ub "$UB_ATTACHED"
+check "used_by_instances: ...project-qualified where Incus qualifies it" 0 \
+  "scratch (project user-1000)" ub "$UB_ATTACHED"
+check "used_by_instances: ...and the profile beside them is not reported as one" 0 "" \
+  ubnoprofile "$UB_ATTACHED"
+check "used_by_instances: ...two instances in, two lines out" 0 "" ubcount "$UB_ATTACHED" 2
+# A list that ENDS is a list that ends: a later top-level key with its own
+# entries must not read as more of used_by.
+check "used_by_instances: a later list does not leak into the answer" 0 "" ubis 'used_by:
+- /1.0/instances/work
+locations:
+- /1.0/instances/not-a-user' work
+rm -f "$UBFN"
+
+# --- boxnet's contract keys are CONVERGED, not written once (#227) ----------
+# The create arguments used to be the only place ipv4.address, ipv4.nat and
+# ipv6.address were ever written, so a drifted bridge was detected by every
+# tool here and repaired by none. Driven through the same shims as the #80
+# cases above: an existing bridge must come out at contract.
+W227="$(mktemp -d)"
+# Nothing attached: every key converges, and the bridge is not re-created.
+check "setup-host: an existing boxnet is converged, not left alone" 0 "Host ready" \
+  runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88" \
+           FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           FAKE_BOXNET_SHOW="$UB_PROFILES" FAKE_INCUS_LOG="$W227/drift.log"
+check "setup-host: ...ipv6.address=none is set on the EXISTING bridge" 0 "" \
+  grep -qF 'network set boxnet ipv6.address=none ipv4.nat=true' "$W227/drift.log"
+check "setup-host: ...and the drifted ipv4.address is converged to the pick" 0 "" \
+  grep -qF 'network set boxnet ipv4.address=10.88.0.1/24' "$W227/drift.log"
+check "setup-host: ...without re-creating the bridge" 1 "" \
+  grep -qF 'network create boxnet' "$W227/drift.log"
+check "setup-host: ...and dns.mode=none with it, so both drifted keys land at contract" 0 "" \
+  grep -qF 'network set boxnet dns.mode=none' "$W227/drift.log"
+check "setup-host: ...saying so, with the value it replaced" 0 "converged <unset> -> 10.88.0.1/24" \
+  runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88" \
+           FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+           FAKE_BOXNET_SHOW="$UB_PROFILES"
+
+# Idempotence: the second consecutive run finds the key at contract and does
+# not write it. The file's header claims idempotence; converging must not cost
+# it. (ipv6/ipv4.nat are set unconditionally by design — setting a key to the
+# value it already holds is what 'converge' means here, as for the ACL.)
+runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88" \
+         FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1 \
+         FAKE_BOXNET_SHOW="$UB_PROFILES" FAKE_BOXNET_IPV4=10.88.0.1/24 \
+         FAKE_INCUS_LOG="$W227/again.log" >/dev/null 2>&1
+check "setup-host: a second run leaves ipv4.address alone (idempotence)" 1 "" \
+  grep -qF 'network set boxnet ipv4.address' "$W227/again.log"
+check "setup-host: ...and says nothing about it" 1 "" \
+  grep -qF 'ipv4.address converged' "$W227/again.log"
+check "setup-host: ...while still converging the unconditional keys" 0 "" \
+  grep -qF 'network set boxnet ipv6.address=none ipv4.nat=true' "$W227/again.log"
+
+# Attached: the renumber is refused, out loud, and the run still succeeds. A
+# tool that silently renumbers a running fleet is worse than one that will not.
+RUNATT=(runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88"
+        FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1
+        FAKE_BOXNET_SHOW="$UB_ATTACHED")
+check "setup-host: a drifted ipv4.address with boxes attached still exits 0" 0 "Host ready" \
+  "${RUNATT[@]}" FAKE_INCUS_LOG="$W227/att.log"
+check "setup-host: ...having changed the address not at all" 1 "" \
+  grep -qF 'network set boxnet ipv4.address' "$W227/att.log"
+check "setup-host: ...while the unconditional keys were converged anyway" 0 "" \
+  grep -qF 'network set boxnet ipv6.address=none ipv4.nat=true' "$W227/att.log"
+check "setup-host: ...naming the drift" 0 "boxnet's ipv4.address is <unset>" "${RUNATT[@]}"
+check "setup-host: ...naming what is attached" 0 "work" "${RUNATT[@]}"
+check "setup-host: ...including the one in another project" 0 "scratch (project user-1000)" \
+  "${RUNATT[@]}"
+check "setup-host: ...and the exact command that converges it once they are down" 0 \
+  "incus network set boxnet ipv4.address 10.88.0.1/24" "${RUNATT[@]}"
+check "setup-host: ...restated at the end, where it has not scrolled away" 0 \
+  "is still <unset>" "${RUNATT[@]}"
+
+# A 'show' that answers nothing is not an empty used_by list: the safe reply to
+# "may I renumber?" under ignorance is no, and it is said out loud.
+RUNBLIND=(runsetup FAKE_IP4_DEFAULT="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" FAKE_IP4_BOXNET="$B_88"
+          FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 FAKE_HAVE_PROFILE=1)
+check "setup-host: an unreadable 'network show' does not read as 'nothing attached'" 0 \
+  "what is attached to the bridge is unknown" "${RUNBLIND[@]}" FAKE_INCUS_LOG="$W227/blind.log"
+check "setup-host: ...so the address is left alone" 1 "" \
+  grep -qF 'network set boxnet ipv4.address' "$W227/blind.log"
+check "setup-host: ...and the run still completes" 0 "Host ready" "${RUNBLIND[@]}"
 
 # --- Where the pool LIVES (#180) -------------------------------------------
 # pool_block is pure — driver and source in, the preseed's storage block out —
@@ -5353,6 +5495,163 @@ check "doctor: the #16 incident survives the re-attribution" 0 "" \
 # and exit 2, resolved before any daemon call — so this runs anywhere.
 check "doctor: a bad argument still exits 2 with the one-line usage" 2 "usage: doctor.sh" \
   bash "$ROOT/drill/doctor.sh" --nonsense
+
+# ---------------------------------------------------------------------------
+# The doctor's boxnet keys, and whether its VERDICT is reachable (#227). The
+# whole script is DRIVEN under shims — the setup-host and box-firewall seam —
+# because the claim under test is about the verdict a host gets, and no grep
+# can hold that: "3 problem(s), run --fix" where --fix could only reach one is
+# advice that sends the operator round a loop the tool already knew the end of.
+#
+# The incus shim is STATEFUL on purpose: 'network set' writes the key and
+# 'network get' reads it back, so --fix followed by a fresh run is the same
+# measurement an operator makes, not a claim about what --fix logged.
+# ---------------------------------------------------------------------------
+DOCSHIM="$(mktemp -d)"
+DOCSTATE="$(mktemp -d)"
+cat > "$DOCSHIM/incus" <<'SHIM'
+#!/usr/bin/env bash
+# Fake incus for the driven doctor: a healthy host except for boxnet's keys,
+# which live in $FAKE_NET_STATE as one file per key so a 'set' is visible to
+# the next 'get'. Everything else answers the way a clean stack does.
+key_file() { printf '%s/%s' "$FAKE_NET_STATE" "$(printf '%s' "$1" | tr / _)"; }
+case "$1 $2" in
+  "network get")
+    f="$(key_file "$4")"; [ -f "$f" ] && cat "$f"; exit 0 ;;
+  "network set")
+    shift 3
+    for kv; do printf '%s' "${kv#*=}" > "$(key_file "${kv%%=*}")"; done
+    exit 0 ;;
+esac
+case "$*" in
+  "network show boxnet")  printf '%s\n' "${FAKE_BOXNET_SHOW:-}" ;;
+  "network acl show box-isolate")
+    printf 'egress:\n- action: allow\n  destination: %s/32\n- action: drop\n  destination: 10.0.0.0/8\n' \
+      "${FAKE_ACL_GW:-10.88.0.1}" ;;
+  "profile show box-net") ;;
+  "profile device get box-net eth0 security.port_isolation") printf 'true\n' ;;
+  "profile device get box-net root pool")                    printf 'default\n' ;;
+  "storage show default") printf 'config: {}\ndriver: dir\nname: default\n' ;;
+  "config show "*)        exit 1 ;;   # no leftover drill boxes
+  "list"|"list "*)        ;;          # daemon answers; no instances to probe
+esac
+exit 0
+SHIM
+cat > "$DOCSHIM/pgrep" <<'SHIM'
+#!/usr/bin/env bash
+# A dnsmasq IS serving boxnet: that check is not what these cases are about,
+# and a real pgrep here would put a fourth problem in every verdict below.
+exit 0
+SHIM
+cat > "$DOCSHIM/sudo" <<'SHIM'
+#!/usr/bin/env bash
+# nft table present (exit 0), 'bridge -d link show' empty (no attached taps),
+# ufw absent from its own answer. The doctor must never touch this machine.
+exit 0
+SHIM
+chmod +x "$DOCSHIM/incus" "$DOCSHIM/pgrep" "$DOCSHIM/sudo"
+
+rundoctor() { # rundoctor <state-dir> [--fix] — the real doctor, under shims
+  local state="$1"; shift
+  env FAKE_NET_STATE="$state" FAKE_BOXNET_SHOW="${DOC_SHOW:-}" \
+      FAKE_IP4_ROUTES="$D_LAN" FAKE_IP4_ADDRS="$A_HOSTSTACK" \
+      FAKE_IP4_BOXNET="${DOC_LIVE-5: boxnet    inet 10.88.0.1/24 scope global boxnet}" \
+      NO_COLOR=1 PATH="$DOCSHIM:$SHIMDIR:$PATH" \
+      bash "$ROOT/drill/doctor.sh" "$@"
+}
+drifted() { # drifted <dir> — the host measured on 2026-08-27, restored
+  rm -rf "$1"; mkdir -p "$1"
+  printf 'no-resolv;server=1.1.1.1' > "$1/raw.dnsmasq"   # the resolver IS pinned
+  printf '2001:db8::1/64'           > "$1/ipv6.address"  # …and these three are not
+}
+# The operator's own measurement: --fix, then look again. Every assertion about
+# what --fix achieved is made on the SECOND run, never on what the first logged.
+docfixed()  { rundoctor "$1" --fix >/dev/null 2>&1; rundoctor "$1"; }
+dockey()    { rundoctor "$1" --fix >/dev/null 2>&1; [ "$(cat "$1/$2" 2>/dev/null)" = "$3" ]; }
+dounwritten() { rundoctor "$1" --fix >/dev/null 2>&1; [ ! -f "$1/$2" ]; }
+docnohold() { ! rundoctor "$1" | grep -qF -e "--fix cannot reach" -e "need the boxes down"; }
+# A bridge that is up but holds no address: DOC_LIVE empty, in a subshell so
+# the emptiness cannot leak into the next case.
+docnolive() { ( DOC_LIVE=""; rundoctor "$@" ); }
+docnolive_unwritten() { ( DOC_LIVE=""; rundoctor "$1" --fix >/dev/null 2>&1 ); [ ! -f "$1/ipv4.address" ]; }
+
+# The measured state, verbatim: dns.mode unset, ipv4.address empty, ipv6 set.
+# Nothing is attached — the used_by that host reported held profiles only.
+DOC_SHOW="$UB_PROFILES"
+D1="$DOCSTATE/measured"; drifted "$D1"
+check "doctor: the 2026-08-27 host state is 3 problems, as measured" 1 "3 problem(s)" \
+  rundoctor "$D1"
+check "doctor: ...ipv4.address is JUDGED now, not just printed" 1 "DIRTY ipv4.address = <unset>" \
+  rundoctor "$D1"
+check "doctor: ...naming what an unrecorded address costs" 1 "silently passes" rundoctor "$D1"
+check "doctor: ...ipv6 is still caught" 1 "IPv6 is on and NOT covered" rundoctor "$D1"
+check "doctor: ...and with nothing held, --fix is offered without qualification" 1 \
+  "run:  bash drill/doctor.sh --fix" rundoctor "$D1"
+check "doctor: ...no line claims --fix cannot reach a key" 0 "" docnohold "$D1"
+# The acceptance criterion in one line: --fix on that state, then a fresh run.
+drifted "$D1"
+check "doctor: --fix reduces the measured state to zero" 0 "clean" docfixed "$D1"
+drifted "$D1"
+check "doctor: ...having converged ipv4.address to the address the bridge holds" 0 \
+  "ipv4.address = 10.88.0.1/24" docfixed "$D1"
+drifted "$D1"
+check "doctor: ...and ipv6.address to none" 0 "ipv6.address = none" docfixed "$D1"
+drifted "$D1"
+# The key probe C6 reads, left at the value it reads for — the failure that
+# motivated the issue, observable without a full drill run.
+check "doctor: ...so 'incus network get boxnet ipv6.address' answers C6 correctly" 0 "" \
+  dockey "$D1" ipv6.address none
+
+# Attached: --fix must NOT renumber, and must say which key it left and why —
+# the doctor's version of a declared skip. The verdict has to distinguish the
+# two classes, because they need different next moves: one is a flag, the
+# other is stopping the boxes.
+DOC_SHOW="$UB_ATTACHED"
+D2="$DOCSTATE/attached"; drifted "$D2"
+check "doctor: --fix leaves ipv4.address alone while boxes are attached" 1 "2 instance(s) attached" \
+  rundoctor "$D2" --fix
+check "doctor: ...naming it as the key --fix cannot reach" 1 "--fix cannot reach this: ipv4.address" \
+  rundoctor "$D2" --fix
+check "doctor: ...and the verdict counts it apart from the rest" 1 \
+  "1 of them need the boxes down first" rundoctor "$D2" --fix
+check "doctor: ...the state is genuinely unchanged, so the count only drops by two" 1 \
+  "1 problem(s)" docfixed "$D2"
+drifted "$D2"
+check "doctor: ...while the safe keys were fixed anyway" 0 "" dockey "$D2" ipv6.address none
+drifted "$D2"
+check "doctor: ...and the address was not written" 0 "" dounwritten "$D2" ipv4.address
+# The refusal is a property of the HOST, not of the flag: a plain report must
+# name it too, or the operator reaches for --fix to find out.
+drifted "$D2"
+check "doctor: the refusal is stated without --fix as well" 1 "need the boxes down first" \
+  rundoctor "$D2"
+
+# The bridge with no address at all: there is nothing to converge TO, and the
+# doctor never decides a subnet — choose_subnet does, in setup-host (D3).
+DOC_SHOW="$UB_PROFILES"
+D3="$DOCSTATE/noaddr"; drifted "$D3"
+check "doctor: with no live bridge address, --fix refuses and says who decides" 1 \
+  "'box setup-host' decides the subnet" docnolive "$D3" --fix
+check "doctor: ...and invents no address of its own" 0 "" docnolive_unwritten "$D3"
+
+# The same ignorance rule setup-host holds: a 'show' that answers nothing is
+# not an empty used_by list, and --fix may not renumber on it.
+DOC_SHOW=""
+D5="$DOCSTATE/blind"; drifted "$D5"
+check "doctor: an unreadable 'network show' holds the key rather than renumbering" 1 \
+  "what is attached is unknown" rundoctor "$D5" --fix
+check "doctor: ...and writes nothing" 0 "" dounwritten "$D5" ipv4.address
+
+# A bridge whose config and kernel disagree — the other half of the check. The
+# ACL carve-out reads the config key, so the two disagreeing is not cosmetic.
+DOC_SHOW="$UB_PROFILES"
+D4="$DOCSTATE/disagree"; drifted "$D4"
+printf '10.89.0.1/24' > "$D4/ipv4.address"
+check "doctor: config and kernel disagreeing about the gateway is a finding" 1 \
+  "but the bridge holds 10.88.0.1/24" rundoctor "$D4"
+check "doctor: ...and --fix converges the config to the kernel" 0 "" \
+  dockey "$D4" ipv4.address 10.88.0.1/24
+unset DOC_SHOW
 
 # ---------------------------------------------------------------------------
 # box-firewall's UFW converge and the fail-closed boot window (#86 review,
