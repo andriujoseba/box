@@ -827,6 +827,66 @@ $SUDO systemctl enable --now incus-user.socket 2>/dev/null \
 # the template at mint time). A legacy claude-dev profile is left alone:
 # Incus refuses to delete an in-use profile, and pre-rename boxes reference
 # it until their last one is gone — teardown-host removes it then.
+#
+# Converge the #229 rename first. Up to 0.9.x this profile was 'box-net', one
+# hyphen from the 'boxnet' bridge its NIC attaches to, which read as a typo to
+# anyone holding raw 'incus' output and no context. Converging a host's own
+# stack is what this script already does for the bridge, the ACL, dns.mode and
+# the resolver; the rename joins that list rather than becoming migration
+# tooling, which box is leaving (#226).
+converge_profile_name() {
+  local project="$1" label="$2"
+
+  incus --project "$project" profile show box-net >/dev/null 2>&1 || return 0
+
+  # Both names present, which is where an interrupted upgrade lands. The new
+  # name wins and the old is removed — and this case is decided BEFORE any
+  # rename is attempted, never as a fallback from one failing. Incus refuses a
+  # rename onto an existing name outright ("Profile %q already exists",
+  # cmd/incusd/profiles.go), so ordering it the other way would turn the
+  # resume-an-interrupted-upgrade path into a hard error under 'set -e'.
+  if incus --project "$project" profile show box-profile >/dev/null 2>&1; then
+    if incus --project "$project" profile delete box-net >/dev/null 2>&1; then
+      echo "profile: removed the stale box-net in $label (box-profile is already there)"
+    else
+      # Incus refuses to delete an in-use profile, so this is not noise: an
+      # instance is still placed on the old name, and only a human can say
+      # which and why. Never fatal — the rest of the stack still converges.
+      echo "WARNING: $label carries BOTH box-profile and box-net, and box-net could not be" >&2
+      echo "         removed — something is still placed on it. Name it with:" >&2
+      echo "           incus --project $project profile show box-net" >&2
+    fi
+    return 0
+  fi
+
+  # The ordinary upgrade: one rename, and every attached box keeps its
+  # placement across it. That is measured, not assumed (#229 D6): Incus stores
+  # the instance-profile association by profile id in instances_profiles, and
+  # the rename is an UPDATE of the name column alone, identical on main and on
+  # the stable-6.0 line this script's 'apt-get install -y incus' lands. So
+  # unlike the bridge's ipv4.address above, this convergence cannot move
+  # anything out from under a running fleet, and needs no reassignment pass.
+  incus --project "$project" profile rename box-net box-profile
+  echo "profile: renamed box-net -> box-profile in $label (#229)"
+}
+
+# Every project, not just 'default'. 'box grant' installs a COPY of this
+# profile into each user-<uid> project and refreshes it on every re-run, so new
+# and re-run grants land on the new name by themselves — but an existing grant
+# nobody re-runs would keep a stale box-net forever, which is precisely the
+# claude-dev residue #226 is deleting. Converging only 'default' would repeat
+# it exactly.
+#
+# The trap in the listing: Incus marks the session's own project by appending
+# " (current)" to the name in the CSV, so the column is stripped before it is
+# used as a project name — unstripped, 'default (current)' names no project
+# and every convergence below it silently does nothing.
+converge_profile_name default "the default project"
+while IFS= read -r project; do
+  [ -n "$project" ] || continue
+  converge_profile_name "$project" "project $project"
+done < <(incus project list --format csv 2>/dev/null | cut -d, -f1 | sed 's/ (current)$//' | grep '^user-' || true)
+
 if ! incus profile show box-profile >/dev/null 2>&1; then
   incus profile create box-profile
 fi

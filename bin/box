@@ -2833,9 +2833,16 @@ cmd_import() {
     echo "box: note — no host UUID source, so this box gets no stable id (#181)" >&2
   fi
   # Placement: the artifact carries its profile list, but the isolation
-  # contract is THIS host's box-profile profile. A box export already says
-  # box-profile; anything else (a pre-0.4.0 artifact, a hand-rolled export) gets
-  # re-assigned to it, whatever the artifact asked for.
+  # contract is THIS host's box-profile profile. An export from this release
+  # already says box-profile; anything else gets re-assigned to it, whatever
+  # the artifact asked for — and that "anything else" is what absorbs the
+  # rename for free. A 0.9.x artifact says 'box-net', a pre-0.4.0 one says
+  # 'claude-dev', and both land in exactly this branch and are re-homed, the
+  # message naming what they asked for. That is why the rename adds no
+  # compatibility code anywhere: this comparison is the only place in the tree
+  # where the profile name is compared rather than used, and a second
+  # mechanism for a case the first already covers would be a second mechanism
+  # to keep correct (#229 D3).
   # (An artifact naming a profile this host lacks fails inside 'incus import'
   # above, with incus's own error naming the profile — honest enough.)
   # Two traps in reading the list: a bare name filter PREFIX-matches (asking
