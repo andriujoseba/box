@@ -2312,6 +2312,17 @@ check "revoke --purge: ...and refuses to call an admin member 'out'" 0 "is NOT o
   runrevoke "$GRANTED" "$W99/p2" --purge
 check "revoke --purge: ...the project really was deleted (the log, not the summary)" 0 "" \
   grep -qF 'project delete user-1000' "$P/incus.log"
+# #229 D7 — both names, for one release, and read off the call log rather than
+# the file's text: a comment naming the old name satisfies the corpus guard,
+# and only the call satisfies this. install.sh skips host setup on an upgrade,
+# so an upgraded host still carries box-net in every granted project until an
+# admin runs setup-host by hand; a project holding one is not empty, so the
+# project delete above fails and names three probes that are all empty,
+# because the blocker is a profile none of them shows.
+check "revoke --purge: ...deleting the contract by its current name" 0 "" \
+  grep -qF 'profile delete box-profile' "$P/incus.log"
+check "revoke --purge: ...and by the pre-0.10.0 name an upgraded host still has (#229)" 0 "" \
+  grep -qF 'profile delete box-net' "$P/incus.log"
 rm -rf "$GSHIM" "$W99"
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "setup-host: the restricted gate precedes the sudo resolution" 0 "" bash -c '
