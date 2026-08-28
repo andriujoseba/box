@@ -9,9 +9,7 @@ and — with `--emit-record` — the release record for
 [`drills/<version>.md`](../drills/README.md).
 
 > ⚠ **It rearranges the host it runs on.** Incus, a systemd unit, a network, an
-> ACL, a profile, rewritten firewall rules — and, to drill migration, a
-> faithful *legacy* stack (`claudenet` on 10.87, the `claude-dev` profile)
-> built and then retired. **Run it on a machine you can format** — a spare
+> ACL, a profile, rewritten firewall rules. **Run it on a machine you can format** — a spare
 > server, a cloud VM you'll destroy, a VM on your laptop. Not your workstation.
 
 ```sh
@@ -38,7 +36,7 @@ never executed used to report a clean sweep, and does not any more (#153).
 Roughly 20–40 minutes, most of it cold boxes.
 
 Boxes it creates and deletes by name: `drill`, `clone`, `archive`, `peer`,
-`tpl`, `legacybox`, plus the throwaway `cbprobe`, `cbcopy`,
+`tpl`, plus the throwaway `cbprobe`, `cbcopy`,
 `cbnotours` and `payroll` probes. The per-role `codex` and `grok` mints went
 with #214: they proved a payload box no longer installs. It refuses to touch any other instance,
 including an operator's own boxes on a shared host.
@@ -57,7 +55,7 @@ including an operator's own boxes on a shared host.
 | `NO_COLOR` | drop the ANSI, as does any stdout that is not a terminal — a record is pasted at least as often as it is read |
 
 `--help` prints the script's own header block. That block **is** the help text
-(`sed -n '2,69p' "$0"`), so a line added above it moves the window: keep the
+(`sed -n '2,68p' "$0"`), so a line added above it moves the window: keep the
 two together. `test/cli.sh` checks both halves of that — the window still covers
 the whole phase list, and the range quoted here and in `CONTRIBUTING.md` is the
 range the script runs, read out of the script rather than trusted.
@@ -68,11 +66,11 @@ drilled.
 
 ## What it checks
 
-The script prints **eight ledgered phases**, in this order, plus unkeyed
+The script prints **seven ledgered phases**, in this order, plus unkeyed
 sections (the install, the host setup, the summary, the audit answers) that
 emit no verdicts. Each phase declares how many verdicts a complete run of it
 emits; the table below is that declaration, and the summary grades the run
-against it as a floor. **81 probes** total.
+against it as a floor. **71 probes** total.
 
 **What a box drill proves is what box owns**: that a mint comes up, at the size
 it was asked for, on the shared placement contract and behind the real trust
@@ -91,8 +89,20 @@ else's contract.
 | **C** | **Isolation baseline (#15 section A).** From inside a real box: public egress works; the box cannot reach a listener on the host's gateway; RFC1918 is dropped; a **sibling box is unreachable** (a listener runs on the peer so "refused" — the packet arrived — cannot masquerade as "dropped"); DNS does not enumerate the sibling; IPv6 is off; and the host cannot connect **into** a box. | 9 |
 | **E** | **`box expose` — a deliberate loopback door (#55).** A listener is started inside a box and the port exposed: the host's loopback must reach it, `expose --list` and `box info` must say the box has a hole in it, a **non**-exposed port must still be dropped (the feature is per-port, never a global ingress opening), and `--remove` must shut the door. | 7 |
 | **D** | **The isolation contract, stated.** Not a rehearsal — see below. It judges only one thing: if phase C's baseline box could not reach the internet at all, it says out loud that every isolation result above is suspect rather than a pass. | 0 |
-| **M** | **Migration — the pre-0.4.0 → box transition.** A faithful legacy stack is built (`claudenet`/10.87, `claude-dev`, a box wearing the old `user.claudebox` tag), then `host/migrate-host.sh` must re-home it with its identity intact — re-tagged, mapped to its user, moved onto `boxnet`, resolving on its new leg — and `--retire-legacy` must **refuse** while a legacy box remains and succeed once none does. | 10 |
 | **T** | **Teardown.** Every box the drill minted is gone — and only those; a pre-existing operator box is left alone rather than counted as a failure. Skipped, declared, under `--keep-boxes`. | 1 |
+
+### Phase M is gone, and so is the migration it drilled
+
+There used to be an eighth phase. **M** built a faithful pre-0.4.0 stack —
+the old bridge on 10.87, the ancestor profile, a box wearing the old tag —
+purely so the host migration script could be proven to re-home it. Ten probes
+and a cold VM's wall clock, spent on a transition no user is left to take, so
+the phase and the tool were retired together (#226): a migration path with no
+drill behind it is a claim this repository does not make.
+
+**If a host is still on the pre-0.4.0 stack, migrate it before taking this
+release** — install box `0.9.1` or earlier, run its host-migration verb, then
+upgrade. This release ships no migration path and no way to build one.
 
 ### Phase D is a statement now, not a rehearsal
 

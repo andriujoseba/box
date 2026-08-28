@@ -65,14 +65,14 @@ pure-Bash tree, GitHub’s source tarball for the tag is the package, and
 
 ### What a box drill proves
 
-The box drill is the 81-probe VM isolation contract: it exercises the trust
+The box drill is the 71-probe VM isolation contract: it exercises the trust
 boundary on real hardware. The lighter Incus container rehearsal in CI proves
 the tier mechanics but cannot substitute for that boundary measurement. The
 record format and operating procedure live in [drills/README.md](drills/README.md),
 and what each phase proves in [drill/README.md](drill/README.md).
 
 **`drill/drill.sh`'s header comment is its `--help` output**, printed by a line
-range (`sed -n '2,69p'`) rather than by a here-doc. So a line added above that
+range (`sed -n '2,68p'`) rather than by a here-doc. So a line added above that
 block truncates the help silently, and prose left stale there is not stale
 documentation but the answer the tool gives when asked directly — which is how
 `--help` came to name four phases of eight (#154). Edit the header and the

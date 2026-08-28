@@ -29,9 +29,11 @@ there is no `install` step and no host-run setup. See
 
 > **0.5.0**: two new templates (`codex`, `grok`), `box expose` — a
 > loopback-only door to a box port, for seeing a dev server — and the host
-> lifecycle as first-class verbs: `box setup-host`, `box teardown-host`, and
-> `box migrate-host`, which re-homes pre-0.4.0 boxes onto the current stack
-> and retires the legacy bridge.
+> lifecycle as first-class verbs: `box setup-host` and `box teardown-host`.
+> It also added a host-migration verb for pre-0.4.0 hosts; that one was
+> **retired**, with the drill phase that proved it, once every user had moved
+> (#226). To migrate a host that is still on the old stack, install `0.9.1` or
+> earlier first.
 >
 > **0.4.0's clean cut stands**: the CLI is `box` (no legacy shim), the
 > host stack is `boxnet`/`box-isolate`/`box-firewall` on 10.88.0.0/24, and
@@ -204,10 +206,10 @@ keeps those verbatim, so the path itself is the current fact.
 differ, the path it was built from, with the same caveat about device names —
 which is what answers "what is filling my root disk" without an Incus lesson.
 
-A host still carrying the pre-0.4.0 stack: `box migrate-host --all-boxes`
-re-homes each legacy box onto `boxnet` (authed state preserved), and
-`box migrate-host --retire-legacy` removes the old bridge and profile once no
-legacy box remains.
+A host still carrying the pre-0.4.0 stack has no migration path in this
+release: install box `0.9.1` or earlier, migrate with it, then upgrade. The
+verb and the drill phase that proved it were retired together once every user
+had moved off the old stack (#226).
 
 ## Multi-user hosts: the restricted tier
 
@@ -540,8 +542,6 @@ box incus <box> -- <args...> # escape hatch: any incus command, box resolved
 box doctor [--fix|--pin-dns] # is this host fit to mint boxes? diagnose from ground truth
 box setup-host               # one-time host setup: Incus, the boxnet stack, the firewall
 box teardown-host [--purge-incus]   # remove the host stack (both name generations)
-box migrate-host --box <n> | --all-boxes | --retire-legacy
-                             # move a pre-0.4.0 host onto the box stack
 box status                   # deprecated alias for `list`
 box help [<command>]         # full help, or one command's page
 ```
@@ -747,9 +747,8 @@ meet — a hole found by probing, not by reading the rules. On a bare host the
 drill installs the whole stack, mints both templates cold — `tenant` and
 `staging-box`, which since #214 is the whole set — snapshots and
 clones, probes every boundary from inside the boxes, opens and shuts the
-`expose` door (and checks the contract survives it), re-homes a faithful
-pre-0.4.0 box through `migrate-host`, and removes what it minted —
-currently **81 checks, 81 passing**. [drill/RUNS.md](drill/RUNS.md) is the full
+`expose` door (and checks the contract survives it), and removes what it
+minted — currently **71 checks, 71 passing**. [drill/RUNS.md](drill/RUNS.md) is the full
 history, including every trap that fooled a run into a wrong verdict.
 
 ### Run the drill yourself
