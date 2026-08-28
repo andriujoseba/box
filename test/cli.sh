@@ -4503,7 +4503,12 @@ if [ -n "${FAKE_PROFILE_STATE:-}" ]; then
       fi
       mv "$(pf "$3")" "$(pf "$4")" ; exit 0 ;;
     "profile delete "*)
-      [ -z "${FAKE_OLD_PROFILE_IN_USE:-}" ] || exit 1
+      # In-use is PER PROFILE, not per store: the convergence's whole question
+      # is which of the two names something is placed on, and a shim that
+      # refuses every delete alike cannot pose it (#229, round 1).
+      case " ${FAKE_PROFILES_IN_USE:-} " in
+        *" $3 "*) echo "Error: Profile \"$3\" is currently in use" >&2; exit 1 ;;
+      esac
       rm -f "$(pf "$3")" ; exit 0 ;;
     "project list --format csv") printf '%s\n' "${FAKE_PROJECTS:-}" ; exit 0 ;;
   esac
@@ -5369,17 +5374,48 @@ check "setup-host: ...having attempted no rename at all in that case" 1 "" \
 check "setup-host: ...leaving only box-profile" 1 "" test -f "$S229B/default.box-net"
 
 # ...and when the stale one cannot be deleted, something is still placed on it.
-# Incus refuses to delete an in-use profile, and that is a human's problem to
-# see, not a silent pass — but it does not stop the rest of the stack.
+# This is not the rare case: 'box grant' installs a fresh box-profile beside
+# the in-use box-net on every upgraded host, so it is where an ordinary grant
+# lands. The convergence runs the other way round — the unused copy goes and
+# the in-use one is RENAMED onto the name, carrying its boxes with it (D6) —
+# and the postcondition is D4's either way: one name afterwards.
 S229U="$(s229 inuse default.box-net default.box-profile)"
 run229 "$S229U" "$W229/inuse.log" "FAKE_PROJECTS=default (current)" \
-  FAKE_OLD_PROFILE_IN_USE=1 > "$W229/inuse.out" 2>&1
-check "setup-host: an undeletable box-net is named, not swallowed" 0 \
-  "carries BOTH box-profile and box-net" cat "$W229/inuse.out"
-check "setup-host: ...naming the command that says what is still on it" 0 \
-  "profile show box-net" cat "$W229/inuse.out"
-check "setup-host: ...and the rest of the stack still converges" 0 "Host ready" \
+  FAKE_PROFILES_IN_USE=box-net > "$W229/inuse.out" 2>&1
+check "setup-host: an in-use box-net converges by the reverse order (#229 D4)" 0 \
+  "renamed it onto box-profile" cat "$W229/inuse.out"
+check "setup-host: ...deleting the unused copy, never the one boxes are on" 0 "" \
+  grep -q 'profile delete box-profile' "$W229/inuse.log"
+check "setup-host: ...leaving only box-profile, which is the postcondition" 1 "" \
+  test -f "$S229U/default.box-net"
+check "setup-host: ...and box-profile is what survives, not nothing" 0 "" \
+  test -f "$S229U/default.box-profile"
+check "setup-host: ...making no reassignment pass to do it (D4 is not migration)" 1 "" \
+  grep -q 'profile assign' "$W229/inuse.log"
+check "setup-host: ...and the run converged, so it may say so" 0 "Host ready" \
   cat "$W229/inuse.out"
+
+# Both names in use: boxes placed on each, and no ordering of delete and
+# rename converges that — only moving instances between profiles would, which
+# is the reassignment pass D4 rules out. So the run reports the residue and
+# does NOT report ready: a host still carrying two names has not converged the
+# rename, however well the rest of the stack went.
+S229M="$(s229 mixed default.box-net default.box-profile)"
+check "setup-host: both names in use — the run REFUSES to report ready (#229)" 1 \
+  "NOT converged" run229 "$S229M" "$W229/mixed.log" "FAKE_PROJECTS=default (current)" \
+  FAKE_PROFILES_IN_USE="box-net box-profile"
+run229 "$S229M" "$W229/mixed.log" "FAKE_PROJECTS=default (current)" \
+  FAKE_PROFILES_IN_USE="box-net box-profile" > "$W229/mixed.out" 2>&1 || true
+check "setup-host: ...naming both names and the project that carries them" 0 \
+  "carries BOTH box-profile and box-net" cat "$W229/mixed.out"
+check "setup-host: ...and the command that says which box is on which" 0 \
+  "profile assign" cat "$W229/mixed.out"
+check "setup-host: ...never printing Host ready over an unconverged rename" 1 "" \
+  grep -q "Host ready" "$W229/mixed.out"
+check "setup-host: ...leaving the old name where it is, reported not removed" 0 "" \
+  test -f "$S229M/default.box-net"
+check "setup-host: ...having converged the rest of the stack first" 0 "" \
+  grep -q 'profile edit box-profile' "$W229/mixed.log"
 
 # The fresh host never sees the rename branch at all.
 S229F="$(s229 fresh)"
