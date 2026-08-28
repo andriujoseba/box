@@ -2835,17 +2835,30 @@ cmd_import() {
   # Placement: the artifact carries its profile list, but the isolation
   # contract is THIS host's box-profile profile. An export from this release
   # already says box-profile; anything else gets re-assigned to it, whatever
-  # the artifact asked for — and that "anything else" is what absorbs the
-  # rename for free. An artifact from 0.9.x names the profile as it was before
-  # #229, a pre-0.4.0 one names 'claude-dev', and both land in exactly this
-  # branch and are re-homed, the message naming what they asked for — read off
-  # the artifact, so it needs no name written here. That is why the rename adds no
+  # the artifact asked for, the message naming what it asked for — read off the
+  # artifact, so it needs no name written here. That is why the rename adds no
   # compatibility code anywhere: this comparison is the only place in the tree
   # where the profile name is compared rather than used, and a second
   # mechanism for a case the first already covers would be a second mechanism
   # to keep correct (#229 D3).
-  # (An artifact naming a profile this host lacks fails inside 'incus import'
-  # above, with incus's own error naming the profile — honest enough.)
+  #
+  # WHAT THIS BRANCH DOES NOT REACH, measured rather than assumed (#229 round 4,
+  # @codex-bot-andresmgsl). It absorbs an artifact naming a profile that EXISTS
+  # on this host under a name that is not ours. It does NOT absorb an artifact
+  # naming a profile this host does not have, because 'incus import' above
+  # refuses that outright and this line is never reached: incus resolves every
+  # name in the artifact's profile list before creating the instance —
+  # createFromBackup -> internalImportFromBackup (cmd/incusd/instances_post.go:859)
+  # -> tx.GetProfiles (cmd/incusd/api_internal.go:840-847) -> GetProfilesIfEnabled,
+  # which returns on the first name GetProfile cannot find — and the run dies
+  # under set -e with incus's own error naming the profile it could not load.
+  # So a 0.9.x artifact re-homes only in the upgrade window where this host
+  # still carries the pre-0.10.0 name; once setup-host has converged, and on
+  # any host that never had it, the import is refused. A pre-0.4.0 artifact's
+  # profile has been in that state since before this change — nothing creates
+  # it, host/setup-host.sh only leaves a legacy one alone — which is why the
+  # boundary went unnoticed. #229's criterion is under a ruling ask on the
+  # issue; nothing here works around it, by that ask's default.
   # Two traps in reading the list: a bare name filter PREFIX-matches (asking
   # for 'work' also returns 'work2'), so anchor it; and the P column joins
   # multiple profiles with newlines, so join the whole (quoted, multi-line)

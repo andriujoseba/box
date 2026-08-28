@@ -3682,6 +3682,25 @@ cat > "$ISHIM/incus" <<'SHIM'
 printf 'incus %s\n' "$*" | tr '\n' ' ' >> "$FAKE_INCUS_LOG"
 printf '\n' >> "$FAKE_INCUS_LOG"
 case "$*" in
+  # The import boundary, and it is a REFUSAL and not a formality (#229 round 4).
+  # incus resolves every name in the artifact's profile list before it creates
+  # the instance — createFromBackup -> internalImportFromBackup
+  # (cmd/incusd/instances_post.go:859) -> tx.GetProfiles
+  # (cmd/incusd/api_internal.go:840-847) -> GetProfilesIfEnabled, which returns
+  # on the first name GetProfile cannot find (internal/server/db/cluster/
+  # profiles.go:111-116, mapper :389-391 ErrNotFound). So an artifact naming a
+  # profile this host lacks never reaches bin/box's re-home comparison at all.
+  # FAKE_HOST_PROFILES is what this host has; FAKE_ART_PROFILES is what the
+  # artifact asks for. A shim that imported unconditionally is what let 1805
+  # green tests miss the boundary, so it models the refusal now.
+  "import "*)
+    for _p in ${FAKE_ART_PROFILES:-box-profile}; do
+      case " ${FAKE_HOST_PROFILES:-box-profile} " in
+        *" $_p "*) ;;
+        *) echo "Error: Failed importing backup: Failed loading profiles ($_p) for instance: Profile not found" >&2
+           exit 1 ;;
+      esac
+    done ;;
   # Nothing exists under that name: the collision guard passes. The same call
   # enumerates volatile hwaddrs later, where an empty answer is also correct.
   "config show "*) exit 1 ;;
@@ -3707,10 +3726,16 @@ ARTIFACT="$IWORK/work-20260718T120000Z.tar.gz"
 mkdir -p "$IWORK/backup" && printf 'name: work\n' > "$IWORK/backup/index.yaml"
 tar -czf "$ARTIFACT" -C "$IWORK" backup/index.yaml
 
-importbox() {  # importbox <logfile> <cfg-file|""> — the real box, shimmed
-  local log="$1" cfg="$2"
+# importbox <logfile> <cfg-file|""> [artifact-profiles] [host-profiles]
+# The last two default to a same-release artifact landing on a converged host,
+# which is every caller but #229's pair below. They are arguments and not an
+# exported-in-a-subshell idiom because two callers overriding them that way is
+# what SC2030/SC2031 are for, and CI's shellcheck is not advisory here.
+importbox() {  # the real box, shimmed
+  local log="$1" cfg="$2" art="${3:-box-profile}" host="${4:-box-profile}"
   : > "$log"
   env FAKE_INCUS_LOG="$log" FAKE_CFG="$cfg" \
+    FAKE_ART_PROFILES="$art" FAKE_HOST_PROFILES="$host" \
     PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$ISHIM:$PATH" \
     "$BOX" import "$ARTIFACT" </dev/null >"$log.out" 2>&1
   local rc=$?
@@ -4261,23 +4286,55 @@ check "help import: names the fresh id it draws (#181)" 0 "fresh box id" \
 # --- #229 D3: a pre-rename artifact needs no compatibility branch -----------
 # An export from 0.9.x names the profile as it was before the rename. It falls
 # into the re-home branch that has always been there for anything not on this
-# host's contract — the same door a pre-0.4.0 artifact takes — and the message
-# names what the artifact asked for, read off the artifact rather than written
-# anywhere in bin/box.
+# host's contract, and the message names what the artifact asked for, read off
+# the artifact rather than written anywhere in bin/box.
 #
 # The proof that no compatibility code was added is not in this case, it is in
 # this case passing beside the corpus guard above: bin/box contains no
 # occurrence of the old name at all, so there is nothing in it that could be
 # special-casing one. Adding a branch would be a second mechanism for a case
 # the first already covers.
-importbox_old() { ( export FAKE_ART_PROFILES=box-net; importbox "$@" ) }
+#
+# THE STATE THIS MODELS IS THE UPGRADE WINDOW, and it is named rather than
+# implied (#229 round 4). The re-home is reachable only while this host still
+# carries the old profile, because incus refuses an artifact naming a profile
+# it cannot resolve before bin/box gets a say — see the shim's 'import' arm.
+# So the host below has BOTH names, which is exactly a host that has been
+# granted on 0.10.0 and not yet converged by setup-host. The converged host is
+# the case underneath, and it is a refusal.
 OLDLOG="$IWORK/oldname.log"
 check "import: a pre-rename artifact is re-homed onto the contract (#229 D3)" 0 \
-  "re-homed onto the box-profile profile" importbox_old "$OLDLOG" "$MINTED_ART"
+  "re-homed onto the box-profile profile" \
+  importbox "$OLDLOG" "$MINTED_ART" box-net "box-profile box-net"
 check "import: ...and the message names what the artifact said, not a constant" 0 \
-  "the artifact said 'box-net'" importbox_old "$OLDLOG" "$MINTED_ART"
+  "the artifact said 'box-net'" \
+  importbox "$OLDLOG" "$MINTED_ART" box-net "box-profile box-net"
 check "import: ...by the assign that was already there" 0 "" \
   grep -qF 'profile assign work box-profile' "$OLDLOG"
+
+# The boundary the re-home branch does NOT cover, driven rather than reasoned
+# about. Once setup-host has converged this host — and on any host that never
+# carried the old name, which is every fresh 0.10.0 host — an artifact from
+# 0.9.x names a profile incus cannot resolve, and 'incus import' refuses it
+# before the re-home line is reached. bin/box is 'set -euo pipefail', so the
+# run stops there: the failure is loud, the box is not half-imported, and
+# incus's own error names the profile. The criterion that says this artifact
+# imports successfully is under a ruling ask on #229; this case is what the
+# tree actually does, either way.
+CONVLOG="$IWORK/converged.log"
+check "import: a converged host refuses a pre-rename artifact (#229 D3)" 1 \
+  "Failed loading profiles (box-net) for instance" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+check "import: ...and the refusal is incus's own, named as an import failure" 1 \
+  "Failed importing backup" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+# The point of the case: the re-home never runs, so it cannot be what saves an
+# artifact naming a profile that is gone. Read off the call log rather than off
+# the message, because absence of a string is the weaker assertion.
+check "import: ...and the re-home the criterion relies on is never reached" 1 "" \
+  grep -qF 'profile assign' "$CONVLOG"
+check "import: ...and set -e stops the run there, so no box is started" 1 "" \
+  grep -qF 'incus start work' "$CONVLOG"
 # The other side of the same branch: an artifact already on the contract is
 # left alone, so 're-home' is a response to a mismatch and not something every
 # import does.
