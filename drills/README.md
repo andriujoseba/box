@@ -34,11 +34,14 @@ meant to. Keep using it for what it has always been for.
 - **What ran** — which drill, how many probes, `drill/drill.sh` invocation.
 - **On what host** — the machine, the OS, the Incus version. "Real hardware"
   is the claim; name the hardware.
-- **The pinned candidate refs** — the exact `BOX_REF` / `CAST_REF` under
-  test, and the other repos' commit SHAs. A drill that does not say what it
-  drilled proves nothing later. Box's record names no converger ref since
-  #214: box installs nothing into a guest, so there is no such ref to pin and
-  naming one would claim a dependency box does not have.
+- **The candidate refs** — the exact box checkout ref / `CAST_REF` under test,
+  and the other repos' commit SHAs. A drill that does not say what it drilled
+  proves nothing later. Box's is no longer a ref anyone pins: since #225 the
+  drill measures repo, ref and SHA off the checkout it runs from, so the
+  record names the tree that ran rather than the one an operator meant to
+  name. And box's record names no converger ref since #214: box installs
+  nothing into a guest, so there is no such ref to pin and naming one would
+  claim a dependency box does not have.
 - **The shared run ID**, so this record reconciles with the sibling repos'.
 - **The numbers** — passed, failed, how long it took.
 - **What failed**, plainly.
@@ -56,8 +59,13 @@ it emits them rather than leaving them to be retyped out of coloured terminal
 output at the end of a forty-minute run (#152):
 
 ```
-bash drill/drill.sh --ref release/0.10.0 --emit-record drills/0.10.0.md
+git checkout release/0.10.0
+bash drill/drill.sh --emit-record drills/0.10.0.md
 ```
+
+The checkout is the subject: the drill installs the tree it runs from and there
+is no ref to pass it, so the `git checkout` above is what selects the candidate
+and the record's ref fields are measured back off it (#225).
 
 - **`--run-id <id>`** (or `DRILL_RUN_ID`) pins the ID this release set's three
   records share. Unset, the drill generates `drill-<version>-<date>-01` — bump
@@ -109,7 +117,8 @@ Copy the shape, not the number.
 
 ## What ran
 
-`bash drill/drill.sh --ref release/9.9.9` — the full end-to-end: install the
+`bash drill/drill.sh` — run from a checkout of `release/9.9.9`, the full
+end-to-end: install the
 stack, mint every template cold, snapshot and restore, uninstall to zero
 residue. Then `drill/multiuser.sh` for the two-user grant matrix.
 
