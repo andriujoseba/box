@@ -5206,6 +5206,52 @@ rm -rf "$W180"
 # asserted here is the consequence for this script — that it makes no
 # reassignment pass, because none is owed.
 # ---------------------------------------------------------------------------
+# The sweep's own guard, first. A mechanical rename's correctness is exactly
+# what a grep can assert, and what goes wrong if one occurrence survives is a
+# box that will not mint — 'incus launch --profile box-net' against a host that
+# has no such profile, found at the far end of a release. So a survivor reds
+# HERE, which is the must-fail this change was specified with.
+#
+# The exceptions are the record classes and the scripts that handle the old
+# name ON PURPOSE, and each is asserted to still contain it rather than merely
+# permitted to — an exception nobody checks is how a list like this rots into a
+# hole. The teardown and wipe halves come out one release after this one (D7),
+# and these lines are what makes that removal a stated act instead of a drift.
+OLDNAME_KEEP='^(CHANGELOG\.md|drill/RUNS\.md|drills/.*\.md|host/setup-host\.sh|host/teardown-host\.sh|drill/doctor\.sh|drill/wipe\.sh|test/cli\.sh)$'
+OLDSWEEP="$(mktemp)"
+git -C "$ROOT" ls-files | grep -vE "$OLDNAME_KEEP" > "$OLDSWEEP"
+oldname_survivors() { # oldname_survivors [root] — prints offenders; 0 if any
+  local root="${1:-$ROOT}" f rc=1
+  while IFS= read -r f; do
+    [ -e "$root/$f" ] || continue
+    if grep -qw -- 'box-net' "$root/$f" 2>/dev/null; then printf '%s\n' "$f"; rc=0; fi
+  done < "$OLDSWEEP"
+  return $rc
+}
+check "rename: the sweep reaches bin/box — an empty walk sweeps nothing (#229)" 0 "" \
+  grep -qx 'bin/box' "$OLDSWEEP"
+check "rename: ...and profiles/, which is where the renamed file landed" 0 "" \
+  grep -qx 'profiles/box-profile.yaml' "$OLDSWEEP"
+check "rename: no tracked file outside the exceptions still says the old name" 1 "" \
+  oldname_survivors
+# The guard's own test: one occurrence left in bin/box, the way the sweep
+# would fail, and the guard has to red on it.
+OLDFIX="$(mktemp -d)"; mkdir -p "$OLDFIX/bin"
+printf 'incus launch "$T_IMAGE" "$instance" --profile box-net\n' > "$OLDFIX/bin/box"
+check "rename: ...and the guard reds on one left in bin/box (the guard's own test)" 0 \
+  "bin/box" oldname_survivors "$OLDFIX"
+# ...and does not red on the word it is one hyphen from, which is the whole
+# reason this rename happened.
+printf 'incus network create boxnet ipv4.address=10.88.0.1/24\n' > "$OLDFIX/bin/box"
+check "rename: ...while 'boxnet' itself is untouched by it (the boundary)" 1 "" \
+  oldname_survivors "$OLDFIX"
+rm -rf "$OLDFIX"
+for f in host/setup-host.sh host/teardown-host.sh drill/doctor.sh drill/wipe.sh; do
+  check "rename: $f handles the old name on purpose, and still does" 0 "" \
+    grep -qw -- 'box-net' "$ROOT/$f"
+done
+rm -f "$OLDSWEEP"
+
 W229="$(mktemp -d)"
 s229() { # s229 <name> <profile-file...> — a fresh store; 'project.profile' each
   local d="$W229/$1"; shift
@@ -5676,6 +5722,14 @@ case "$*" in
   "profile show box-profile") ;;
   "profile device get box-profile eth0 security.port_isolation") printf 'true\n' ;;
   "profile device get box-profile root pool")                    printf 'default\n' ;;
+  # #229's drift probe, per project. FAKE_DOC_STALE names the projects that
+  # still carry the old profile; unset, no project does and the doctor says so
+  # — which is the answer every case above this one wants.
+  "project list --format csv") printf '%s\n' "${FAKE_DOC_PROJECTS:-default (current)}" ;;
+  *"profile show box-net")
+    p=default; [ "$1" = --project ] && p="$2"
+    case " ${FAKE_DOC_STALE:-} " in *" $p "*) exit 0 ;; esac
+    exit 1 ;;
   "storage show default") printf 'config: {}\ndriver: dir\nname: default\n' ;;
   "config show "*)        exit 1 ;;   # no leftover drill boxes
   "list"|"list "*)        ;;          # daemon answers; no instances to probe
@@ -5796,6 +5850,35 @@ check "doctor: config and kernel disagreeing about the gateway is a finding" 1 \
   "but the bridge holds 10.88.0.1/24" rundoctor "$D4"
 check "doctor: ...and --fix converges the config to the kernel" 0 "" \
   dockey "$D4" ipv4.address 10.88.0.1/24
+
+# #229 — a surviving box-net is drift, and the doctor's job is to name it AND
+# name the lever. The distinction being asserted is the one the code makes:
+# claude-dev goes unreported because the tool that could fix it is retired
+# (#226), box-net is reported because setup-host converges it, so the report
+# points at something the operator can actually run.
+D229="$DOCSTATE/oldname"; drifted "$D229"
+check "doctor: a clean host says the contract has one name (#229)" 1 \
+  "no stale box-net" rundoctor "$D229"
+docstale() { ( FAKE_DOC_PROJECTS="$1"; FAKE_DOC_STALE="$2"; export FAKE_DOC_PROJECTS FAKE_DOC_STALE
+               rundoctor "$D229" ) }
+check "doctor: a surviving box-net is DIRTY, not a shrug" 1 \
+  "DIRTY box-net still exists" docstale "default (current)" "default"
+check "doctor: ...and it names the lever that removes it" 1 \
+  "fix:  box setup-host" docstale "default (current)" "default"
+check "doctor: ...saying the boxes on it are still isolated (the fault is the name)" 1 \
+  "still isolated" docstale "default (current)" "default"
+# Every project, or the check repeats the residue it exists to catch: the stale
+# copy that matters most is the one in a granted user's project, which is the
+# one nobody re-runs a grant for.
+check "doctor: ...reaching a granted user's project, not just 'default'" 1 \
+  "user-1000" docstale "$(printf 'default (current)\nuser-1000')" "user-1000"
+check "doctor: ...and naming both when both carry it" 1 \
+  "in: default user-1000" docstale "$(printf 'default (current)\nuser-1000')" "default user-1000"
+# --fix cannot reach it, and says so rather than passing silently: converging
+# the rename is setup-host's, and a second mechanism for one convergence is
+# exactly what this change refused to add.
+check "doctor: ...registering a STATED refusal, since --fix cannot reach it" 1 \
+  "--fix cannot reach this: the rename" docstale "default (current)" "default"
 unset DOC_SHOW
 
 # ---------------------------------------------------------------------------

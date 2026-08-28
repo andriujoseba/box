@@ -2836,9 +2836,10 @@ cmd_import() {
   # contract is THIS host's box-profile profile. An export from this release
   # already says box-profile; anything else gets re-assigned to it, whatever
   # the artifact asked for — and that "anything else" is what absorbs the
-  # rename for free. A 0.9.x artifact says 'box-net', a pre-0.4.0 one says
-  # 'claude-dev', and both land in exactly this branch and are re-homed, the
-  # message naming what they asked for. That is why the rename adds no
+  # rename for free. An artifact from 0.9.x names the profile as it was before
+  # #229, a pre-0.4.0 one names 'claude-dev', and both land in exactly this
+  # branch and are re-homed, the message naming what they asked for — read off
+  # the artifact, so it needs no name written here. That is why the rename adds no
   # compatibility code anywhere: this comparison is the only place in the tree
   # where the profile name is compared rather than used, and a second
   # mechanism for a case the first already covers would be a second mechanism
