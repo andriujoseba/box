@@ -1504,17 +1504,15 @@ fi
 # NOTE: dns.mode=none is now part of the SHIPPED stack (it closes the sibling
 # DNS-enumeration leak), so it is no longer "dirt" from a rehearsal — do not
 # revert it. Only the vetoed NIC filtering counts as leftover.
+# box-net alone since #226 retired the migration path: the pre-rename ancestor
+# profile was swept beside it, and nothing on a drill host builds one now.
 dirty=""
-for p in box-net; do
-  [ -n "$(incus profile device get "$p" eth0 security.ipv4_filtering 2>/dev/null)" ] && dirty="$dirty $p:ipv4_filtering"
-  [ -n "$(incus profile device get "$p" eth0 security.mac_filtering 2>/dev/null)" ] && dirty="$dirty $p:mac_filtering"
-done
+[ -n "$(incus profile device get box-net eth0 security.ipv4_filtering 2>/dev/null)" ] && dirty="$dirty box-net:ipv4_filtering"
+[ -n "$(incus profile device get box-net eth0 security.mac_filtering 2>/dev/null)" ] && dirty="$dirty box-net:mac_filtering"
 if [ -n "$dirty" ]; then
   note "this host carries the VETOED NIC filtering from an old rehearsal:$dirty — reverting"
-  for p in box-net; do
-    incus profile device unset "$p" eth0 security.mac_filtering >/dev/null 2>&1
-    incus profile device unset "$p" eth0 security.ipv4_filtering >/dev/null 2>&1
-  done
+  incus profile device unset box-net eth0 security.mac_filtering >/dev/null 2>&1
+  incus profile device unset box-net eth0 security.ipv4_filtering >/dev/null 2>&1
 fi
 
 inf "clearing anything a previous run left behind…"
@@ -1526,12 +1524,10 @@ done
 if incus network show boxnet >/dev/null 2>&1; then
   timeout -k 5 30 incus network unset boxnet dns.mode >/dev/null 2>&1
 fi
-for p in box-net; do
-  if incus profile show "$p" >/dev/null 2>&1; then
-    timeout -k 5 30 incus profile device unset "$p" eth0 security.mac_filtering >/dev/null 2>&1
-    timeout -k 5 30 incus profile device unset "$p" eth0 security.ipv4_filtering >/dev/null 2>&1
-  fi
-done
+if incus profile show box-net >/dev/null 2>&1; then
+  timeout -k 5 30 incus profile device unset box-net eth0 security.mac_filtering >/dev/null 2>&1
+  timeout -k 5 30 incus profile device unset box-net eth0 security.ipv4_filtering >/dev/null 2>&1
+fi
 left="$(incus list --format csv --columns n 2>/dev/null | tr '\n' ' ')"
 [ -n "$left" ] && inf "instances still on this host (not ours, left alone): $left"
 

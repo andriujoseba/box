@@ -102,10 +102,8 @@ if command -v incus >/dev/null; then
 fi
 
 # --- firewall: units, scripts, nft tables, UFW and Docker crumbs -------------
-for unit in box-firewall; do
-  sudo systemctl disable --now "$unit.service" >/dev/null 2>&1 && say "disabled $unit.service"
-  sudo rm -f "/etc/systemd/system/$unit.service" "/usr/local/sbin/$unit"
-done
+sudo systemctl disable --now box-firewall.service >/dev/null 2>&1 && say "disabled box-firewall.service"
+sudo rm -f /etc/systemd/system/box-firewall.service /usr/local/sbin/box-firewall
 sudo systemctl daemon-reload
 for t in "inet box" "bridge box"; do
   # shellcheck disable=SC2086 # the table spec is two words by design
@@ -137,22 +135,18 @@ if command -v ufw >/dev/null; then
 fi
 
 if [[ "$ufw_status" == *"Status: active"* ]]; then
-  for net in boxnet; do
-    while :; do
-      numbered="$(sudo ufw status numbered 2>/dev/null || true)"
-      line="$(printf '%s\n' "$numbered" | grep -m1 "on $net" || true)"
-      [ -n "$line" ] || break
-      n="$(printf '%s\n' "$line" | sed -E 's/^\[ *([0-9]+)\].*/\1/')"
-      [ -n "$n" ] || break
-      sudo ufw --force delete "$n" >/dev/null && say "deleted UFW rule on $net"
-    done
+  while :; do
+    numbered="$(sudo ufw status numbered 2>/dev/null || true)"
+    line="$(printf '%s\n' "$numbered" | grep -m1 "on boxnet" || true)"
+    [ -n "$line" ] || break
+    n="$(printf '%s\n' "$line" | sed -E 's/^\[ *([0-9]+)\].*/\1/')"
+    [ -n "$n" ] || break
+    sudo ufw --force delete "$n" >/dev/null && say "deleted UFW rule on boxnet"
   done
 fi
 if command -v docker >/dev/null; then
-  for net in boxnet; do
-    sudo iptables -D DOCKER-USER -i "$net" -j ACCEPT 2>/dev/null && say "removed DOCKER-USER -i $net"
-    sudo iptables -D DOCKER-USER -o "$net" -j ACCEPT 2>/dev/null && say "removed DOCKER-USER -o $net"
-  done
+  sudo iptables -D DOCKER-USER -i boxnet -j ACCEPT 2>/dev/null && say "removed DOCKER-USER -i boxnet"
+  sudo iptables -D DOCKER-USER -o boxnet -j ACCEPT 2>/dev/null && say "removed DOCKER-USER -o boxnet"
 fi
 
 # --- verdict: assert the ABSENCE, don't trust the removals' exit codes -------

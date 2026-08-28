@@ -626,9 +626,10 @@ PRESEED
 fi
 
 # Isolated NAT network. IPv6 off: one less egress path to reason about.
-# The default is 10.88 — not 10.87: a pre-rename host may still carry
-# claudenet on 10.87 with legacy boxes attached — two bridges must not claim
-# one subnet. BOX_SUBNET holds whatever choose_subnet decided above (an
+# The default is 10.88 — not 10.87: a pre-rename host may still carry its own
+# bridge on 10.87 with boxes attached, and two bridges must not claim one
+# subnet. The migration path that would have cleared it is retired (#226), so
+# this host may carry that bridge forever; the avoidance is permanent. BOX_SUBNET holds whatever choose_subnet decided above (an
 # explicit pin, the existing bridge, the default, or an auto-picked free
 # /24); the gateway and every rule below derive from it.
 incus network show boxnet >/dev/null 2>&1 || incus network create boxnet \
@@ -734,7 +735,7 @@ $SUDO systemctl enable --now incus-user.socket 2>/dev/null \
 
 # Profile — box-net, the placement contract: the isolated NIC and the root
 # disk, nothing a template controls (resources are stamped per-instance from
-# the template at mint time). A legacy claude-dev profile is left alone:
+# the template at mint time). A pre-rename host's own profile is left alone:
 # Incus refuses to delete an in-use profile, and pre-rename boxes reference
 # it until their last one is gone — teardown-host removes it then.
 if ! incus profile show box-net >/dev/null 2>&1; then
