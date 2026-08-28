@@ -321,7 +321,11 @@ if [ "$TIER" = restricted ]; then
     # it, and the user would be told nothing about the copy left behind.
     no "your project carries box-net, the pre-0.10.0 name for the placement contract — the tier is granted, but this project did not converge"
     inf "fix:  an admin runs:  box setup-host   (it converges every project, this one included)"
-    hold "the rename in your project — converging it is admin-owned, and this tier cannot write another project's profiles"
+    # 'inf' and not 'hold': HELD is rendered by the admin verdict, which this
+    # tier exits before reaching, and the tier banner has already said the
+    # --fix lever is ignored here — so hold's "--fix cannot reach this" would
+    # be a second saying of it that nothing ever prints (#229, round 1).
+    inf "converging it is admin-owned: this tier cannot write another project's profiles"
   else
     no "no box-profile profile in your project — the restricted tier is granted per user"
     inf "fix:  an admin runs:  box grant $(id -un)"
@@ -550,12 +554,20 @@ fi
 # carries the pair. Every project, since 'box grant' installs a copy into each
 # user-<uid> one and a stale copy there is exactly the residue the rename set
 # out to stop leaving behind (#229 D5).
+#
+# 'default' and 'user-*' and no wider, which is exactly the set setup-host
+# converges. box creates no other project, so a box-net in one is not a state
+# this stack can reach — and reporting it here would name 'box setup-host' as
+# the fix for something that run does not touch, which is a lever that cannot
+# clear what it is offered for. The two loops are a pair and are written as
+# one (#229, round 1).
 STALE=""
 while IFS= read -r project; do
   [ -n "$project" ] || continue
   incus --project "$project" profile show box-net >/dev/null 2>&1 </dev/null \
     && STALE="$STALE${STALE:+ }$project"
-done < <(incus project list --format csv 2>/dev/null </dev/null | cut -d, -f1 | sed 's/ (current)$//' || true)
+done < <(incus project list --format csv 2>/dev/null </dev/null | cut -d, -f1 \
+         | sed 's/ (current)$//' | grep -E '^(default|user-)' || true)
 if [ -n "$STALE" ]; then
   no "box-net still exists — the pre-0.10.0 name for this profile, in: $STALE"
   inf "boxes placed on it are still isolated; the fault is two names one hyphen"

@@ -5950,6 +5950,16 @@ check "doctor: ...reaching a granted user's project, not just 'default'" 1 \
   "user-1000" docstale "$(printf 'default (current)\nuser-1000')" "user-1000"
 check "doctor: ...and naming both when both carry it" 1 \
   "in: default user-1000" docstale "$(printf 'default (current)\nuser-1000')" "default user-1000"
+# ...and no wider than setup-host converges, because the two loops are a pair.
+# A box-net in a project outside 'default' and 'user-*' is a state box does not
+# create, and reporting it would offer 'box setup-host' as the fix for
+# something that run never touches — a lever that cannot clear what it is
+# named for is worse than silence (#229, round 1).
+docsays() { docstale "$1" "$2" | grep -q "$3"; }
+check "doctor: ...and no wider than the convergence reaches (the loops are a pair)" 1 "" \
+  docsays "$(printf 'default (current)\nscratch')" "scratch" "scratch"
+check "doctor: ...the same listing still catching the project that IS in scope" 0 "" \
+  docsays "$(printf 'default (current)\nuser-1000')" "user-1000" "user-1000"
 # --fix cannot reach it, and says so rather than passing silently: converging
 # the rename is setup-host's, and a second mechanism for one convergence is
 # exactly what this change refused to add.
