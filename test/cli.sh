@@ -6058,11 +6058,32 @@ check "doctor: ...and no wider than the convergence reaches (the loops are a pai
   docsays "$(printf 'default (current)\nscratch')" "scratch" "scratch"
 check "doctor: ...the same listing still catching the project that IS in scope" 0 "" \
   docsays "$(printf 'default (current)\nuser-1000')" "user-1000" "user-1000"
+# ...and 'default' is the literal project, anchored at both ends: an operator's
+# own 'default-archive' is no more in setup-host's reach than 'scratch' is, so
+# reporting one would name the same lever that cannot clear it (#229, round 2).
+check "doctor: ...'default' is the project of that name, not a prefix" 1 "" \
+  docsays "$(printf 'default (current)\ndefault-archive')" "default-archive" "default-archive"
 # --fix cannot reach it, and says so rather than passing silently: converging
 # the rename is setup-host's, and a second mechanism for one convergence is
 # exactly what this change refused to add.
 check "doctor: ...registering a STATED refusal, since --fix cannot reach it" 1 \
   "--fix cannot reach this: the rename" docstale "default (current)" "default"
+
+# A 'project list' the daemon will not answer is not a host with nothing to
+# report. Piped into the loop the two are the same empty stream, and the OK
+# below it — "the placement contract has one name on this host" — would be a
+# clean bill of health for a question nobody asked. The doctor's own rule from
+# #227, one check over: an unreadable read is not an empty result.
+docblind() { ( FAKE_DOC_PROJECTS_FAIL=1; export FAKE_DOC_PROJECTS_FAIL; rundoctor "$D229" "$@" ) }
+check "doctor: an unreadable project list is DIRTY, not 'no stale box-net' (#229)" 1 \
+  "the project list could not be read" docblind
+docblindsays() { docblind | grep -q "$1"; }
+check "doctor: ...and it does NOT claim the contract has one name" 1 "" \
+  docblindsays "no stale box-net"
+check "doctor: ...naming the daemon, not the host, as what to check" 1 \
+  "incus project list" docblind
+check "doctor: ...and --fix holds rather than reporting on projects it cannot name" 1 \
+  "--fix cannot reach this: the box-net check" docblind --fix
 unset DOC_SHOW
 
 # ---------------------------------------------------------------------------
