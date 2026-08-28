@@ -4494,6 +4494,17 @@ esac
 # first, so the assertions still read the exact command line that was sent.
 proj=default
 if [ "${1:-}" = --project ]; then proj="$2"; shift 2; fi
+# 'project list' is answered ABOVE the stateful profile store, because the
+# question it has to be able to pose belongs to both halves: FAKE_PROJECT_LIST_FAIL
+# is a daemon that refuses to answer — non-zero, nothing on stdout — which is
+# not the same host as one with no grants. Unset, it answers what a working
+# daemon on a grant-less host says: 'default (current)', never an empty stream.
+# A test that wants the empty one asks for it with FAKE_PROJECTS= (#229 round 2).
+case "$*" in
+  "project list --format csv")
+    [ -z "${FAKE_PROJECT_LIST_FAIL:-}" ] || { echo "Error: not authorized" >&2; exit 1; }
+    printf '%s\n' "${FAKE_PROJECTS-default (current)}" ; exit 0 ;;
+esac
 # The profile store is STATEFUL, and only when FAKE_PROFILE_STATE says so —
 # every case that predates #229 leaves it unset and keeps answering from
 # FAKE_HAVE_*. It has to be stateful because the claims under test are "the
@@ -4508,6 +4519,11 @@ if [ -n "${FAKE_PROFILE_STATE:-}" ]; then
     "profile show "*)   [ -f "$(pf "$3")" ] || exit 1 ; exit 0 ;;
     "profile create "*) : > "$(pf "$3")" ; exit 0 ;;
     "profile rename "*)
+      # The daemon that simply errors. Incus's own two refusals are below and
+      # are modelled from its source; this one models neither, and exists for
+      # the one window they cannot reach — a rename failing after the delete
+      # that freed its target name (#229 round 2).
+      [ -z "${FAKE_RENAME_FAIL:-}" ] || { echo "Error: rename failed" >&2; exit 1; }
       [ -f "$(pf "$3")" ] || exit 1
       if [ -f "$(pf "$4")" ]; then
         echo "Error: Profile \"$4\" already exists" >&2; exit 1
@@ -4521,7 +4537,6 @@ if [ -n "${FAKE_PROFILE_STATE:-}" ]; then
         *" $3 "*) echo "Error: Profile \"$3\" is currently in use" >&2; exit 1 ;;
       esac
       rm -f "$(pf "$3")" ; exit 0 ;;
-    "project list --format csv") printf '%s\n' "${FAKE_PROJECTS:-}" ; exit 0 ;;
   esac
 fi
 case "$*" in
@@ -5428,6 +5443,74 @@ check "setup-host: ...leaving the old name where it is, reported not removed" 0 
 check "setup-host: ...having converged the rest of the stack first" 0 "" \
   grep -q 'profile edit box-profile' "$W229/mixed.log"
 
+# ...and the same state in TWO projects. The comment at PROFILE_UNCONVERGED
+# says one project that cannot converge must not stop the next from trying and
+# must not be forgotten by the time the run reports; that is behaviour, so it
+# is asserted rather than claimed (#229 round 2).
+S229M2="$(s229 mixed2 default.box-net default.box-profile \
+                      user-1000.box-net user-1000.box-profile)"
+run229 "$S229M2" "$W229/mixed2.log" "FAKE_PROJECTS=$P229" \
+  FAKE_PROFILES_IN_USE="box-net box-profile" > "$W229/mixed2.out" 2>&1 || true
+check "setup-host: two unconvergeable projects are both named, not just the first" 0 \
+  "in: default user-1000" cat "$W229/mixed2.out"
+check "setup-host: ...the second still probed after the first failed" 0 "" \
+  grep -qF -- '--project user-1000 profile show box-net' "$W229/mixed2.log"
+check "setup-host: ...and neither one lets the run report ready" 1 "" \
+  grep -q "Host ready" "$W229/mixed2.out"
+
+# The half-done window: the unused box-profile is deleted to make room and the
+# rename onto it then fails. Not a state Incus's own refusals produce — the
+# target is free by then — so it is a transient daemon error, and what makes it
+# worth driving is that the project is left carrying box-net ALONE, with no
+# profile for 'box new'. The report must say that, not "boxes are placed on
+# each", which is the message this path used to fall through to (#229 round 2).
+#
+# Driven in a user-<uid> project, where the consequence is real: the
+# create-if-missing below the loop is 'default'-only, so nothing puts a
+# box-profile back there. 'default' is already converged in this store, so the
+# one rename this run attempts is the one under test.
+S229H="$(s229 half default.box-profile user-1000.box-net user-1000.box-profile)"
+run229 "$S229H" "$W229/half.log" "FAKE_PROJECTS=$P229" \
+  FAKE_PROFILES_IN_USE=box-net FAKE_RENAME_FAIL=1 > "$W229/half.out" 2>&1 || true
+check "setup-host: a rename that fails after the delete says what it actually left" 0 \
+  "the rename onto it then failed" cat "$W229/half.out"
+check "setup-host: ...and does not claim boxes are placed on each name" 1 "" \
+  grep -q "placed on each" "$W229/half.out"
+check "setup-host: ...naming the project in the end-of-run report" 0 \
+  "rename then failed, in: user-1000" cat "$W229/half.out"
+check "setup-host: ...withholding Host ready, because that is not converged" 1 "" \
+  grep -q "Host ready" "$W229/half.out"
+check "setup-host: ...and the state it describes is the state it left" 0 "" \
+  bash -c 'test -f "'"$S229H"'/user-1000.box-net" && ! test -f "'"$S229H"'/user-1000.box-profile"'
+
+# A 'project list' that FAILS is not a host with no grants. Piped straight into
+# the loop the two are the same empty stream, and the run converges no
+# user-<uid> project and says Host ready anyway — a claim about every granted
+# user made by a run that looked at none of them. Same rule as the bridge's
+# unreadable 'network show' (#227), one file over (#229 round 2).
+S229N="$(s229 nolist default.box-net user-1000.box-net)"
+check "setup-host: an unreadable project list is not an empty one — the run refuses" 1 \
+  "NOT converged" run229 "$S229N" "$W229/nolist.log" "FAKE_PROJECTS=$P229" \
+  FAKE_PROJECT_LIST_FAIL=1
+run229 "$S229N" "$W229/nolist.log" "FAKE_PROJECTS=$P229" FAKE_PROJECT_LIST_FAIL=1 \
+  > "$W229/nolist.out" 2>&1 || true
+check "setup-host: ...saying the granted projects could not be listed" 0 \
+  "could not be listed" cat "$W229/nolist.out"
+check "setup-host: ...and never printing Host ready over projects it did not check" 1 "" \
+  grep -q "Host ready" "$W229/nolist.out"
+check "setup-host: ...having converged the default project it COULD read" 0 "" \
+  test -f "$S229N/default.box-profile"
+check "setup-host: ...and left the user project it could not name alone" 0 "" \
+  test -f "$S229N/user-1000.box-net"
+# The other shape of the same ignorance: the daemon exits 0 and answers
+# nothing. A daemon that can list projects at all lists 'default', so an empty
+# listing is a broken read, never a host without grants.
+S229E="$(s229 emptylist default.box-net user-1000.box-net)"
+check "setup-host: an EMPTY project list is the same ignorance, not a grant-less host" 1 \
+  "could not be listed" run229 "$S229E" "$W229/empty.log" "FAKE_PROJECTS="
+check "setup-host: ...and the user project's old name is still there, unexamined" 0 "" \
+  test -f "$S229E/user-1000.box-net"
+
 # The fresh host never sees the rename branch at all.
 S229F="$(s229 fresh)"
 run229 "$S229F" "$W229/fresh.log" "FAKE_PROJECTS=default (current)" > "$W229/fresh.out" 2>&1
@@ -5811,8 +5894,12 @@ case "$*" in
   "profile device get box-profile root pool")                    printf 'default\n' ;;
   # #229's drift probe, per project. FAKE_DOC_STALE names the projects that
   # still carry the old profile; unset, no project does and the doctor says so
-  # — which is the answer every case above this one wants.
-  "project list --format csv") printf '%s\n' "${FAKE_DOC_PROJECTS:-default (current)}" ;;
+  # — which is the answer every case above this one wants. FAKE_DOC_PROJECTS_FAIL
+  # is the daemon that will not answer at all, which is a different host from
+  # one with nothing to report (#229 round 2).
+  "project list --format csv")
+    [ -z "${FAKE_DOC_PROJECTS_FAIL:-}" ] || { echo "Error: not authorized" >&2; exit 1; }
+    printf '%s\n' "${FAKE_DOC_PROJECTS:-default (current)}" ;;
   *"profile show box-net")
     p=default; [ "$1" = --project ] && p="$2"
     case " ${FAKE_DOC_STALE:-} " in *" $p "*) exit 0 ;; esac

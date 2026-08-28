@@ -555,27 +555,47 @@ fi
 # user-<uid> one and a stale copy there is exactly the residue the rename set
 # out to stop leaving behind (#229 D5).
 #
-# 'default' and 'user-*' and no wider, which is exactly the set setup-host
-# converges. box creates no other project, so a box-net in one is not a state
-# this stack can reach — and reporting it here would name 'box setup-host' as
-# the fix for something that run does not touch, which is a lever that cannot
-# clear what it is offered for. The two loops are a pair and are written as
-# one (#229, round 1).
+# The literal 'default' and 'user-*' and no wider, which is exactly the set
+# setup-host converges. box creates no other project, so a box-net in one is
+# not a state this stack can reach — and reporting it here would name
+# 'box setup-host' as the fix for something that run does not touch, which is a
+# lever that cannot clear what it is offered for. Anchored at both ends on the
+# 'default' arm: setup-host converges the project literally named 'default',
+# and an operator's own 'default-archive' is no more in its reach than
+# 'scratch' is (#229, rounds 1 and 2). The two loops are a pair and are written
+# as one.
+#
+# And the listing is read before the loop, then checked: a 'project list' that
+# fails hands the loop the same empty stream a host with no projects would, and
+# an OK saying "the placement contract has one name on this host" off the back
+# of zero projects checked is a clean bill of health for a question nobody
+# asked. Same rule as the bridge's 'network show' above (#227) — an unreadable
+# read is not an empty result — and unreadable includes an empty answer, since
+# a daemon that can list projects at all lists 'default' (#229, round 2).
 STALE=""
-while IFS= read -r project; do
-  [ -n "$project" ] || continue
-  incus --project "$project" profile show box-net >/dev/null 2>&1 </dev/null \
-    && STALE="$STALE${STALE:+ }$project"
-done < <(incus project list --format csv 2>/dev/null </dev/null | cut -d, -f1 \
-         | sed 's/ (current)$//' | grep -E '^(default|user-)' || true)
-if [ -n "$STALE" ]; then
-  no "box-net still exists — the pre-0.10.0 name for this profile, in: $STALE"
-  inf "boxes placed on it are still isolated; the fault is two names one hyphen"
-  inf "apart, which is what the rename removed (#229)."
-  inf "fix:  box setup-host   (renames it in every project; attached boxes keep their placement)"
-  hold "the rename — converging it is setup-host's job, and doing it here would be a second mechanism for one convergence"
+PROJECT_CSV="$(incus project list --format csv 2>/dev/null </dev/null || true)"
+if [ -z "$PROJECT_CSV" ]; then
+  no "the project list could not be read, so whether box-net survives anywhere is unknown"
+  inf "'incus project list' answered nothing — not even the default project, which"
+  inf "every working daemon lists. This is the daemon, not a clean host."
+  inf "fix:  check the daemon (incus project list), then run the doctor again"
+  hold "the box-net check — it cannot report on projects it cannot name"
 else
-  ok "no stale box-net — the placement contract has one name on this host"
+  while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    incus --project "$project" profile show box-net >/dev/null 2>&1 </dev/null \
+      && STALE="$STALE${STALE:+ }$project"
+  done <<<"$(printf '%s\n' "$PROJECT_CSV" | cut -d, -f1 | sed 's/ (current)$//' \
+             | grep -E '^default$|^user-' || true)"
+  if [ -n "$STALE" ]; then
+    no "box-net still exists — the pre-0.10.0 name for this profile, in: $STALE"
+    inf "boxes placed on it are still isolated; the fault is two names one hyphen"
+    inf "apart, which is what the rename removed (#229)."
+    inf "fix:  box setup-host   (renames it in every project; attached boxes keep their placement)"
+    hold "the rename — converging it is setup-host's job, and doing it here would be a second mechanism for one convergence"
+  else
+    ok "no stale box-net — the placement contract has one name on this host"
+  fi
 fi
 
 # The pool is read off the profile that PLACES every box (profiles/box-profile.yaml
