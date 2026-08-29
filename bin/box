@@ -117,6 +117,18 @@ box_tier() {
 #            'box' enforces is the same one boxes_csv() draws.
 #            Deliberately NOT on 'rm': deletion is a different class, and a
 #            confirm over six boxes trains the operator to answer 'y'.
+#   forceable --force means "pass --force to incus" for this row, instead of
+#            the prompt-skip 'confirm' rows read it as. The action field is a
+#            static per-row string, so the row cannot say "this subcommand,
+#            plus a flag, conditionally" — this token is how it says it, and
+#            it keeps the surface at ONE verb and ONE row (#236 D3): nothing
+#            here adds a name to verbs() or a second entry to 'box help'.
+#            It rides beside 'box'/'fleet' and never instead of them: the
+#            boundary a forceable verb enforces is the boundary it always
+#            enforced (#236 D4), which is the half `box incus <box> -- stop
+#            --force` loses and the reason this belongs in box at all.
+#            NOT compatible with 'confirm' on one row: the two readings of
+#            --force would collide, and dispatch dies rather than pick one.
 #
 # action:
 #   incus:<subcommand>   run `incus <subcommand> <instance> [rest...]`
@@ -154,7 +166,7 @@ CMDS=(
   "export^<box> [<file>] [--instance-only]^box^Export a stopped box to one portable file — it survives 'box rm' and this host^fn:cmd_export^"
   "import^<file> [--name <box>]^^Mint a box from an exported file, re-stamped onto this host's stack^fn:cmd_import^"
   "rename^<box> <new-name>^box,arg2,newname,stopped^Rename a box (it must be stopped first)^incus:rename^renamed {} to {1}"
-  "down^<box>|all^box,fleet^Stop a box — or all of yours — keeping state ('start' resumes it)^incus:stop^stopped {}"
+  "down^<box>|all [--force]^box,fleet,forceable^Stop a box — or all of yours — keeping state ('start' resumes it); --force if it is wedged^incus:stop^stopped {}"
   "start^<box>|all^box,fleet^Start a stopped box, or all of yours^incus:start^started {}"
   "restart^<box>|all^box,fleet^Restart a box, or all of yours — one incus call, not stop-then-start^incus:restart^restarted {}"
   "rm^<box> [--force]^box,confirm^Delete a box and its snapshots — irreversible, and it asks first^incus:delete -f^removed {}^delete {} and all its snapshots"
@@ -249,8 +261,9 @@ OPTIONS
                           dev/test only. Default where /dev/kvm is absent.
   --json                Emit Incus JSON instead of a table     (list, info)
   --instance-only       Export the live state only, no snapshots   (export)
-  --force, -f           Destroy without asking (rm, restore); overwrite the
-                          file (export); skip the restricted tier's
+  --force, -f           Destroy without asking (rm, restore); pull the plug on
+                          a box that will not stop gracefully (down); overwrite
+                          the file (export); skip the restricted tier's
                           pre-flight refusal (import)
   --remote <r>          Act on Incus remote <r>                       (any)
   --help, -h            Help; after a command, help for that command
@@ -485,6 +498,39 @@ is stopped, so use 'box start' for that one.
   box down all
   box start all
 EOF
+      # --force is 'down's alone (#236 D1). The page is shared by the three
+      # lifecycle verbs and only one of them takes the flag, so the paragraph
+      # is printed for that one rather than hedged into prose the other two
+      # would have to be read around. Still ONE page and one help entry per
+      # verb — D3 is about the surface, not about the bytes on the page.
+      if [ "$1" = down ]; then cat <<'EOF'
+
+--force (-f) pulls the plug instead of asking politely: it is 'incus stop
+--force', the equivalent of holding the power button, for a guest that has
+stopped answering the graceful request and hangs there forever.
+
+  box down work --force
+  box down all --force
+
+ANYTHING THE GUEST HAD NOT FLUSHED TO DISK IS LOST — open files, buffered
+writes, whatever a clean shutdown would have written. That is the trade, and
+it is why it is a flag and not the default. The box itself survives: its disk,
+its snapshots and its config are all still there, and 'box start' brings it
+back. Reach for it when a plain 'box down' hangs, not before.
+
+box never escalates on its own. There is no timeout after which a graceful
+stop becomes a forceful one — a 'box down' that is slow because the guest is
+flushing a large write is doing exactly what you asked, and a tool that pulled
+the plug on it after N seconds would be silently violent. You choose.
+
+The boundary holds under --force exactly as it does without it: box only ever
+acts on an instance it tagged, so 'box down --force' on somebody else's VM is
+refused with the same 'no such box' a graceful stop gives. Forcing skips the
+politeness, never the check — which is the half 'box incus <box> -- stop
+--force' loses, and the reason this is a flag on box rather than a trip
+through the escape hatch.
+EOF
+      fi
 ;;
     info) cat <<'EOF'
 Show one box: its identity (name, and the id that outlives a rename), state,
@@ -1180,8 +1226,9 @@ fleet_op() {   # $1 = incus subcommand, $2 = the box's state. Echoes the sub to
   esac
 }
 
-run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
-  local sub="$1" tmpl="$2" rows fleet n st stu op err rc=0 ran=0 failed=0
+run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template,
+                # $3 = "--force" or "" (the 'forceable' token, resolved)
+  local sub="$1" tmpl="$2" fflag="${3:-}" rows fleet n st stu op opflag err rc=0 ran=0 failed=0
   # Captured first, then read — never 'boxes_csv | awk'. A multi-line writer
   # piped into a line reader is the racing read #134 swept out of this file,
   # and the sweep names boxes_csv as a writer for exactly this reason.
@@ -1231,11 +1278,20 @@ run_fleet() {   # $1 = incus subcommand, $2 = the row's ok template
       echo "box: $n is already $(printf '%s' "$stu" | tr '[:upper:]' '[:lower:]')."
       continue
     fi
+    # The row's --force rides the op the row NAMED, never a substituted one.
+    # Today that is only ever 'stop' (the one forceable row), and the guard is
+    # what keeps it so: fleet_op() may answer with a DIFFERENT verb — 'restart'
+    # on a stopped box becomes 'start' — and a flag the operator passed for
+    # one act is not consent for another, quite apart from 'incus start'
+    # having no --force to take. Empty otherwise, and empty is the whole of
+    # the graceful path (#236 D1).
+    opflag=""
+    if [ "$op" = "$sub" ]; then opflag="$fflag"; fi
     # </dev/null per box: without it the first incus call drains the 'while'
     # loop's stdin and the fleet silently stops after one box.
     # word-split intentionally, as in the single-box path below.
     # shellcheck disable=SC2086
-    if incus $op "$(iname_of "$n")" </dev/null >/dev/null 2>"$err"; then
+    if incus $op $opflag "$(iname_of "$n")" </dev/null >/dev/null 2>"$err"; then
       if [ "$op" != "$sub" ]; then
         # 'restart' on a stopped box. Say what happened, not what was typed.
         echo "box: started $n — it was stopped."
@@ -3408,6 +3464,27 @@ case ",$pre," in *,confirm,*)
   confirm "$(fill "$cnf" "$inst")" ;;
 esac
 
+# 'forceable': --force is this row's flag TO INCUS, not the prompt-skip that
+# 'confirm' rows read it as. One flag, one spelling, two rows that cannot
+# overlap — a row carrying both tokens would make '--force' mean two things at
+# once, so it is a table bug and dies as one rather than picking a winner. The
+# flag stays SEPARATE from $sub instead of being pasted onto it, because
+# fleet_op() matches on the bare subcommand: 'stop --force' would miss the
+# stop:STOPPED pair and hand an already-stopped box to incus, which errors.
+force_flag=""
+case ",$pre," in *,forceable,*)
+  case ",$pre," in *,confirm,*)
+    die "internal: '$cmd' is marked both forceable and confirm — --force cannot mean two things" ;;
+  esac
+  # Nothing implicit and nothing on a timer: the operator asked for this, once,
+  # for this call (#236 D-out). A graceful 'down' never escalates on its own.
+  # Spelled as an 'if' and not 'test && assign' for the reason the fleet
+  # resolve above is: under set -e a failing AND-list is a failing statement,
+  # and this one fails on every call that did NOT pass --force (SC2015).
+  if [ "$force" -eq 1 ]; then force_flag="--force"; fi
+  ;;
+esac
+
 case "$action" in
   fn:*)
     "${action#fn:}"
@@ -3418,12 +3495,13 @@ case "$action" in
       # The exit status is the aggregate (#179 D4): non-zero if any box
       # failed, and 'exit' rather than a bare call so the status is the one
       # the operator sees whatever set -e would otherwise make of it.
-      run_fleet "$sub" "$ok" || exit $?
+      run_fleet "$sub" "$ok" "$force_flag" || exit $?
       exit 0
     fi
-    # word-split intentionally: a subcommand may carry a flag ("delete -f")
+    # word-split intentionally: a subcommand may carry a flag ("delete -f"),
+    # and $force_flag is one word or the empty string (#236 D1)
     # shellcheck disable=SC2086
-    incus $sub "$inst" "${args[@]:1}"
+    incus $sub $force_flag "$inst" "${args[@]:1}"
     if [ -n "$ok" ]; then
       echo "box: $(fill "$ok" "${args[0]}")"
     fi

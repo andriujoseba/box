@@ -8976,6 +8976,18 @@ state_of() {   # $1 = box name
   done
   printf 'RUNNING'
 }
+inst_of() {   # the first non-flag argument after the subcommand.
+  # A positional read of "$2" was enough while every lifecycle call was
+  # 'incus <sub> <box>'. 'box down --force' makes it 'incus stop --force
+  # <box>' (#236), and a shim that took the flag for the instance would
+  # answer RUNNING for a box named '--force' and never fail an injected
+  # failure again — every mixed-state assertion below would pass for a build
+  # that had stopped reading the state at all.
+  local a; shift
+  for a in "$@"; do
+    case "$a" in -*) ;; *) printf '%s' "$a"; return ;; esac
+  done
+}
 case "${1:-}" in
   list)
     if [ -n "${FAKE_DEAD:-}" ]; then
@@ -9006,9 +9018,10 @@ case "${1:-}" in
     fi
     exit 0 ;;
   restart|stop|start)
+    inst="$(inst_of "$@")"
     for f in ${FAKE_FAIL:-}; do
-      if [ "$f" = "${2:-}" ]; then
-        echo "Error: The instance \"${2:-}\" is busy" >&2
+      if [ "$f" = "$inst" ]; then
+        echo "Error: The instance \"$inst\" is busy" >&2
         exit 1
       fi
     done
@@ -9018,7 +9031,7 @@ case "${1:-}" in
     # are what lxc/incus returns: restartCommon() and the !IsRunning() /
     # isRunningStatusCode() guards in the lxc driver. Note the third: 'restart'
     # on a stopped instance does NOT start it, it errors.
-    case "$1:$(state_of "${2:-}")" in
+    case "$1:$(state_of "$inst")" in
       stop:STOPPED)    echo "Error: The instance is already stopped" >&2; exit 1 ;;
       start:RUNNING)   echo "Error: The container is already running" >&2; exit 1 ;;
       restart:STOPPED) echo "Error: The instance is already stopped" >&2; exit 1 ;;
@@ -9373,6 +9386,183 @@ check "rename to 'all' after '--' is refused as well" 1 "reserved" \
 # it is a snapshot label and no box ends up carrying it.
 check "restore's snapshot label is not caught — a different namespace" 0 "restored work to all" \
   mixedbox "work=STOPPED" "work" "" restore work all --force
+
+# ---------------------------------------------------------------------------
+# 'box down --force' — the power button, with the boundary still on (#236)
+# ---------------------------------------------------------------------------
+# Driven on the same shim, because the whole of this feature is what box CALLS.
+# Every assertion here that matters is on the call log: "the flag reached
+# incus" and "the flag did NOT reach incus" are the two facts, and only the log
+# holds either. The log line is the shim's "$*", so the exact argv is visible.
+
+# Absence assertions, as non-zero exits: 'check' matches a substring's
+# presence, so "the call carried no --force" needs the grep to be the command.
+log_has_force() { grep -qE -- '--force' "$FLOG"; }
+# D4's order, pinned the way newname_precedes_resolve pins the mint door's: the
+# tag check lives in the 'box' precondition and must run BEFORE dispatch reads
+# 'forceable', or a forced call could reach incus for an instance box never
+# resolved. Line numbers rather than a first-match grep — which comes first is
+# the whole assertion, and a run in which the check refused cannot show it.
+boundary_precedes_forceable() {
+  local r f
+  r="$(grep -n 'inst=.*resolve_box' "$ROOT/bin/box" | head -1 | cut -d: -f1)"
+  f="$(grep -n '\*,forceable,\*)' "$ROOT/bin/box" | head -1 | cut -d: -f1)"
+  [ -n "$r" ] && [ -n "$f" ] && [ "$r" -lt "$f" ]
+}
+start_help_has_force() { "$BOX" help start | grep -qF -- '--force'; }
+# One 'down' entry in the general help, and one 'down' row in the table. D3 is
+# about the SURFACE: a force variant that arrived as a second verb would show
+# up in exactly these two places.
+down_help_entries() { "$BOX" help | grep -cE '^ +down +'; }
+down_table_rows()   { grep -cE '^  "down\^' "$ROOT/bin/box"; }
+# Every verb the table declares — verbs() reads the same first field, so the
+# table is the honest source and needs no daemon to read.
+table_verbs()       { grep -oE '^  "[a-z-]+\^' "$ROOT/bin/box" | tr -d ' "^'; }
+verb_named_force()  { table_verbs | grep -q force; }
+# The two readings of --force cannot share a row: 'confirm' reads it as
+# skip-the-prompt, 'forceable' as a flag to incus. Dispatch dies rather than
+# pick a winner, and no row asks it to.
+row_is_both() {
+  grep -oE '^  "[a-z-]+\^[^^]*\^[^^]*\^' "$ROOT/bin/box" \
+    | grep -E 'forceable' | grep -q 'confirm'
+}
+# The graceful refusal and the forceful one are ONE message, not two that
+# happen to share a stem — D4 is that forcing changes nothing about the check.
+same_refusal() {
+  local g f
+  g="$(fleetbox "one" "" down other 2>&1)"
+  f="$(fleetbox "one" "" down other --force 2>&1)"
+  [ "$g" = "$f" ]
+}
+
+# --- D1: the default does not move ------------------------------------------
+# The first line of the test plan, and the one worth the most: a build that
+# force-stopped by default would pass every other assertion in this block.
+check "down: plain 'down' is still graceful" 0 "stopped one" \
+  fleetbox "one" "" down one
+check "down: ...and the call carries no --force at all" 1 "" log_has_force
+check "down: ...it is exactly 'incus stop <box>', byte for byte" 0 "" \
+  grep -qxF 'incus stop one' "$FLOG"
+
+# --- D1: --force reaches incus as incus's own flag --------------------------
+check "down --force: the box stops" 0 "stopped one" \
+  fleetbox "one" "" down one --force
+check "down --force: ...as 'incus stop --force <box>'" 0 "" \
+  grep -qxF 'incus stop --force one' "$FLOG"
+check "down -f: the short spelling forces too" 0 "stopped one" \
+  fleetbox "one" "" down one -f
+check "down -f: ...as the same call" 0 "" \
+  grep -qxF 'incus stop --force one' "$FLOG"
+
+# --- D4: the boundary holds under force -------------------------------------
+# The half 'box incus <box> -- stop --force' loses, and the main reason this
+# belongs in box. --force skips the politeness, never the tag check.
+check "down --force: an instance box did not tag is refused" 1 "no such box: other" \
+  fleetbox "one" "" down other --force
+check "down --force: ...and the daemon is never asked to stop it" 1 "" \
+  grep -qE '^incus stop ' "$FLOG"
+check "down: the graceful path refuses the same instance" 1 "no such box: other" \
+  fleetbox "one" "" down other
+check "down --force: the refusal is the SAME message, not a second one" 0 "" \
+  same_refusal
+# The order is the contract: resolve_box() runs in the 'box' precondition,
+# which is ahead of where 'forceable' is read. Structural, because "the check
+# ran first" is not visible in a run where the check refused.
+check "down --force: the boundary is resolved before --force is read" 0 "" \
+  boundary_precedes_forceable
+
+# --- D3: one verb, one row, one flag ----------------------------------------
+check "down --force: 'box help' shows exactly one 'down' entry" 0 "1" \
+  down_help_entries
+check "down --force: the table carries exactly one 'down' row" 0 "1" \
+  down_table_rows
+check "down --force: no verb is named for the flag" 1 "" verb_named_force
+check "down --force: 'down-force' is not a command" 2 "unknown command" \
+  "$BOX" down-force
+check "down --force: the synopsis names the flag" 0 "usage: box down <box>|all [--force]" \
+  "$BOX" help down
+
+# --- D-out: no timeout, no silent escalation --------------------------------
+# A graceful stop that FAILS is not retried with the power button. This is the
+# property crew#486's D1 exists to protect, and it is driven rather than
+# grepped: an injected failure is exactly the moment an escalation would fire.
+check "down: a failing graceful stop exits non-zero" 1 "" \
+  fleetbox "one" "one" down one
+check "down: ...it is NOT retried with --force" 1 "" log_has_force
+check "down: ...and exactly one call was made" 0 "1" fleet_calls stop
+
+# --- D-out: 'start' and 'restart' are untouched -----------------------------
+# They share the lifecycle shape and neither carries the token, so --force is
+# the inert positional-less flag it has always been on them — not a second
+# meaning quietly acquired.
+check "start --force: passes no flag to incus" 0 "started one" \
+  mixedbox "one=STOPPED" "one" "" start one --force
+check "start --force: ...the call is a plain 'incus start'" 0 "" \
+  grep -qxF 'incus start one' "$FLOG"
+check "restart --force: likewise" 0 "restarted one" \
+  fleetbox "one" "" restart one --force
+check "restart --force: ...a plain 'incus restart'" 0 "" \
+  grep -qxF 'incus restart one' "$FLOG"
+check "start: its help does not advertise a flag it does not take" 1 "" \
+  start_help_has_force
+
+# --- the 'confirm' rows keep the OTHER reading of --force -------------------
+# One flag, two readings, and they must not leak into each other: 'rm --force'
+# is still skip-the-prompt and its incus call is unchanged.
+check "rm --force: still means skip-the-prompt" 0 "removed one" \
+  mixedbox "one=STOPPED" "one" "" rm one --force
+check "rm --force: ...and its call is unchanged" 0 "" \
+  grep -qxF 'incus delete -f one' "$FLOG"
+check "restore --force: passes no --force to incus either" 0 "restored work to snap" \
+  mixedbox "work=STOPPED" "work" "" restore work snap --force
+check "restore --force: ...its call is unchanged" 0 "" \
+  grep -qxF 'incus snapshot restore work snap' "$FLOG"
+check "the table has no row that is both forceable and confirm" 1 "" row_is_both
+check "...and dispatch refuses one that is, rather than picking a winner" 0 "" \
+  grep -qF 'marked both forceable and confirm' "$ROOT/bin/box"
+
+# --- the fleet form forces too ----------------------------------------------
+check "down all --force: the fleet stops" 0 "stopped one" \
+  fleetbox "one two" "" down all --force
+check "down all --force: ...the first box forcefully" 0 "" \
+  grep -qxF 'incus stop --force one' "$FLOG"
+check "down all --force: ...and the second too" 0 "" \
+  grep -qxF 'incus stop --force two' "$FLOG"
+check "down all: without the flag the fleet is graceful" 0 "stopped one" \
+  fleetbox "one two" "" down all
+check "down all: ...with no --force anywhere in the run" 1 "" log_has_force
+# The flag is kept OFF $sub for this: fleet_op() matches on the bare
+# subcommand, so 'stop --force' would miss the stop:STOPPED pair and hand an
+# already-stopped box to incus, which errors. A box already down needs no
+# power button, and #179's mixed-state contract survives the flag intact.
+check "down all --force: an already-stopped box is still the skip it was" 0 "two is already stopped" \
+  mixedbox "two=STOPPED" "one two" "" down all --force
+check "down all --force: ...incus is never called for it, forced or not" 1 "" \
+  grep -qE '^incus stop( --force)? two( |$)' "$FLOG"
+check "down all --force: ...while the running one IS forced" 0 "" \
+  grep -qxF 'incus stop --force one' "$FLOG"
+check "down all --force: the run still exits 0" 0 "stopped one" \
+  mixedbox "two=STOPPED" "one two" "" down all --force
+# The tier boundary is the fleet's, drawn by boxes_csv(), and the flag does not
+# widen it: a forced 'all' reaches exactly the boxes a graceful one does.
+check "down all --force (restricted): acts on the caller's own box" 0 "stopped dev1-work" \
+  fleetbox "dev1-work" "" down all --force
+check "down all --force: ...and touches no admin box" 1 "" \
+  grep -qE '^incus stop --force admin-' "$FLOG"
+
+# --- the documentation names it where the operator will look ----------------
+check "down --force: the global --force line names 'down' (bin/box:195)" 0 \
+  "a box that will not stop gracefully (down)" "$BOX" help
+check "down --force: 'box help down' says the unflushed state is lost" 0 \
+  "NOT FLUSHED TO DISK IS LOST" "$BOX" help down
+check "down --force: ...that box never escalates on its own" 0 \
+  "never escalates on its own" "$BOX" help down
+check "down --force: ...and that the boundary still holds under it" 0 \
+  "politeness, never the check" "$BOX" help down
+check "down --force: the README command reference names the flag" 0 "" \
+  grep -qF 'box down <box>|all [--force]' "$ROOT/README.md"
+check "down --force: ...and the README says the guest's unflushed state is lost" 0 "" \
+  grep -qF 'Anything the' "$ROOT/README.md"
 rm -rf "$FSHIM" "$FWORK"
 
 # --- the real-daemon half, pinned so it cannot be deleted quietly -----------
