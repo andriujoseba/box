@@ -117,7 +117,7 @@ box_tier() {
 #            'box' enforces is the same one boxes_csv() draws.
 #            Deliberately NOT on 'rm': deletion is a different class, and a
 #            confirm over six boxes trains the operator to answer 'y'.
-#   forceable  --force means "pass --force to incus" for this row, instead of
+#   forceable --force means "pass --force to incus" for this row, instead of
 #            the prompt-skip 'confirm' rows read it as. The action field is a
 #            static per-row string, so the row cannot say "this subcommand,
 #            plus a flag, conditionally" — this token is how it says it, and
