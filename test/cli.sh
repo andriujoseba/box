@@ -3694,6 +3694,8 @@ cat > "$ISHIM/incus" <<'SHIM'
 printf 'incus %s\n' "$*" | tr '\n' ' ' >> "$FAKE_INCUS_LOG"
 printf '\n' >> "$FAKE_INCUS_LOG"
 case "$*" in
+  "profile show box-profile")
+    [ "${FAKE_STACK_PRESENT:-1}" = 1 ] || exit 1 ;;
   # The import boundary, and it is a REFUSAL and not a formality (#229 round 4).
   # incus resolves every name in the artifact's profile list before it creates
   # the instance — createFromBackup -> internalImportFromBackup
@@ -3728,6 +3730,13 @@ case "$*" in
   # variable holds a bare profile name, the way an artifact names one.
   *"--columns P") printf '"%s"\n' "${FAKE_ART_PROFILES:-box-profile}" ;;
 esac
+# A serialized stand-in for the destination project. Successful mutating
+# calls change it; pre-flight refusals must leave it byte-for-byte untouched.
+case "$*" in
+  "import "*|"profile assign "*|"profile create "*|"profile delete "*|\
+  "profile rename "*|"config set "*|"config unset "*|"start "*)
+    [ -z "${FAKE_PROJECT_STATE:-}" ] || printf '%s\n' "$*" >> "$FAKE_PROJECT_STATE" ;;
+esac
 exit 0
 SHIM
 chmod +x "$ISHIM/incus"
@@ -3745,11 +3754,23 @@ tar -czf "$ARTIFACT" -C "$IWORK" backup/index.yaml
 # what SC2030/SC2031 are for, and CI's shellcheck is not advisory here.
 importbox() {  # the real box, shimmed
   local log="$1" cfg="$2" art="${3:-box-profile}" host="${4:-box-profile}"
+  local stack="${5:-1}" project_state="${FAKE_PROJECT_STATE:-}"
+  local flags=()
+  if [ "$#" -gt 5 ]; then shift 5; flags=("$@"); fi
   : > "$log"
+  {
+    echo 'container:'
+    echo '  name: work'
+    echo '  profiles:'
+    local profile
+    for profile in $art; do printf '  - %s\n' "$profile"; done
+  } > "$IWORK/backup/index.yaml"
+  tar -czf "$ARTIFACT" -C "$IWORK" backup/index.yaml
   env FAKE_INCUS_LOG="$log" FAKE_CFG="$cfg" \
     FAKE_ART_PROFILES="$art" FAKE_HOST_PROFILES="$host" \
+    FAKE_STACK_PRESENT="$stack" FAKE_PROJECT_STATE="$project_state" \
     PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$ISHIM:$PATH" \
-    "$BOX" import "$ARTIFACT" </dev/null >"$log.out" 2>&1
+    "$BOX" import "$ARTIFACT" "${flags[@]}" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
   return "$rc"
@@ -4295,58 +4316,55 @@ check "help info: says the id outlives a rename (#181)" 0 "outlives a rename" \
 check "help import: names the fresh id it draws (#181)" 0 "fresh box id" \
   "$BOX" help import
 
-# --- #229 D3: a pre-rename artifact needs no compatibility branch -----------
-# An export from 0.9.x names the profile as it was before the rename. It falls
-# into the re-home branch that has always been there for anything not on this
-# host's contract, and the message names what the artifact asked for, read off
-# the artifact rather than written anywhere in bin/box.
-#
-# The proof that no compatibility code was added is not in this case, it is in
-# this case passing beside the corpus guard above: bin/box contains no
-# occurrence of the old name at all, so there is nothing in it that could be
-# special-casing one. Adding a branch would be a second mechanism for a case
-# the first already covers.
-#
-# THE STATE THIS MODELS IS THE UPGRADE WINDOW, and it is named rather than
-# implied (#229 round 4). The re-home is reachable only while this host still
-# carries the old profile, because incus refuses an artifact naming a profile
-# it cannot resolve before bin/box gets a say — see the shim's 'import' arm.
-# So the host below has BOTH names, which is exactly a host that has been
-# granted on 0.10.0 and not yet converged by setup-host. The converged host is
-# the case underneath, and it is a refusal.
+# --- #241: refuse the known pre-0.10.0 placement boundary ourselves ---------
+# The known former name is read from container.profiles in the artifact, and
+# it is refused before require_stack or incus import can offer the wrong fix.
+CONVLOG="$IWORK/converged.log"
+check "import: box refuses a pre-rename artifact itself (#241)" 1 \
+  "artifact was exported by a box release that used 'box-net'" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+check "import: ...names the 0.10.0 boundary and unsupported migration" 1 \
+  "0.10.0 renamed that profile to 'box-profile'" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+check "import: ...says to re-create the box" 1 \
+  "Re-create the box on this host" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+check "import: ...names the unsupported manual recovery route" 1 \
+  "create 'box-net' transiently" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+check "import: ...fires before require_stack can offer setup-host" 1 \
+  "artifact was exported by a box release" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile 0
+check "import: ...does not offer setup-host as the fix" 1 "" \
+  grep -qF 'the host stack is missing. Build it: box setup-host' "$CONVLOG.out"
+check "import: ...never hands the artifact to incus" 1 "" \
+  grep -qF 'incus import' "$CONVLOG"
+
+PROJECT_STATE="$IWORK/project.state"
+printf 'profile=box-profile\ninstance-count=0\n' > "$PROJECT_STATE"
+cp "$PROJECT_STATE" "$PROJECT_STATE.before"
+FAKE_PROJECT_STATE="$PROJECT_STATE" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile >/dev/null 2>&1 || true
+check "import: ...leaves the destination project byte-identical (#241 D4)" 0 "" \
+  cmp "$PROJECT_STATE.before" "$PROJECT_STATE"
+
+# --force is the manual route: if an admin has created the former name, incus
+# can admit the artifact and box's existing placement branch re-homes it.
 OLDLOG="$IWORK/oldname.log"
-check "import: a pre-rename artifact is re-homed onto the contract (#229 D3)" 0 \
+check "import: --force admits the manual old-profile recovery route (#241)" 0 \
   "re-homed onto the box-profile profile" \
-  importbox "$OLDLOG" "$MINTED_ART" box-net "box-profile box-net"
-check "import: ...and the message names what the artifact said, not a constant" 0 \
-  "the artifact said 'box-net'" \
-  importbox "$OLDLOG" "$MINTED_ART" box-net "box-profile box-net"
-check "import: ...by the assign that was already there" 0 "" \
+  importbox "$OLDLOG" "$MINTED_ART" box-net "box-profile box-net" 1 --force
+check "import: ...uses the existing profile assignment" 0 "" \
   grep -qF 'profile assign work box-profile' "$OLDLOG"
 
-# The boundary the re-home branch does NOT cover, driven rather than reasoned
-# about. Once setup-host has converged this host — and on any host that never
-# carried the old name, which is every fresh 0.10.0 host — an artifact from
-# 0.9.x names a profile incus cannot resolve, and 'incus import' refuses it
-# before the re-home line is reached. bin/box is 'set -euo pipefail', so the
-# run stops there: the failure is loud, the box is not half-imported, and
-# incus's own error names the profile. The criterion that says this artifact
-# imports successfully is under a ruling ask on #229; this case is what the
-# tree actually does, either way.
-CONVLOG="$IWORK/converged.log"
-check "import: a converged host refuses a pre-rename artifact (#229 D3)" 1 \
-  "Failed loading profiles (box-net) for instance" \
-  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
-check "import: ...and the refusal is incus's own, named as an import failure" 1 \
-  "Failed importing backup" \
-  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
-# The point of the case: the re-home never runs, so it cannot be what saves an
-# artifact naming a profile that is gone. Read off the call log rather than off
-# the message, because absence of a string is the weaker assertion.
-check "import: ...and the re-home the criterion relies on is never reached" 1 "" \
-  grep -qF 'profile assign' "$CONVLOG"
-check "import: ...and set -e stops the run there, so no box is started" 1 "" \
-  grep -qF 'incus start work' "$CONVLOG"
+# A profile box has never used is not this version-boundary diagnosis. It
+# reaches incus, whose own missing-profile error remains the right answer.
+UNKNOWNLOG="$IWORK/unknown-profile.log"
+check "import: an unknown profile still gets incus's own error (#241 D5)" 1 \
+  "Failed loading profiles (other-profile) for instance" \
+  importbox "$UNKNOWNLOG" "$MINTED_ART" other-profile box-profile
+check "import: ...is not mislabeled as the box-net boundary" 1 "" \
+  grep -qF "used 'box-net'" "$UNKNOWNLOG.out"
 # The other side of the same branch: an artifact already on the contract is
 # left alone, so 're-home' is a response to a mismatch and not something every
 # import does.
@@ -5367,9 +5385,23 @@ oldname_survivors() { # oldname_survivors [root] — prints offenders; 0 if any
   local root="${1:-$ROOT}" f rc=1
   while IFS= read -r f; do
     [ -e "$root/$f" ] || continue
-    if grep -qw -- 'box-net' "$root/$f" 2>/dev/null; then printf '%s\n' "$f"; rc=0; fi
+    # #241 deliberately diagnoses the retired name inside cmd_import. Keep the
+    # rest of bin/box under this corpus guard: an acting occurrence outside
+    # that bounded refusal block is still the half-rename this sweep catches.
+    if [ "$f" = bin/box ]; then
+      if awk '/^  # 0\.10\.0 renamed box/{skip=1} skip && /^  fi$/{skip=0; next} !skip' \
+        "$root/$f" | grep -qw -- 'box-net'; then
+        printf '%s\n' "$f"; rc=0
+      fi
+    elif grep -qw -- 'box-net' "$root/$f" 2>/dev/null; then
+      printf '%s\n' "$f"; rc=0
+    fi
   done < "$OLDSWEEP"
   return $rc
+}
+oldname_boundary_present() {
+  awk '/^  # 0\.10\.0 renamed box/{keep=1} keep{print} keep && /^  fi$/{exit}' \
+    "$ROOT/bin/box" | grep -qw -- box-net
 }
 check "rename: the sweep reaches bin/box — an empty walk sweeps nothing (#229)" 0 "" \
   grep -qx 'bin/box' "$OLDSWEEP"
@@ -5377,6 +5409,8 @@ check "rename: ...and profiles/, which is where the renamed file landed" 0 "" \
   grep -qx 'profiles/box-profile.yaml' "$OLDSWEEP"
 check "rename: no tracked file outside the exceptions still says the old name" 1 "" \
   oldname_survivors
+check "rename: bin/box's bounded #241 refusal is the deliberate exception" 0 "" \
+  oldname_boundary_present
 # The guard's own test: one occurrence left in bin/box, the way the sweep
 # would fail, and the guard has to red on it.
 OLDFIX="$(mktemp -d)"; mkdir -p "$OLDFIX/bin"
