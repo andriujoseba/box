@@ -55,8 +55,8 @@ and assembled guards enforce every half of this rule.
 
 The release ceremony, merge and tag doors, version stamps, guard semantics,
 and recovery paths are defined by
-[heavy-duty/ceremony](https://github.com/heavy-duty/ceremony/blob/0.7.6/README.md).
-Box pins the shared machinery and doctrine at `0.7.6`.
+[heavy-duty/ceremony](https://github.com/heavy-duty/ceremony/blob/0.7.7/README.md).
+Box pins the shared machinery and doctrine at `0.7.7`.
 
 Box uses the `file` version backend and has no artifact hook: for this
 pure-Bash tree, GitHub’s source tarball for the tag is the package, and
