@@ -105,20 +105,20 @@ the compatibility promise it will support; this paragraph does not choose that
 promise in advance.
 
 `0.10.0` is one skipped boundary. It renames the placement profile from
-`box-net` to `box-profile`, while an artifact exported by `0.9.x` still names
-`box-net`. On a converged `0.10.0` host, Incus refuses that missing profile
-before box can reassign it; on an unconverged host, box may instead report that
-the `box-profile` host stack is missing and suggest `box setup-host`, which does
-not make the old artifact importable. [#241](https://github.com/heavy-duty/box/issues/241)
-tracks the loud version-boundary refusal. The supported path across this
-boundary is to uninstall the old box installation, install `0.10.0`, and
-re-create the boxes.
+its former name to `box-profile`, while an artifact exported by `0.9.x` still
+names the former profile. On a converged `0.10.0` host, Incus refuses that
+missing profile before box can reassign it; on an unconverged host, box may
+instead report that the `box-profile` host stack is missing and suggest
+`box setup-host`, which does not make the old artifact importable.
+[#241](https://github.com/heavy-duty/box/issues/241) tracks the loud
+version-boundary refusal. The supported path across this boundary is to
+uninstall the old box installation, install `0.10.0`, and re-create the boxes.
 
 If the old artifact's data must be recovered anyway, an administrator can use
 the unsupported manual route recorded in the `0.10.0` changelog: create the old
-`box-net` profile transiently, import the artifact so box can re-home the
-instance onto `box-profile`, then let `box doctor` report the old-name residue
-before `box setup-host` clears it.
+placement profile under the name recorded in the artifact, import so box can
+re-home the instance onto `box-profile`, then let `box doctor` report the
+old-name residue before `box setup-host` clears it.
 
 A pre-0.7.0 flat install is migrated into `versions/` automatically on the
 next installer run — the tree is moved, not re-downloaded, and your boxes are
