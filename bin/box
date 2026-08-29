@@ -2694,6 +2694,33 @@ artifact_lowlevel_keys() {
        sub(/:$/, "", k) && k ~ /^(volatile|raw)\./ { print k }' | sort -u
 }
 
+# The instance profile names carried in backup/index.yaml. Incus nests the
+# instance record under top-level "config", using the historical "container"
+# key even for a VM. Older measured fixtures use "instance", so accept that
+# spelling at the same location too. The backup also embeds full profile
+# definitions as the sibling config.profiles list; matching every "name:" or
+# "profiles:" would confuse what the instance USES with what the artifact
+# happens to describe (#241).
+artifact_profile_names() {
+  awk '
+    /^config:[[:space:]]*$/ { in_config = 1; next }
+    in_config && /^[^[:space:]]/ { exit }
+    in_config && /^  (container|instance):[[:space:]]*$/ {
+      in_instance = 1
+      next
+    }
+    in_instance && /^  [^[:space:]]/ { exit }
+    in_instance && /^    profiles:[[:space:]]*$/ { in_profiles = 1; next }
+    in_profiles && /^    -[[:space:]]+/ {
+      sub(/^    -[[:space:]]+/, "")
+      gsub(/^['\''"]|['\''"]$/, "")
+      print
+      next
+    }
+    in_profiles { exit }
+  '
+}
+
 # The way back in. Everything 'incus import' restores is the ARTIFACT's truth
 # (disk, config, devices, snapshots); everything box then re-stamps is THIS
 # host's truth (the boundary tag, the placement contract, a fresh machine
@@ -2722,6 +2749,35 @@ cmd_import() {
   # restore), and not an unmanaged VM's (not ours to shadow or clobber).
   if incus config show "$target" >/dev/null 2>&1 </dev/null; then
     die "an instance named '$target' already exists — import under another name: box import $file --name <new>"
+  fi
+  # 0.10.0 renamed box's placement profile from box-net to box-profile. Incus
+  # resolves an artifact's profile list before creating the instance, so a
+  # 0.9.x artifact otherwise dies later with a raw "profile not found" error;
+  # worse, require_stack tells an unconverged host to run setup-host even
+  # though convergence cannot make that import work. Name the release boundary
+  # from the artifact itself before either misleading path (#241).
+  #
+  # --force preserves the deliberately unsupported recovery route recorded by
+  # #229: an admin may create the former profile transiently, force the import,
+  # let the post-import placement branch re-home the box, and let doctor name
+  # the old profile as residue. The default path creates and changes nothing.
+  local artifact_profiles
+  artifact_profiles="$(artifact_profile_names <<<"$index")"
+  if [ "$force" -ne 1 ] && grep -qxF box-net <<<"$artifact_profiles"; then
+    {
+      echo "box: this artifact was exported by a box release that used 'box-net'"
+      echo "box: as its placement profile. 0.10.0 renamed that profile to 'box-profile',"
+      echo "box: and box does not migrate artifacts across that rename."
+      echo "box:"
+      echo "box: Re-create the box on this host instead of importing this artifact."
+      echo "box:"
+      echo "box: If the data must be recovered, an admin can create 'box-net' transiently"
+      echo "box: and retry this import with --force. box will then re-home the instance"
+      echo "box: onto 'box-profile', and 'box doctor' will report the old profile as"
+      echo "box: residue until setup-host removes it. That is a manual recovery route,"
+      echo "box: not a supported artifact migration."
+    } >&2
+    die "cannot import a pre-0.10.0 placement artifact — refused before changing this host (#241)"
   fi
   # The stack this lands on must exist first (a fresh host runs setup-host
   # before it re-imports) — same pre-flight as a mint, same tier-aware fix.
