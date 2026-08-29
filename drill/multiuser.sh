@@ -26,7 +26,7 @@
 #   i. (folded into b: snapshot / restore / clone)
 #   k. the grant survives an incus-user restart
 #   l. box revoke --purge removes the user's world and touches nobody else's
-#   m. a RAW attach to boxnet (no box-net profile) keeps every network- and
+#   m. a RAW attach to boxnet (no box-profile profile) keeps every network- and
 #      host-owned control — the scoped guarantee, measured (#75 review)
 #   n. a grant that fails is fail-closed: fresh user backed out (verified),
 #      pre-existing member warned loudly, re-run converges (#75 review)
@@ -225,11 +225,11 @@ bkups="$(incus project get "$p1" restricted.backups 2>/dev/null)"
 
 incus --project "$p1" profile device get default eth0 type >/dev/null 2>&1 \
   && no "(h) $p1's default profile still carries the private-bridge eth0" \
-  || ok "(h) $p1's default profile places no network — box-net is the only door"
+  || ok "(h) $p1's default profile places no network — box-profile is the only door"
 
-iso="$(incus --project "$p1" profile device get box-net eth0 security.port_isolation 2>/dev/null)"
-[ "$iso" = true ] && ok "box-net profile is in $p1, port_isolation true" \
-                  || no "box-net profile in $p1 is wrong (port_isolation='$iso')"
+iso="$(incus --project "$p1" profile device get box-profile eth0 security.port_isolation 2>/dev/null)"
+[ "$iso" = true ] && ok "box-profile profile is in $p1, port_isolation true" \
+                  || no "box-profile profile in $p1 is wrong (port_isolation='$iso')"
 
 phase "a. confinement — each user lands in their own project, and only theirs"
 projects="$(as_u "$U1" incus project list --format csv 2>/dev/null | cut -d, -f1)"
@@ -532,7 +532,7 @@ else
 fi
 
 phase "m. a raw attach to boxnet — the scoped guarantee, measured"
-# A restricted user CAN 'incus launch --network boxnet' without the box-net
+# A restricted user CAN 'incus launch --network boxnet' without the box-profile
 # profile: boxnet must be in restricted.networks.access for the profile to
 # work at all, and Incus has no allow-via-profile-only lever. What the raw
 # NIC loses is per-NIC security.port_isolation — the deliberately redundant
@@ -654,7 +654,7 @@ BOXROOT="$(dirname "$(dirname "$(readlink -f "$(command -v box)")")")"
 useradd -m -s /bin/bash "$U3" 2>/dev/null
 badroot="$(mktemp -d)"
 cp -r "$BOXROOT/." "$badroot/"
-echo 'devices: {' > "$badroot/profiles/box-net.yaml"   # yaml that cannot load
+echo 'devices: {' > "$badroot/profiles/box-profile.yaml"   # yaml that cannot load
 out="$(bash "$badroot/host/grant-user.sh" "$U3" 2>&1)"; rc=$?
 rm -rf "$badroot"
 if [ "$rc" -ne 0 ] && ! id -nG "$U3" | tr ' ' '\n' | grep -qx incus; then
@@ -745,8 +745,8 @@ incus project show "$p5" >/dev/null 2>&1 \
 # The socket, directly: the connect() that used to fail, measured as them.
 # Resolved by incus's own directory rule, not hardcoded.
 sockdir=/var/lib/incus; [ -e /run/incus/unix.socket ] && sockdir=/run/incus
-as_u "$U5" env INCUS_SOCKET="$sockdir/unix.socket.user" incus --project "$p5" profile show box-net >/dev/null 2>&1 \
-  && ok "(o) they can open unix.socket.user and read $p5's box-net profile" \
+as_u "$U5" env INCUS_SOCKET="$sockdir/unix.socket.user" incus --project "$p5" profile show box-profile >/dev/null 2>&1 \
+  && ok "(o) they can open unix.socket.user and read $p5's box-profile profile" \
   || no "(o) EACCES/unreachable on $sockdir/unix.socket.user — the #101 blocker is back"
 acc5="$(incus project get "$p5" restricted.networks.access 2>/dev/null)"
 [ "$acc5" = boxnet ] \

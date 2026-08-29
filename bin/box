@@ -434,7 +434,7 @@ one internal tenant seed, and what a box becomes is installed inside it.
 A dedicated template is a directory under templates/: a box.env (image, user,
 resources, boot demands — parsed against an allowlist, never sourced) and a
 user-data.yaml, passed to Incus verbatim.
-Templates cannot touch the network or security flags — the shared box-net
+Templates cannot touch the network or security flags — the shared box-profile
 profile is the placement contract, so every template gets the same isolation.
 
 The argumentless mint is that tenant seed. Its retired `--template blank`
@@ -629,7 +629,7 @@ Everything 'incus import' restores is the artifact's truth (disk, config,
 snapshots). What box then re-stamps is THIS host's truth:
 
   · the user.box=1 boundary tag (a legacy user.claudebox=1 stays honored)
-  · the box-net placement — re-assigned if the artifact's profile list
+  · the box-profile placement — re-assigned if the artifact's profile list
     differs — the placement contract is this host's, not the artifact's
   · a fresh machine identity (reset_identity, exactly like a clone), so its
     DHCP lease can never collide with the box it was exported from
@@ -772,7 +772,7 @@ EOF
     setup-host) cat <<'EOF'
 Prepare this host to mint boxes — one time. Installs Incus and builds the
 isolation stack: the boxnet NAT bridge (resolver pinned), the box-isolate
-ACL, the box-net profile, and the firewall rules, all re-applied at boot.
+ACL, the box-profile profile, and the firewall rules, all re-applied at boot.
 Idempotent — safe to re-run after a box upgrade to pick up stack changes;
 install.sh runs it for you, so this is for re-applying by hand.
 
@@ -855,7 +855,7 @@ What it converges, idempotently (safe to re-run, and re-run after upgrades):
     unreferenced and unreachable, not just unused
   · allows snapshots and backups (incus-user blocks both; the clone workflow
     rides snapshots, 'box export' rides backups — #70)
-  · installs the box-net profile into their project
+  · installs the box-profile profile into their project
 
 An incus-admin member is provisioned too, not refused (#99): they are added
 to 'incus' like anyone else — not a new privilege, since incus-admin already
@@ -1071,16 +1071,16 @@ require_stopped() {
 # restricted user (box grant converges it). Its absence has a different fix
 # per tier, and incus's own "Profile not found" at launch time names neither.
 require_stack() {
-  if [ -z "$remote" ] && ! timeout 10 incus profile show box-net >/dev/null 2>&1 </dev/null; then
+  if [ -z "$remote" ] && ! timeout 10 incus profile show box-profile >/dev/null 2>&1 </dev/null; then
     # A missing profile and a daemon that is not answering are different
     # faults with different fixes — "run setup-host" at a wedged daemon
     # (the #26 shape) is wrong advice. Separate them before diagnosing.
     timeout 10 incus list >/dev/null 2>&1 </dev/null \
       || die "the incus daemon is not answering — diagnose it: box doctor"
     if [ "$(box_tier)" = restricted ]; then
-      die "your project has no box-net profile — the restricted tier is granted per user, by an admin: box grant $(id -un)"
+      die "your project has no box-profile profile — the restricted tier is granted per user, by an admin: box grant $(id -un)"
     fi
-    die "no box-net profile — the host stack is missing. Build it: box setup-host"
+    die "no box-profile profile — the host stack is missing. Build it: box setup-host"
   fi
 }
 
@@ -1374,7 +1374,7 @@ reset_identity() {
 # cloud-init — NOTHING else. The box.env file is parsed against this allowlist,
 # never sourced: sourcing would hand every template arbitrary bash execution on
 # the HOST at mint time. And there is deliberately no key for a network or a
-# security flag — the shared box-net profile is the placement contract, so no
+# security flag — the shared box-profile profile is the placement contract, so no
 # template can weaken isolation. 'blank' is a box with nobody home, not a box
 # with the safety off. Three boot demands are available: BOX_REQUIRE_VM=1
 # refuses every container mint (the VM is the trust boundary, and a server-
@@ -1529,8 +1529,8 @@ box_id() {
 }
 
 # Which storage driver is under this box? The placement contract answers it:
-# every box launches with --profile box-net, and that profile hardcodes the
-# root disk's pool (profiles/box-net.yaml), so the pool is not a guess — it is
+# every box launches with --profile box-profile, and that profile hardcodes the
+# root disk's pool (profiles/box-profile.yaml), so the pool is not a guess — it is
 # read back from the profile that actually placed the instance, and only falls
 # back to the name setup-host.sh creates. Two probes for the driver because
 # the tiers see storage differently: 'incus storage show' is the admin read
@@ -1539,7 +1539,7 @@ box_id() {
 # Prints the driver, or nothing when neither probe answers.
 storage_driver() {
   local pool driver pools
-  pool="$(incus profile device get box-net root pool 2>/dev/null || true)"
+  pool="$(incus profile device get box-profile root pool 2>/dev/null || true)"
   [ -n "$pool" ] || pool=default
   # '|| true' on all three probes, not just the first. A refusal here is an
   # ANSWER ("this tier cannot read the pool"), never an error — this function
@@ -2128,7 +2128,7 @@ cmd_new() {
     # non-interactive incus call — only shell/exec/tmux may own the terminal.
     local budget="${BOX_LAUNCH_TIMEOUT:-600}" rc=0
     echo "box: launching instance $instance (incus launch, $m mode)..."
-    timeout -k 5 "$budget" incus launch "$T_IMAGE" "$instance" --profile box-net \
+    timeout -k 5 "$budget" incus launch "$T_IMAGE" "$instance" --profile box-profile \
       --config user.box=1 \
       --config user.box.template="$t" \
       --config user.box.user="$T_USER" \
@@ -2833,20 +2833,41 @@ cmd_import() {
     echo "box: note — no host UUID source, so this box gets no stable id (#181)" >&2
   fi
   # Placement: the artifact carries its profile list, but the isolation
-  # contract is THIS host's box-net profile. A box export already says
-  # box-net; anything else (a pre-0.4.0 artifact, a hand-rolled export) gets
-  # re-assigned to it, whatever the artifact asked for.
-  # (An artifact naming a profile this host lacks fails inside 'incus import'
-  # above, with incus's own error naming the profile — honest enough.)
+  # contract is THIS host's box-profile profile. An export from this release
+  # already says box-profile; anything else gets re-assigned to it, whatever
+  # the artifact asked for, the message naming what it asked for — read off the
+  # artifact, so it needs no name written here. That is why the rename adds no
+  # compatibility code anywhere: this comparison is the only place in the tree
+  # where the profile name is compared rather than used, and a second
+  # mechanism for a case the first already covers would be a second mechanism
+  # to keep correct (#229 D3).
+  #
+  # WHAT THIS BRANCH DOES NOT REACH, measured rather than assumed (#229 round 4,
+  # @codex-bot-andresmgsl). It absorbs an artifact naming a profile that EXISTS
+  # on this host under a name that is not ours. It does NOT absorb an artifact
+  # naming a profile this host does not have, because 'incus import' above
+  # refuses that outright and this line is never reached: incus resolves every
+  # name in the artifact's profile list before creating the instance —
+  # createFromBackup -> internalImportFromBackup (cmd/incusd/instances_post.go:859)
+  # -> tx.GetProfiles (cmd/incusd/api_internal.go:840-847) -> GetProfilesIfEnabled,
+  # which returns on the first name GetProfile cannot find — and the run dies
+  # under set -e with incus's own error naming the profile it could not load.
+  # So a 0.9.x artifact re-homes only in the upgrade window where this host
+  # still carries the pre-0.10.0 name; once setup-host has converged, and on
+  # any host that never had it, the import is refused. A pre-0.4.0 artifact's
+  # profile has been in that state since before this change — nothing creates
+  # it, host/setup-host.sh only leaves a legacy one alone — which is why the
+  # boundary went unnoticed. #229's criterion is under a ruling ask on the
+  # issue; nothing here works around it, by that ask's default.
   # Two traps in reading the list: a bare name filter PREFIX-matches (asking
   # for 'work' also returns 'work2'), so anchor it; and the P column joins
   # multiple profiles with newlines, so join the whole (quoted, multi-line)
   # cell back into one comparable token instead of trusting the first line.
   local profs
   profs="$(incus list "^${target}\$" --format csv --columns P 2>/dev/null | tr -d '" ' | paste -sd, -)"
-  if [ "$profs" != box-net ]; then
-    incus profile assign "$target" box-net
-    echo "box: re-homed onto the box-net profile (the artifact said '${profs:-none}')"
+  if [ "$profs" != box-profile ]; then
+    incus profile assign "$target" box-profile
+    echo "box: re-homed onto the box-profile profile (the artifact said '${profs:-none}')"
   fi
   # The artifact's volatile.* config comes back verbatim too — including the
   # NIC's MAC address. Importing an artifact twice, or beside the box it was

@@ -1475,7 +1475,7 @@ if [ "${DRILL_OWNS_SETUP:-0}" != 1 ]; then
   missing=""
   incus network show boxnet        >/dev/null 2>&1 || missing="$missing boxnet"
   incus network acl show box-isolate >/dev/null 2>&1 || missing="$missing box-isolate"
-  incus profile show box-net       >/dev/null 2>&1 || missing="$missing box-net"
+  incus profile show box-profile       >/dev/null 2>&1 || missing="$missing box-profile"
   # Last thing setup-host does, so it doubles as "it ran to the end".
   sudo nft list table bridge box   >/dev/null 2>&1 || missing="$missing nft-bridge-box"
   if [ -n "$missing" ]; then
@@ -1487,7 +1487,7 @@ if [ "${DRILL_OWNS_SETUP:-0}" != 1 ]; then
     echo "  or hand setup back to the drill:  DRILL_OWNS_SETUP=1 $SELF" >&2
     exit 1
   fi
-  ok "install.sh left a complete host stack (boxnet, box-isolate, box-net, nft bridge drop) — no second setup needed"
+  ok "install.sh left a complete host stack (boxnet, box-isolate, box-profile, nft bridge drop) — no second setup needed"
 else
   skipped I 1 "DRILL_OWNS_SETUP=1 — the drill built the stack itself, so install.sh's own contract (#64) was NOT asserted this run"
 fi
@@ -1504,15 +1504,15 @@ fi
 # NOTE: dns.mode=none is now part of the SHIPPED stack (it closes the sibling
 # DNS-enumeration leak), so it is no longer "dirt" from a rehearsal — do not
 # revert it. Only the vetoed NIC filtering counts as leftover.
-# box-net alone since #226 retired the migration path: the pre-rename ancestor
+# box-profile alone since #226 retired the migration path: the pre-rename ancestor
 # profile was swept beside it, and nothing on a drill host builds one now.
 dirty=""
-[ -n "$(incus profile device get box-net eth0 security.ipv4_filtering 2>/dev/null)" ] && dirty="$dirty box-net:ipv4_filtering"
-[ -n "$(incus profile device get box-net eth0 security.mac_filtering 2>/dev/null)" ] && dirty="$dirty box-net:mac_filtering"
+[ -n "$(incus profile device get box-profile eth0 security.ipv4_filtering 2>/dev/null)" ] && dirty="$dirty box-profile:ipv4_filtering"
+[ -n "$(incus profile device get box-profile eth0 security.mac_filtering 2>/dev/null)" ] && dirty="$dirty box-profile:mac_filtering"
 if [ -n "$dirty" ]; then
   note "this host carries the VETOED NIC filtering from an old rehearsal:$dirty — reverting"
-  incus profile device unset box-net eth0 security.mac_filtering >/dev/null 2>&1
-  incus profile device unset box-net eth0 security.ipv4_filtering >/dev/null 2>&1
+  incus profile device unset box-profile eth0 security.mac_filtering >/dev/null 2>&1
+  incus profile device unset box-profile eth0 security.ipv4_filtering >/dev/null 2>&1
 fi
 
 inf "clearing anything a previous run left behind…"
@@ -1524,9 +1524,9 @@ done
 if incus network show boxnet >/dev/null 2>&1; then
   timeout -k 5 30 incus network unset boxnet dns.mode >/dev/null 2>&1
 fi
-if incus profile show box-net >/dev/null 2>&1; then
-  timeout -k 5 30 incus profile device unset box-net eth0 security.mac_filtering >/dev/null 2>&1
-  timeout -k 5 30 incus profile device unset box-net eth0 security.ipv4_filtering >/dev/null 2>&1
+if incus profile show box-profile >/dev/null 2>&1; then
+  timeout -k 5 30 incus profile device unset box-profile eth0 security.mac_filtering >/dev/null 2>&1
+  timeout -k 5 30 incus profile device unset box-profile eth0 security.ipv4_filtering >/dev/null 2>&1
 fi
 left="$(incus list --format csv --columns n 2>/dev/null | tr '\n' ' ')"
 [ -n "$left" ] && inf "instances still on this host (not ours, left alone): $left"
@@ -1709,9 +1709,9 @@ if mint_box /tmp/mint-tpl.log --name tpl --cpu 1 --memory 1GiB; then
                        || no "inline resource flags did not land — limits are $rc, expected 1/1GiB"
   [ "$(incus config get tpl user.box.user 2>/dev/null)" = dev ] \
     && ok "template user stamped on the instance (user.box.user=dev)" || no "user.box.user not stamped"
-  incus config show tpl 2>/dev/null | grep -q '^- box-net' \
-    && ok "blank box launched with the box-net profile — same placement contract" \
-    || no "blank box is NOT on box-net — a template picked its own placement?!"
+  incus config show tpl 2>/dev/null | grep -q '^- box-profile' \
+    && ok "blank box launched with the box-profile profile — same placement contract" \
+    || no "blank box is NOT on box-profile — a template picked its own placement?!"
   u="$(timeout -k 5 30 box exec tpl -- whoami </dev/null 2>/dev/null | tr -d '[:space:]')"
   [ "$u" = dev ] && ok "exec lands in the template's user ($u) — nothing hardcodes claude" \
                  || no "exec landed in '${u:-<nothing>}', expected dev"

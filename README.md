@@ -140,7 +140,7 @@ box setup-host   # one run is enough
 Idempotent. Installs Incus and creates the isolation stack: the `boxnet` NAT
 bridge (sibling-name resolution off, resolver pinned to public upstreams —
 `BOX_DNS` overrides), the `box-isolate` ACL (drops all RFC1918/CGNAT/
-link-local egress), the `box-net` profile (port-isolated NICs — boxes can't
+link-local egress), the `box-profile` profile (port-isolated NICs — boxes can't
 reach each other), and firewall rules blocking instance → host. All rules
 re-apply at boot via `box-firewall.service` — no post-reboot ritual. If
 the host lacks `dnsmasq-base` (Debian cloud images skip Recommends):
@@ -238,7 +238,7 @@ box revoke dev1 --purge     # ...or end their sessions and delete everything the
 defaults miss box's contract three ways (measured on Debian 13 / Incus 6.0.4,
 see [the plan doc](docs/plans/2026-07-18-restricted-tier.md)): it pins each
 user to a private _unhardened_ NAT bridge, it blocks snapshots, and it cannot
-see the `box-net` profile. Granting rewires all three: the user's project is
+see the `box-profile` profile. Granting rewires all three: the user's project is
 restricted to `boxnet` **and only boxnet** — the hardened network is not their
 default placement but the only one their certificate can express — snapshots
 and backups are allowed (the clone and `box export` workflows), and the
@@ -375,7 +375,7 @@ box new --name scratch           # the DEFAULT: bare Debian + the thin seed,
 ```
 
 A seed **cannot** name a network, a profile, or a `security.*` flag —
-there is no key for them. Every box launches with the shared `box-net`
+there is no key for them. Every box launches with the shared `box-profile`
 profile (the isolated NIC + root disk), so every template gets the identical
 trust boundary. `--size small|medium|large` selects a resource bundle (small
 is the default), overridable at mint time — inline
@@ -479,7 +479,7 @@ This is what makes the upgrade flow humane
 ([#66](https://github.com/heavy-duty/box/issues/66)): stop, export, remove
 every box, upgrade, re-import. Everything `incus import` restores is the
 artifact's truth (disk, config, snapshots); what box re-stamps on import is
-_this_ host's truth — the `user.box=1` boundary tag, the `box-net` placement
+_this_ host's truth — the `user.box=1` boundary tag, the `box-profile` placement
 (re-assigned if the artifact's differs), and a fresh machine identity, the
 same move a clone gets, so an imported box can never collide with the box it
 was exported from. Import refuses a name any existing instance already holds.

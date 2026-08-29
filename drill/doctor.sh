@@ -170,7 +170,7 @@ yaml_value() {
 #
 # One read answers "is anything attached?" because Incus computes used_by from
 # every instance's EXPANDED devices: a box that reaches boxnet through the
-# box-net profile — which is every box — is listed here by its own name, beside
+# box-profile profile — which is every box — is listed here by its own name, beside
 # the profiles. Reading the profile entries instead would need the names of the
 # restricted tier's per-user profile copies, which 'box grant' creates and this
 # script has never known. (setup-host.sh carries the same pair as it does of
@@ -308,14 +308,26 @@ if [ "$TIER" = restricted ]; then
   fi
 
   head_ "Your project — is the tier granted?"
-  if incus profile show box-net >/dev/null 2>&1 </dev/null; then
-    ok "the box-net profile is in your project — 'box new' lands on the hardened boxnet"
-    iso="$(incus profile device get box-net eth0 security.port_isolation </dev/null 2>/dev/null)"
+  if incus profile show box-profile >/dev/null 2>&1 </dev/null; then
+    ok "the box-profile profile is in your project — 'box new' lands on the hardened boxnet"
+    iso="$(incus profile device get box-profile eth0 security.port_isolation </dev/null 2>/dev/null)"
     [ "$iso" = "true" ] \
       && ok "security.port_isolation = true (as shipped)" \
-      || no "security.port_isolation is NOT set in your box-net profile — re-grant refreshes it: ask an admin to re-run 'box grant $(id -un)'"
+      || no "security.port_isolation is NOT set in your box-profile profile — re-grant refreshes it: ask an admin to re-run 'box grant $(id -un)'"
+  elif incus profile show box-net >/dev/null 2>&1 </dev/null; then
+    # The tier IS granted — it is wearing the pre-0.10.0 name (#229). Saying
+    # "not granted" here would send the operator at the wrong fix: a re-grant
+    # would install box-profile beside the stale box-net rather than converge
+    # it, and the user would be told nothing about the copy left behind.
+    no "your project carries box-net, the pre-0.10.0 name for the placement contract — the tier is granted, but this project did not converge"
+    inf "fix:  an admin runs:  box setup-host   (it converges every project, this one included)"
+    # 'inf' and not 'hold': HELD is rendered by the admin verdict, which this
+    # tier exits before reaching, and the tier banner has already said the
+    # --fix lever is ignored here — so hold's "--fix cannot reach this" would
+    # be a second saying of it that nothing ever prints (#229, round 1).
+    inf "converging it is admin-owned: this tier cannot write another project's profiles"
   else
-    no "no box-net profile in your project — the restricted tier is granted per user"
+    no "no box-profile profile in your project — the restricted tier is granted per user"
     inf "fix:  an admin runs:  box grant $(id -un)"
   fi
   if incus network show boxnet >/dev/null 2>&1 </dev/null; then
@@ -491,12 +503,17 @@ if command -v ufw >/dev/null 2>&1; then
   fi
 fi
 
-# box-net is the placement contract. The pre-rename ancestor profile used to be
+# box-profile is the placement contract. The pre-rename ancestor profile used to be
 # reported beside it, because the migration tool could still re-home the boxes
 # that referenced it; with that tool retired (#226), naming it here would tell
 # the operator to perform a migration this tool can no longer perform.
+#
+# That reasoning is why claude-dev stays unreported and box-net does not: the
+# test is whether a fix exists to name, not how old the name is. setup-host
+# converges box-net in every project, so the drift check below names a lever
+# the operator actually holds.
 PROFILES=""
-incus profile show box-net >/dev/null 2>&1 && PROFILES="box-net"
+incus profile show box-profile >/dev/null 2>&1 && PROFILES="box-profile"
 head_ "Profile — the NIC is the isolation contract"
 if [ -n "$PROFILES" ]; then
   for p in $PROFILES; do
@@ -526,14 +543,77 @@ if [ -n "$PROFILES" ]; then
   done
   inf "resources are per-box since 0.4.0 (stamped from the template at mint; BOX_CPU/BOX_MEMORY override)"
 else
-  inf "box-net does not exist (a fresh host — setup-host.sh will create it)"
+  inf "box-profile does not exist (a fresh host — setup-host.sh will create it)"
 fi
 
-# The pool is read off the profile that PLACES every box (profiles/box-net.yaml
+# A surviving box-net is drift, and unlike claude-dev above it is drift this
+# host can still fix: setup-host converges the rename in every project, so the
+# report names a fix that exists. It is reported in both the have- and
+# have-not-box-profile cases, because both are real — a host that never
+# converged carries only box-net, and one whose convergence was interrupted
+# carries the pair. Every project, since 'box grant' installs a copy into each
+# user-<uid> one and a stale copy there is exactly the residue the rename set
+# out to stop leaving behind (#229 D5).
+#
+# The literal 'default' and 'user-*' and no wider, which is exactly the set
+# setup-host converges. box creates no other project, so a box-net in one is
+# not a state this stack can reach — and reporting it here would name
+# 'box setup-host' as the fix for something that run does not touch, which is a
+# lever that cannot clear what it is offered for. Anchored at both ends on the
+# 'default' arm: setup-host converges the project literally named 'default',
+# and an operator's own 'default-archive' is no more in its reach than
+# 'scratch' is (#229, rounds 1 and 2). The two loops are a pair and are written
+# as one.
+#
+# And the listing is read before the loop, then checked: a 'project list' that
+# fails hands the loop the same empty stream a host with no projects would, and
+# an OK saying "the placement contract has one name on this host" off the back
+# of zero projects checked is a clean bill of health for a question nobody
+# asked. Same rule as the bridge's 'network show' above (#227) — an unreadable
+# read is not an empty result — and unreadable includes an empty answer, since
+# a daemon that can list projects at all lists 'default' (#229, round 2).
+#
+# BOTH halves of "could not be read" are checked, and the assignment sits in
+# the 'if' for exactly that reason: the status has to survive to be one of
+# them. A '|| true' out here would decide the branch on emptiness alone, and a
+# daemon that writes a row and THEN fails — 'default (current)' is the likeliest
+# such row — would be certified off a listing that stopped early. Two projects
+# hold this stack's residue and only one of them got enumerated, so the sweep
+# below would report on the wrong half of a host and call it clean. The same
+# condition setup-host uses for the same listing, written the same way, because
+# the two loops are a pair (#229, round 3).
+STALE=""
+if PROJECT_CSV="$(incus project list --format csv 2>/dev/null </dev/null)" \
+   && [ -n "$PROJECT_CSV" ]; then
+  while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    incus --project "$project" profile show box-net >/dev/null 2>&1 </dev/null \
+      && STALE="$STALE${STALE:+ }$project"
+  done <<<"$(printf '%s\n' "$PROJECT_CSV" | cut -d, -f1 | sed 's/ (current)$//' \
+             | grep -E '^default$|^user-' || true)"
+  if [ -n "$STALE" ]; then
+    no "box-net still exists — the pre-0.10.0 name for this profile, in: $STALE"
+    inf "boxes placed on it are still isolated; the fault is two names one hyphen"
+    inf "apart, which is what the rename removed (#229)."
+    inf "fix:  box setup-host   (renames it in every project; attached boxes keep their placement)"
+    hold "the rename — converging it is setup-host's job, and doing it here would be a second mechanism for one convergence"
+  else
+    ok "no stale box-net — the placement contract has one name on this host"
+  fi
+else
+  no "the project list could not be read, so whether box-net survives anywhere is unknown"
+  inf "'incus project list' failed, or answered nothing — and nothing is a failure"
+  inf "too: every working daemon lists the default project. Either way this is the"
+  inf "daemon, not a clean host, and a partial listing is not the host's inventory."
+  inf "fix:  check the daemon (incus project list), then run the doctor again"
+  hold "the box-net check — it cannot report on projects it cannot name"
+fi
+
+# The pool is read off the profile that PLACES every box (profiles/box-profile.yaml
 # hardcodes root's pool), not guessed from the name setup-host creates — the
 # same read bin/box's storage_driver makes before taking a mark.
 head_ "Storage pool — the disk every box's root device rides on"
-POOL="$(incus profile device get box-net root pool 2>/dev/null)"
+POOL="$(incus profile device get box-profile root pool 2>/dev/null)"
 [ -n "$POOL" ] || POOL=default
 POOL_SHOW="$(incus storage show "$POOL" 2>/dev/null)"
 if [ -n "$POOL_SHOW" ]; then

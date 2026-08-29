@@ -67,7 +67,7 @@ only placement their certificate can express. Measured: `incus launch
 widen their own project (`Error: Certificate is restricted`); they cannot
 touch `boxnet`'s config or the ACL (`no permission for project "default"`).
 
-A restricted user CAN edit the `box-net` profile copy in their own project
+A restricted user CAN edit the `box-profile` profile copy in their own project
 (they own project profiles — `features.profiles=true`), including stripping
 `security.port_isolation` — and CAN attach `boxnet` raw with `--network
 boxnet`, no profile at all (the network must be in
@@ -99,7 +99,7 @@ converge, which is what makes re-run-to-repair deterministic.
 3. remove the default profile's private-bridge `eth0`
 4. `restricted.networks.access boxnet`
 5. `restricted.snapshots allow`
-6. install/refresh the shipped `box-net` profile into the project
+6. install/refresh the shipped `box-profile` profile into the project
 7. verify from the user's side of the socket
 
 `box revoke <user>` is the inverse, two strengths: bare = group removal (the

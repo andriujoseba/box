@@ -1834,7 +1834,7 @@ driver_under_inherit_errexit() {
     shopt -s inherit_errexit
     incus() {
       case "$*" in
-        "profile device get box-net root pool") printf "boxpool\n" ;;
+        "profile device get box-profile root pool") printf "boxpool\n" ;;
         *) printf "incus: not authorized\n" >&2; return 1 ;;
       esac
     }
@@ -1857,7 +1857,7 @@ pris() { # pris <driver> <instance> [VAR=VAL...]
   env "$@" DRIVER="$driver" INSTANCE="$instance" PRISFN="$PRISFN" bash -c '
     incus() {
       case "$*" in
-        "profile device get box-net root pool") printf "boxpool\n" ;;
+        "profile device get box-profile root pool") printf "boxpool\n" ;;
         "storage show boxpool")
           [ "$DRIVER" = none ] && return 1
           printf "name: boxpool\ndriver: %s\n" "$DRIVER" ;;
@@ -1942,7 +1942,7 @@ took() { # took <driver> <label> [VAR=VAL...] — did THIS run create the mark?
   env "$@" DRIVER="$driver" LABEL="$label" PRISFN="$PRISFN" bash -c '
     incus() {
       case "$*" in
-        "profile device get box-net root pool") printf "boxpool\n" ;;
+        "profile device get box-profile root pool") printf "boxpool\n" ;;
         "storage show boxpool")
           [ "$DRIVER" = none ] && return 1
           printf "name: boxpool\ndriver: %s\n" "$DRIVER" ;;
@@ -2061,8 +2061,8 @@ check "expose: the restricted guard precedes the first incus call" 0 "" bash -c 
 # to setup-host they cannot run). The pre-flight lives in require_stack()
 # since #70 gave it a second caller (import lands on the same contract), so
 # assert both halves: the helper holds the probe, and cmd_new calls it.
-check "require_stack: probes the box-net profile" 0 "" bash -c '
-  awk "/^require_stack\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "incus profile show box-net"'
+check "require_stack: probes the box-profile profile" 0 "" bash -c '
+  awk "/^require_stack\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "incus profile show box-profile"'
 check "require_stack: the restricted fix names box grant" 0 "" bash -c '
   awk "/^require_stack\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "box grant"'
 check "new: pre-flights the stack (require_stack)" 0 "" bash -c '
@@ -2077,7 +2077,7 @@ check "grant: allows snapshots (the clone workflow)" 0 "" \
   grep -qF 'restricted.snapshots allow' "$ROOT/host/grant-user.sh"
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "grant: installs the SHIPPED profile into the project" 0 "" \
-  grep -qF 'profile edit box-net < "$here/profiles/box-net.yaml"' "$ROOT/host/grant-user.sh"
+  grep -qF 'profile edit box-profile < "$here/profiles/box-profile.yaml"' "$ROOT/host/grant-user.sh"
 check "grant: unpins the private-bridge eth0 from the default profile" 0 "" \
   grep -qF 'profile device remove default eth0' "$ROOT/host/grant-user.sh"
 check "grant: an incus-admin member is provisioned, not refused (#99)" 1 "" \
@@ -2136,7 +2136,7 @@ check "revoke: purge removes the trust-store certificate" 0 "" \
 # #99: an incus-admin member is PROVISIONED, not refused. The distinction the
 # old refusal missed is permission (the 'incus' group — theirs already, and
 # stronger) versus provisioning (the user-<uid> project, the boxnet narrowing,
-# snapshots, backups, the box-net profile — theirs not at all). Grepping the
+# snapshots, backups, the box-profile profile — theirs not at all). Grepping the
 # new prose would prove only that the prose exists, so both tier scripts are
 # DRIVEN end to end under shims, the same seam setup-host is driven through:
 # every incus and sudo call is logged, and the assertions are made against
@@ -2229,8 +2229,8 @@ check "grant: their project still gets snapshots" 0 "" \
   grep -qF 'project set user-1000 restricted.snapshots allow' "$A/incus.log"
 check "grant: their project still gets backups" 0 "" \
   grep -qF 'project set user-1000 restricted.backups allow' "$A/incus.log"
-check "grant: box-net is still installed INTO their project" 0 "" \
-  grep -qF -- '--project user-1000 profile edit box-net' "$A/incus.log"
+check "grant: box-profile is still installed INTO their project" 0 "" \
+  grep -qF -- '--project user-1000 profile edit box-profile' "$A/incus.log"
 # The socket pin (#99's teeth): incus's client takes the DAEMON socket when it
 # is writable, and only falls back to unix.socket.user when it is not — so for
 # an incus-admin member an unpinned touch never reaches incus-user at all, and
@@ -2238,7 +2238,7 @@ check "grant: box-net is still installed INTO their project" 0 "" \
 check "grant: the touch is pinned at incus-user's socket (the admin socket would win)" 0 "" \
   grep -qF "INCUS_SOCKET=$W99/incusdir/unix.socket.user" "$A/sudo.log"
 check "grant: the user-side proof names their project (an unqualified show proves nothing)" 0 "" \
-  grep -qF -- '--project user-1000 profile show box-net' "$A/sudo.log"
+  grep -qF -- '--project user-1000 profile show box-profile' "$A/sudo.log"
 # The socket existence probe rides $SUDO, like revoke's: /var/lib/incus is not
 # traversable by a non-root admin, and a bare [ -e ] there false-fails into an
 # exit that blames incus-user for a socket that is present (#101 review).
@@ -2312,6 +2312,17 @@ check "revoke --purge: ...and refuses to call an admin member 'out'" 0 "is NOT o
   runrevoke "$GRANTED" "$W99/p2" --purge
 check "revoke --purge: ...the project really was deleted (the log, not the summary)" 0 "" \
   grep -qF 'project delete user-1000' "$P/incus.log"
+# #229 D7 — both names, for one release, and read off the call log rather than
+# the file's text: a comment naming the old name satisfies the corpus guard,
+# and only the call satisfies this. install.sh skips host setup on an upgrade,
+# so an upgraded host still carries box-net in every granted project until an
+# admin runs setup-host by hand; a project holding one is not empty, so the
+# project delete above fails and names three probes that are all empty,
+# because the blocker is a profile none of them shows.
+check "revoke --purge: ...deleting the contract by its current name" 0 "" \
+  grep -qF 'profile delete box-profile' "$P/incus.log"
+check "revoke --purge: ...and by the pre-0.10.0 name an upgraded host still has (#229)" 0 "" \
+  grep -qF 'profile delete box-net' "$P/incus.log"
 rm -rf "$GSHIM" "$W99"
 # shellcheck disable=SC2016  # the $-strings are literals in the target file
 check "setup-host: the restricted gate precedes the sudo resolution" 0 "" bash -c '
@@ -2836,6 +2847,18 @@ check "mint: --user reaches the stamp (#159, #214)" 0 "" \
 check "mint: makes NO network request of its own (#214)" 0 "0" \
   bash -c 'grep -c . "$1" || true' _ "$MLOG.curl"
 check "mint: stamps the origin (#103)" 0 "user.box.origin=mint" launchline "$MLOG"
+# THE PLACEMENT CONTRACT, DRIVEN AT THE MINT (#229). Everything else that holds
+# 'box new' to 'box-profile' is a text search: the corpus guard reds on a stray
+# old name anywhere, and the drill catches it on metal once a release. Neither
+# watches the flag this call actually launches with, which is the one line the
+# whole rename exists to move — so a mint launching onto a profile the host no
+# longer has would ship green. The negative is its pair: the flag must not name
+# the old profile, and an assertion that only looked for the new name would stay
+# green beside a second --profile that re-introduced it.
+check "mint: launches ON the box-profile profile — the placement contract (#229)" 0 "" \
+  launch_has "$MLOG" ' --profile box-profile( |$)'
+check "mint: ...and the launch names the old profile nowhere (#229)" 1 "" \
+  launch_has "$MLOG" 'box-net'
 # The six keys that SURVIVED, named together: the absence block above says what
 # went, and this says what must not have gone with it.
 for k in schema version image mode created origin; do
@@ -3671,6 +3694,25 @@ cat > "$ISHIM/incus" <<'SHIM'
 printf 'incus %s\n' "$*" | tr '\n' ' ' >> "$FAKE_INCUS_LOG"
 printf '\n' >> "$FAKE_INCUS_LOG"
 case "$*" in
+  # The import boundary, and it is a REFUSAL and not a formality (#229 round 4).
+  # incus resolves every name in the artifact's profile list before it creates
+  # the instance — createFromBackup -> internalImportFromBackup
+  # (cmd/incusd/instances_post.go:859) -> tx.GetProfiles
+  # (cmd/incusd/api_internal.go:840-847) -> GetProfilesIfEnabled, which returns
+  # on the first name GetProfile cannot find (internal/server/db/cluster/
+  # profiles.go:111-116, mapper :389-391 ErrNotFound). So an artifact naming a
+  # profile this host lacks never reaches bin/box's re-home comparison at all.
+  # FAKE_HOST_PROFILES is what this host has; FAKE_ART_PROFILES is what the
+  # artifact asks for. A shim that imported unconditionally is what let 1805
+  # green tests miss the boundary, so it models the refusal now.
+  "import "*)
+    for _p in ${FAKE_ART_PROFILES:-box-profile}; do
+      case " ${FAKE_HOST_PROFILES:-box-profile} " in
+        *" $_p "*) ;;
+        *) echo "Error: Failed importing backup: Failed loading profiles ($_p) for instance: Profile not found" >&2
+           exit 1 ;;
+      esac
+    done ;;
   # Nothing exists under that name: the collision guard passes. The same call
   # enumerates volatile hwaddrs later, where an empty answer is also correct.
   "config show "*) exit 1 ;;
@@ -3678,7 +3720,13 @@ case "$*" in
     [ -n "${FAKE_CFG:-}" ] || exit 0
     key="$*"; key="${key##* }"
     awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_CFG" ;;
-  *"--columns P") printf '"box-net"\n' ;;   # already on the contract, no re-home
+  # The profile list the artifact rode in with. Default: already on the
+  # contract, so no re-home. FAKE_ART_PROFILES drives the artifacts that are
+  # not — which is how a pre-rename export is tested without new code (#229).
+  # The quoting is the shim's, not the caller's: incus quotes a CSV cell, and
+  # bin/box strips those quotes on the way in. Keeping them here means the
+  # variable holds a bare profile name, the way an artifact names one.
+  *"--columns P") printf '"%s"\n' "${FAKE_ART_PROFILES:-box-profile}" ;;
 esac
 exit 0
 SHIM
@@ -3690,10 +3738,16 @@ ARTIFACT="$IWORK/work-20260718T120000Z.tar.gz"
 mkdir -p "$IWORK/backup" && printf 'name: work\n' > "$IWORK/backup/index.yaml"
 tar -czf "$ARTIFACT" -C "$IWORK" backup/index.yaml
 
-importbox() {  # importbox <logfile> <cfg-file|""> — the real box, shimmed
-  local log="$1" cfg="$2"
+# importbox <logfile> <cfg-file|""> [artifact-profiles] [host-profiles]
+# The last two default to a same-release artifact landing on a converged host,
+# which is every caller but #229's pair below. They are arguments and not an
+# exported-in-a-subshell idiom because two callers overriding them that way is
+# what SC2030/SC2031 are for, and CI's shellcheck is not advisory here.
+importbox() {  # the real box, shimmed
+  local log="$1" cfg="$2" art="${3:-box-profile}" host="${4:-box-profile}"
   : > "$log"
   env FAKE_INCUS_LOG="$log" FAKE_CFG="$cfg" \
+    FAKE_ART_PROFILES="$art" FAKE_HOST_PROFILES="$host" \
     PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$ISHIM:$PATH" \
     "$BOX" import "$ARTIFACT" </dev/null >"$log.out" 2>&1
   local rc=$?
@@ -4241,6 +4295,64 @@ check "help info: says the id outlives a rename (#181)" 0 "outlives a rename" \
 check "help import: names the fresh id it draws (#181)" 0 "fresh box id" \
   "$BOX" help import
 
+# --- #229 D3: a pre-rename artifact needs no compatibility branch -----------
+# An export from 0.9.x names the profile as it was before the rename. It falls
+# into the re-home branch that has always been there for anything not on this
+# host's contract, and the message names what the artifact asked for, read off
+# the artifact rather than written anywhere in bin/box.
+#
+# The proof that no compatibility code was added is not in this case, it is in
+# this case passing beside the corpus guard above: bin/box contains no
+# occurrence of the old name at all, so there is nothing in it that could be
+# special-casing one. Adding a branch would be a second mechanism for a case
+# the first already covers.
+#
+# THE STATE THIS MODELS IS THE UPGRADE WINDOW, and it is named rather than
+# implied (#229 round 4). The re-home is reachable only while this host still
+# carries the old profile, because incus refuses an artifact naming a profile
+# it cannot resolve before bin/box gets a say — see the shim's 'import' arm.
+# So the host below has BOTH names, which is exactly a host that has been
+# granted on 0.10.0 and not yet converged by setup-host. The converged host is
+# the case underneath, and it is a refusal.
+OLDLOG="$IWORK/oldname.log"
+check "import: a pre-rename artifact is re-homed onto the contract (#229 D3)" 0 \
+  "re-homed onto the box-profile profile" \
+  importbox "$OLDLOG" "$MINTED_ART" box-net "box-profile box-net"
+check "import: ...and the message names what the artifact said, not a constant" 0 \
+  "the artifact said 'box-net'" \
+  importbox "$OLDLOG" "$MINTED_ART" box-net "box-profile box-net"
+check "import: ...by the assign that was already there" 0 "" \
+  grep -qF 'profile assign work box-profile' "$OLDLOG"
+
+# The boundary the re-home branch does NOT cover, driven rather than reasoned
+# about. Once setup-host has converged this host — and on any host that never
+# carried the old name, which is every fresh 0.10.0 host — an artifact from
+# 0.9.x names a profile incus cannot resolve, and 'incus import' refuses it
+# before the re-home line is reached. bin/box is 'set -euo pipefail', so the
+# run stops there: the failure is loud, the box is not half-imported, and
+# incus's own error names the profile. The criterion that says this artifact
+# imports successfully is under a ruling ask on #229; this case is what the
+# tree actually does, either way.
+CONVLOG="$IWORK/converged.log"
+check "import: a converged host refuses a pre-rename artifact (#229 D3)" 1 \
+  "Failed loading profiles (box-net) for instance" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+check "import: ...and the refusal is incus's own, named as an import failure" 1 \
+  "Failed importing backup" \
+  importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+# The point of the case: the re-home never runs, so it cannot be what saves an
+# artifact naming a profile that is gone. Read off the call log rather than off
+# the message, because absence of a string is the weaker assertion.
+check "import: ...and the re-home the criterion relies on is never reached" 1 "" \
+  grep -qF 'profile assign' "$CONVLOG"
+check "import: ...and set -e stops the run there, so no box is started" 1 "" \
+  grep -qF 'incus start work' "$CONVLOG"
+# The other side of the same branch: an artifact already on the contract is
+# left alone, so 're-home' is a response to a mismatch and not something every
+# import does.
+check "import: an artifact already on the contract is not re-homed" 1 "" \
+  grep -qF 'profile assign' "$ILOG"
+
 rm -rf "$ISHIM" "$IWORK"
 
 rm -rf "$MSHIM" "$MWORK"
@@ -4445,6 +4557,63 @@ case "$*" in
   *"admin init --preseed"*|*"acl edit"*|*"profile edit"*)
     if [ -n "${FAKE_INCUS_LOG:-}" ]; then sed 's/^/  | /' >> "$FAKE_INCUS_LOG"; else cat >/dev/null; fi ;;
 esac
+# The #229 convergence is the first thing setup-host says in project scope, so
+# the shim learns the '--project <name>' prefix here and every pattern below
+# stays written in the bare form the rest of the script uses. Logged above
+# first, so the assertions still read the exact command line that was sent.
+proj=default
+if [ "${1:-}" = --project ]; then proj="$2"; shift 2; fi
+# 'project list' is answered ABOVE the stateful profile store, because the
+# question it has to be able to pose belongs to both halves: FAKE_PROJECT_LIST_FAIL
+# is a daemon that refuses to answer — non-zero, nothing on stdout — which is
+# not the same host as one with no grants. Unset, it answers what a working
+# daemon on a grant-less host says: 'default (current)', never an empty stream.
+# A test that wants the empty one asks for it with FAKE_PROJECTS= (#229 round 2).
+# FAKE_PROJECT_LIST_PARTIAL is the third answer, and the one neither of the
+# other two can stand in for: a row on stdout and a non-zero exit after it. A
+# condition that reads emptiness alone passes it, so it is what keeps the
+# status check in this file's 'if' from being deleted as redundant (#229 round 3).
+case "$*" in
+  "project list --format csv")
+    [ -z "${FAKE_PROJECT_LIST_FAIL:-}" ] || { echo "Error: not authorized" >&2; exit 1; }
+    [ -z "${FAKE_PROJECT_LIST_PARTIAL:-}" ] || {
+      printf 'default (current)\n'; echo "Error: connection reset" >&2; exit 1; }
+    printf '%s\n' "${FAKE_PROJECTS-default (current)}" ; exit 0 ;;
+esac
+# The profile store is STATEFUL, and only when FAKE_PROFILE_STATE says so —
+# every case that predates #229 leaves it unset and keeps answering from
+# FAKE_HAVE_*. It has to be stateful because the claims under test are "the
+# old name is gone after", "the second run is a no-op" and "every project,
+# not just default", and none of those can be read off a log of calls made
+# against a store that never changes. Incus's own two refusals are modelled:
+# a rename onto an existing name fails (cmd/incusd/profiles.go), and an
+# in-use profile cannot be deleted.
+if [ -n "${FAKE_PROFILE_STATE:-}" ]; then
+  pf() { printf '%s/%s.%s' "$FAKE_PROFILE_STATE" "$proj" "$1"; }
+  case "$*" in
+    "profile show "*)   [ -f "$(pf "$3")" ] || exit 1 ; exit 0 ;;
+    "profile create "*) : > "$(pf "$3")" ; exit 0 ;;
+    "profile rename "*)
+      # The daemon that simply errors. Incus's own two refusals are below and
+      # are modelled from its source; this one models neither, and exists for
+      # the one window they cannot reach — a rename failing after the delete
+      # that freed its target name (#229 round 2).
+      [ -z "${FAKE_RENAME_FAIL:-}" ] || { echo "Error: rename failed" >&2; exit 1; }
+      [ -f "$(pf "$3")" ] || exit 1
+      if [ -f "$(pf "$4")" ]; then
+        echo "Error: Profile \"$4\" already exists" >&2; exit 1
+      fi
+      mv "$(pf "$3")" "$(pf "$4")" ; exit 0 ;;
+    "profile delete "*)
+      # In-use is PER PROFILE, not per store: the convergence's whole question
+      # is which of the two names something is placed on, and a shim that
+      # refuses every delete alike cannot pose it (#229, round 1).
+      case " ${FAKE_PROFILES_IN_USE:-} " in
+        *" $3 "*) echo "Error: Profile \"$3\" is currently in use" >&2; exit 1 ;;
+      esac
+      rm -f "$(pf "$3")" ; exit 0 ;;
+  esac
+fi
 case "$*" in
   "storage show default")         [ -n "${FAKE_HAVE_STORAGE:-}" ] || exit 1 ;;
   # The live pool's placement (#180): FAKE_POOL_SOURCE unset answers the way a
@@ -4463,7 +4632,7 @@ case "$*" in
                                   printf '%s\n' "${FAKE_BOXNET_SHOW:-}" ;;
   "network get boxnet ipv4.address") printf '%s\n' "${FAKE_BOXNET_IPV4:-}" ;;
   "network acl show box-isolate") [ -n "${FAKE_HAVE_ACL:-}" ]     || exit 1 ;;
-  "profile show box-net")         [ -n "${FAKE_HAVE_PROFILE:-}" ] || exit 1 ;;
+  "profile show box-profile")         [ -n "${FAKE_HAVE_PROFILE:-}" ] || exit 1 ;;
 esac
 exit 0
 SHIM
@@ -4576,7 +4745,7 @@ ub()          { bash -c ". '$UBFN'; used_by_instances \"\$1\"" _ "$1"; }
 ubempty()     { [ -z "$(ub "$1")" ]; }
 ubis()        { [ "$(ub "$1")" = "$2" ]; }
 ubcount()     { [ "$(ub "$1" | wc -l)" -eq "$2" ]; }
-ubnoprofile() { ! ub "$1" | grep -q box-net; }
+ubnoprofile() { ! ub "$1" | grep -q box-profile; }
 
 # The measured 2026-08-27 shape: three profile entries, no instance. The
 # restricted tier's per-user profile copies are why the bridge cannot simply be
@@ -4586,14 +4755,14 @@ UB_PROFILES='config:
   ipv4.address: 10.88.0.1/24
 name: boxnet
 used_by:
-- /1.0/profiles/box-net
-- /1.0/profiles/box-net?project=user-1000
-- /1.0/profiles/box-net?project=user-1001
+- /1.0/profiles/box-profile
+- /1.0/profiles/box-profile?project=user-1000
+- /1.0/profiles/box-profile?project=user-1001
 managed: true'
 UB_ATTACHED='name: boxnet
 used_by:
 - /1.0/instances/work
-- /1.0/profiles/box-net
+- /1.0/profiles/box-profile
 - /1.0/instances/scratch?project=user-1000
 managed: true'
 check "used_by_instances: profiles alone are not an attachment" 0 "" ubempty "$UB_PROFILES"
@@ -5161,6 +5330,290 @@ check "setup-host: ...and reaches --minimal to do it" 0 "" \
 rm -f "$POOLFN" "$PLACEDFN"
 rm -rf "$W180"
 
+# ---------------------------------------------------------------------------
+# #229 — the placement contract's rename, converged. Driven end to end against
+# the stateful profile store rather than grepped, because every claim here is
+# about what the host HOLDS afterwards: the old name gone, the new one there,
+# in every project, and a second run silent. A log of calls cannot say that.
+#
+# What these cases deliberately do NOT assert is that attached boxes keep their
+# placement across the rename. That is Incus's behaviour, not this script's,
+# and it was answered where it lives (#229 D6): instances_profiles stores the
+# association by profile id and the rename is an UPDATE of the name column
+# alone, on main and on the stable-6.0 line setup-host installs. What IS
+# asserted here is the consequence for this script — that it makes no
+# reassignment pass, because none is owed.
+# ---------------------------------------------------------------------------
+# The sweep's own guard, first. A mechanical rename's correctness is exactly
+# what a grep can assert, and what goes wrong if one occurrence survives is a
+# box that will not mint — 'incus launch --profile box-net' against a host that
+# has no such profile, found at the far end of a release. So a survivor reds
+# HERE, which is the must-fail this change was specified with.
+#
+# The exceptions are the record classes and the scripts that handle the old
+# name ON PURPOSE, and each is asserted to still contain it rather than merely
+# permitted to — an exception nobody checks is how a list like this rots into a
+# hole. The teardown and wipe halves come out one release after this one (D7),
+# and these lines are what makes that removal a stated act instead of a drift.
+# changelog.d/ is exempt for the reason CHANGELOG.md is: a fragment IS the next
+# CHANGELOG.md section, staged, and an entry announcing a rename that may not
+# name what was renamed announces nothing. drills/ is exempt for the reason
+# drill/RUNS.md is: a release record says what that release actually carried,
+# and rewriting one would have 0.9.1 shipping a profile it never had.
+OLDNAME_KEEP='^(CHANGELOG\.md|changelog\.d/.*\.md|drill/RUNS\.md|drills/.*\.md|host/setup-host\.sh|host/teardown-host\.sh|host/revoke-user\.sh|drill/doctor\.sh|drill/wipe\.sh|test/cli\.sh)$'
+OLDSWEEP="$(mktemp)"
+git -C "$ROOT" ls-files | grep -vE "$OLDNAME_KEEP" > "$OLDSWEEP"
+oldname_survivors() { # oldname_survivors [root] — prints offenders; 0 if any
+  local root="${1:-$ROOT}" f rc=1
+  while IFS= read -r f; do
+    [ -e "$root/$f" ] || continue
+    if grep -qw -- 'box-net' "$root/$f" 2>/dev/null; then printf '%s\n' "$f"; rc=0; fi
+  done < "$OLDSWEEP"
+  return $rc
+}
+check "rename: the sweep reaches bin/box — an empty walk sweeps nothing (#229)" 0 "" \
+  grep -qx 'bin/box' "$OLDSWEEP"
+check "rename: ...and profiles/, which is where the renamed file landed" 0 "" \
+  grep -qx 'profiles/box-profile.yaml' "$OLDSWEEP"
+check "rename: no tracked file outside the exceptions still says the old name" 1 "" \
+  oldname_survivors
+# The guard's own test: one occurrence left in bin/box, the way the sweep
+# would fail, and the guard has to red on it.
+OLDFIX="$(mktemp -d)"; mkdir -p "$OLDFIX/bin"
+printf 'incus launch the-image the-box --profile box-net\n' > "$OLDFIX/bin/box"
+check "rename: ...and the guard reds on one left in bin/box (the guard's own test)" 0 \
+  "bin/box" oldname_survivors "$OLDFIX"
+# ...and does not red on the word it is one hyphen from, which is the whole
+# reason this rename happened.
+printf 'incus network create boxnet ipv4.address=10.88.0.1/24\n' > "$OLDFIX/bin/box"
+check "rename: ...while 'boxnet' itself is untouched by it (the boundary)" 1 "" \
+  oldname_survivors "$OLDFIX"
+rm -rf "$OLDFIX"
+for f in host/setup-host.sh host/teardown-host.sh host/revoke-user.sh drill/doctor.sh drill/wipe.sh; do
+  check "rename: $f handles the old name on purpose, and still does" 0 "" \
+    grep -qw -- 'box-net' "$ROOT/$f"
+done
+rm -f "$OLDSWEEP"
+
+W229="$(mktemp -d)"
+s229() { # s229 <name> <profile-file...> — a fresh store; 'project.profile' each
+  local d="$W229/$1"; shift
+  rm -rf "$d"; mkdir -p "$d"
+  local p; for p; do : > "$d/$p"; done
+  printf '%s' "$d"
+}
+run229() { # run229 <store> <log> [VAR=val ...] — the real setup-host over it
+  local store="$1" log="$2"; shift 2
+  rm -f "$log"
+  runsetup "FAKE_PROFILE_STATE=$store" "FAKE_INCUS_LOG=$log" \
+           FAKE_HAVE_STORAGE=1 FAKE_HAVE_BOXNET=1 FAKE_HAVE_ACL=1 \
+           BOX_SUBNET=10.89.0.0/24 "FAKE_IP4_DEFAULT=$D_INBOX" "FAKE_IP4_ADDRS=$A_GUEST" \
+           "$@"
+}
+# The listing a granted host answers with: Incus marks the session's own
+# project by appending " (current)" to the name.
+P229="$(printf 'default (current)\nuser-1000')"
+
+# The upgrade: a 0.9.x host, one granted user, both projects on the old name.
+S229="$(s229 up default.box-net user-1000.box-net)"
+run229 "$S229" "$W229/up.log" "FAKE_PROJECTS=$P229" > "$W229/up.out" 2>&1
+check "setup-host: an upgrading host renames the contract in 'default' (#229)" 0 \
+  "renamed box-net -> box-profile in the default project" cat "$W229/up.out"
+check "setup-host: ...and in the granted user's project too, not just 'default'" 0 \
+  "renamed box-net -> box-profile in project user-1000" cat "$W229/up.out"
+check "setup-host: ...leaving box-profile in 'default'" 0 "" test -f "$S229/default.box-profile"
+check "setup-host: ...and no box-net anywhere" 1 "" \
+  bash -c 'ls "'"$S229"'" | grep -q "\.box-net$"'
+check "setup-host: ...the user project's copy converged as well" 0 "" \
+  test -f "$S229/user-1000.box-profile"
+check "setup-host: ...and the run still finished" 0 "Host ready" cat "$W229/up.out"
+# No reassignment pass is owed, and none is made — the rename carries every
+# attached box with it (D6). A 'profile assign' here would be the second
+# mechanism D3 refuses, arrived at from the other direction.
+check "setup-host: ...making no reassignment pass, because none is owed (D6)" 1 "" \
+  grep -q 'profile assign' "$W229/up.log"
+# Order is load-bearing: the convergence runs BEFORE the create-if-missing and
+# the edit, or the edit lands on a profile the rename is about to collide with.
+rename_before_edit() { # rename_before_edit <log> — the convergence ran first
+  local log="$1" r e
+  r="$(grep -n 'profile rename box-net box-profile' "$log" | head -1 | cut -d: -f1)"
+  e="$(grep -n 'profile edit box-profile' "$log" | head -1 | cut -d: -f1)"
+  [ -n "$r" ] && [ -n "$e" ] && [ "$r" -lt "$e" ]
+}
+check "setup-host: the rename precedes the profile edit it feeds" 0 "" \
+  rename_before_edit "$W229/up.log"
+# The second run is the acceptance criterion in one line.
+run229 "$S229" "$W229/again.log" "FAKE_PROJECTS=$P229" > "$W229/again.out" 2>&1
+check "setup-host: a second consecutive run says nothing about the rename" 1 "" \
+  grep -q "box-net" "$W229/again.out"
+check "setup-host: ...and makes no rename or delete call at all" 1 "" \
+  grep -q -e "profile rename" -e "profile delete" "$W229/again.log"
+
+# The " (current)" strip. The listing below marks a user project current, which
+# a real admin run never produces — what it drives is the strip itself, and
+# unstripped the name reaches no project at all, so BOTH renames vanish
+# silently. That silence is the failure this case exists to make loud.
+S229C="$(s229 cur user-1000.box-net user-1001.box-net)"
+run229 "$S229C" "$W229/cur.log" \
+  "FAKE_PROJECTS=$(printf 'user-1000 (current)\nuser-1001')" > "$W229/cur.out" 2>&1
+check "setup-host: the ' (current)' marker is stripped before the name is used" 0 "" \
+  test -f "$S229C/user-1000.box-profile"
+check "setup-host: ...and the unmarked project beside it converges too" 0 "" \
+  test -f "$S229C/user-1001.box-profile"
+
+# The interrupted upgrade: both names present. The new one wins, and the case
+# is decided before any rename is attempted — Incus refuses a rename onto an
+# existing name, so the other order would die here under 'set -e'.
+S229B="$(s229 both default.box-net default.box-profile)"
+run229 "$S229B" "$W229/both.log" "FAKE_PROJECTS=default (current)" > "$W229/both.out" 2>&1
+check "setup-host: both names present — the stale box-net is removed (#229 D4)" 0 \
+  "removed the stale box-net in the default project" cat "$W229/both.out"
+check "setup-host: ...and the run does not die on the rename incus would refuse" 0 \
+  "Host ready" cat "$W229/both.out"
+check "setup-host: ...having attempted no rename at all in that case" 1 "" \
+  grep -q 'profile rename' "$W229/both.log"
+check "setup-host: ...leaving only box-profile" 1 "" test -f "$S229B/default.box-net"
+
+# ...and when the stale one cannot be deleted, something is still placed on it.
+# This is not the rare case: 'box grant' installs a fresh box-profile beside
+# the in-use box-net on every upgraded host, so it is where an ordinary grant
+# lands. The convergence runs the other way round — the unused copy goes and
+# the in-use one is RENAMED onto the name, carrying its boxes with it (D6) —
+# and the postcondition is D4's either way: one name afterwards.
+S229U="$(s229 inuse default.box-net default.box-profile)"
+run229 "$S229U" "$W229/inuse.log" "FAKE_PROJECTS=default (current)" \
+  FAKE_PROFILES_IN_USE=box-net > "$W229/inuse.out" 2>&1
+check "setup-host: an in-use box-net converges by the reverse order (#229 D4)" 0 \
+  "renamed it onto box-profile" cat "$W229/inuse.out"
+check "setup-host: ...deleting the unused copy, never the one boxes are on" 0 "" \
+  grep -q 'profile delete box-profile' "$W229/inuse.log"
+check "setup-host: ...leaving only box-profile, which is the postcondition" 1 "" \
+  test -f "$S229U/default.box-net"
+check "setup-host: ...and box-profile is what survives, not nothing" 0 "" \
+  test -f "$S229U/default.box-profile"
+check "setup-host: ...making no reassignment pass to do it (D4 is not migration)" 1 "" \
+  grep -q 'profile assign' "$W229/inuse.log"
+check "setup-host: ...and the run converged, so it may say so" 0 "Host ready" \
+  cat "$W229/inuse.out"
+
+# Both names in use: boxes placed on each, and no ordering of delete and
+# rename converges that — only moving instances between profiles would, which
+# is the reassignment pass D4 rules out. So the run reports the residue and
+# does NOT report ready: a host still carrying two names has not converged the
+# rename, however well the rest of the stack went.
+S229M="$(s229 mixed default.box-net default.box-profile)"
+check "setup-host: both names in use — the run REFUSES to report ready (#229)" 1 \
+  "NOT converged" run229 "$S229M" "$W229/mixed.log" "FAKE_PROJECTS=default (current)" \
+  FAKE_PROFILES_IN_USE="box-net box-profile"
+run229 "$S229M" "$W229/mixed.log" "FAKE_PROJECTS=default (current)" \
+  FAKE_PROFILES_IN_USE="box-net box-profile" > "$W229/mixed.out" 2>&1 || true
+check "setup-host: ...naming both names and the project that carries them" 0 \
+  "carries BOTH box-profile and box-net" cat "$W229/mixed.out"
+check "setup-host: ...and the command that says which box is on which" 0 \
+  "profile assign" cat "$W229/mixed.out"
+check "setup-host: ...never printing Host ready over an unconverged rename" 1 "" \
+  grep -q "Host ready" "$W229/mixed.out"
+check "setup-host: ...leaving the old name where it is, reported not removed" 0 "" \
+  test -f "$S229M/default.box-net"
+check "setup-host: ...having converged the rest of the stack first" 0 "" \
+  grep -q 'profile edit box-profile' "$W229/mixed.log"
+
+# ...and the same state in TWO projects. The comment at PROFILE_UNCONVERGED
+# says one project that cannot converge must not stop the next from trying and
+# must not be forgotten by the time the run reports; that is behaviour, so it
+# is asserted rather than claimed (#229 round 2).
+S229M2="$(s229 mixed2 default.box-net default.box-profile \
+                      user-1000.box-net user-1000.box-profile)"
+run229 "$S229M2" "$W229/mixed2.log" "FAKE_PROJECTS=$P229" \
+  FAKE_PROFILES_IN_USE="box-net box-profile" > "$W229/mixed2.out" 2>&1 || true
+check "setup-host: two unconvergeable projects are both named, not just the first" 0 \
+  "in: default user-1000" cat "$W229/mixed2.out"
+check "setup-host: ...the second still probed after the first failed" 0 "" \
+  grep -qF -- '--project user-1000 profile show box-net' "$W229/mixed2.log"
+check "setup-host: ...and neither one lets the run report ready" 1 "" \
+  grep -q "Host ready" "$W229/mixed2.out"
+
+# The half-done window: the unused box-profile is deleted to make room and the
+# rename onto it then fails. Not a state Incus's own refusals produce — the
+# target is free by then — so it is a transient daemon error, and what makes it
+# worth driving is that the project is left carrying box-net ALONE, with no
+# profile for 'box new'. The report must say that, not "boxes are placed on
+# each", which is the message this path used to fall through to (#229 round 2).
+#
+# Driven in a user-<uid> project, where the consequence is real: the
+# create-if-missing below the loop is 'default'-only, so nothing puts a
+# box-profile back there. 'default' is already converged in this store, so the
+# one rename this run attempts is the one under test.
+S229H="$(s229 half default.box-profile user-1000.box-net user-1000.box-profile)"
+run229 "$S229H" "$W229/half.log" "FAKE_PROJECTS=$P229" \
+  FAKE_PROFILES_IN_USE=box-net FAKE_RENAME_FAIL=1 > "$W229/half.out" 2>&1 || true
+check "setup-host: a rename that fails after the delete says what it actually left" 0 \
+  "the rename onto it then failed" cat "$W229/half.out"
+check "setup-host: ...and does not claim boxes are placed on each name" 1 "" \
+  grep -q "placed on each" "$W229/half.out"
+check "setup-host: ...naming the project in the end-of-run report" 0 \
+  "rename then failed, in: user-1000" cat "$W229/half.out"
+check "setup-host: ...withholding Host ready, because that is not converged" 1 "" \
+  grep -q "Host ready" "$W229/half.out"
+check "setup-host: ...and the state it describes is the state it left" 0 "" \
+  bash -c 'test -f "'"$S229H"'/user-1000.box-net" && ! test -f "'"$S229H"'/user-1000.box-profile"'
+
+# A 'project list' that FAILS is not a host with no grants. Piped straight into
+# the loop the two are the same empty stream, and the run converges no
+# user-<uid> project and says Host ready anyway — a claim about every granted
+# user made by a run that looked at none of them. Same rule as the bridge's
+# unreadable 'network show' (#227), one file over (#229 round 2).
+S229N="$(s229 nolist default.box-net user-1000.box-net)"
+check "setup-host: an unreadable project list is not an empty one — the run refuses" 1 \
+  "NOT converged" run229 "$S229N" "$W229/nolist.log" "FAKE_PROJECTS=$P229" \
+  FAKE_PROJECT_LIST_FAIL=1
+run229 "$S229N" "$W229/nolist.log" "FAKE_PROJECTS=$P229" FAKE_PROJECT_LIST_FAIL=1 \
+  > "$W229/nolist.out" 2>&1 || true
+check "setup-host: ...saying the granted projects could not be listed" 0 \
+  "could not be listed" cat "$W229/nolist.out"
+check "setup-host: ...and never printing Host ready over projects it did not check" 1 "" \
+  grep -q "Host ready" "$W229/nolist.out"
+check "setup-host: ...having converged the default project it COULD read" 0 "" \
+  test -f "$S229N/default.box-profile"
+check "setup-host: ...and left the user project it could not name alone" 0 "" \
+  test -f "$S229N/user-1000.box-net"
+# The other shape of the same ignorance: the daemon exits 0 and answers
+# nothing. A daemon that can list projects at all lists 'default', so an empty
+# listing is a broken read, never a host without grants.
+S229E="$(s229 emptylist default.box-net user-1000.box-net)"
+check "setup-host: an EMPTY project list is the same ignorance, not a grant-less host" 1 \
+  "could not be listed" run229 "$S229E" "$W229/empty.log" "FAKE_PROJECTS="
+check "setup-host: ...and the user project's old name is still there, unexamined" 0 "" \
+  test -f "$S229E/user-1000.box-net"
+# And the third: a listing that emits a row and THEN fails. Neither case above
+# reaches it — one is non-zero with nothing on stdout, the other is zero with
+# nothing — so a condition that tests emptiness alone passes both and lets this
+# one through, converging 'default' off a partial answer and reporting on the
+# granted users as though they had been enumerated. The doctor carried exactly
+# that gap into round 3; the same case is driven on both tools now, because the
+# two loops are a pair and the shape has to be held in both (#229 round 3).
+S229P="$(s229 partlist default.box-net user-1000.box-net)"
+check "setup-host: a project list that fails AFTER a row is unread too, not partial truth" 1 \
+  "could not be listed" run229 "$S229P" "$W229/part.log" "FAKE_PROJECTS=$P229" \
+  FAKE_PROJECT_LIST_PARTIAL=1
+run229 "$S229P" "$W229/part.log" "FAKE_PROJECTS=$P229" FAKE_PROJECT_LIST_PARTIAL=1 \
+  > "$W229/part.out" 2>&1 || true
+check "setup-host: ...never printing Host ready over the row it did not get" 1 "" \
+  grep -q "Host ready" "$W229/part.out"
+check "setup-host: ...and the granted project the listing never reached is untouched" 0 "" \
+  test -f "$S229P/user-1000.box-net"
+
+# The fresh host never sees the rename branch at all.
+S229F="$(s229 fresh)"
+run229 "$S229F" "$W229/fresh.log" "FAKE_PROJECTS=default (current)" > "$W229/fresh.out" 2>&1
+check "setup-host: a fresh host creates box-profile and never renames" 1 "" \
+  grep -q 'profile rename' "$W229/fresh.log"
+check "setup-host: ...saying nothing about an old name it never had" 1 "" \
+  grep -q 'box-net' "$W229/fresh.out"
+check "setup-host: ...and the contract is there afterwards" 0 "" \
+  test -f "$S229F/default.box-profile"
+rm -rf "$W229"
+
 rm -rf "$W80" "$SETUPSHIM"
 
 # The decision must be the FIRST effective act — before the incus install, the
@@ -5395,8 +5848,8 @@ rm -f "$PFFN"
 # that PLACES every box, and the whole section is informational. Placement is
 # a choice, not a fault — a DIRTY line here would red every stock host on the
 # day it shipped, and the verdict is what the drill reads.
-check "doctor: the pool is read off the box-net profile, not guessed" 0 "" \
-  grep -qF 'incus profile device get box-net root pool' "$ROOT/drill/doctor.sh"
+check "doctor: the pool is read off the box-profile profile, not guessed" 0 "" \
+  grep -qF 'incus profile device get box-profile root pool' "$ROOT/drill/doctor.sh"
 # shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "doctor: the placement section reports through pool_findings" 0 "" \
   grep -qF 'pool_findings "$POOL_SHOW"' "$ROOT/drill/doctor.sh"
@@ -5528,9 +5981,33 @@ case "$*" in
   "network acl show box-isolate")
     printf 'egress:\n- action: allow\n  destination: %s/32\n- action: drop\n  destination: 10.0.0.0/8\n' \
       "${FAKE_ACL_GW:-10.88.0.1}" ;;
-  "profile show box-net") ;;
-  "profile device get box-net eth0 security.port_isolation") printf 'true\n' ;;
-  "profile device get box-net root pool")                    printf 'default\n' ;;
+  # FAKE_DOC_NO_PROFILE is the restricted tier's project WITHOUT the contract in
+  # it — either never granted, or granted under the old name. Unset (every case
+  # above and the whole admin path) the profile is there, which is what those
+  # cases mean by a healthy host (#229 round 5).
+  "profile show box-profile") [ -z "${FAKE_DOC_NO_PROFILE:-}" ] || exit 1 ;;
+  "profile device get box-profile eth0 security.port_isolation") printf 'true\n' ;;
+  "profile device get box-profile root pool")                    printf 'default\n' ;;
+  # #229's drift probe, per project. FAKE_DOC_STALE names the projects that
+  # still carry the old profile; unset, no project does and the doctor says so
+  # — which is the answer every case above this one wants. FAKE_DOC_PROJECTS_FAIL
+  # is the daemon that will not answer at all, which is a different host from
+  # one with nothing to report (#229 round 2).
+  #
+  # FAKE_DOC_PROJECTS_PARTIAL is the OTHER way the read fails, and the one an
+  # emptiness test cannot see: a row on stdout and a non-zero exit after it.
+  # It answers 'default (current)' — the row a listing that dies mid-write is
+  # likeliest to have already emitted, and the one that walks the doctor into
+  # its success arm with the user-<uid> projects never enumerated (#229 round 3).
+  "project list --format csv")
+    [ -z "${FAKE_DOC_PROJECTS_FAIL:-}" ] || { echo "Error: not authorized" >&2; exit 1; }
+    [ -z "${FAKE_DOC_PROJECTS_PARTIAL:-}" ] || {
+      printf 'default (current)\n'; echo "Error: connection reset" >&2; exit 1; }
+    printf '%s\n' "${FAKE_DOC_PROJECTS:-default (current)}" ;;
+  *"profile show box-net")
+    p=default; [ "$1" = --project ] && p="$2"
+    case " ${FAKE_DOC_STALE:-} " in *" $p "*) exit 0 ;; esac
+    exit 1 ;;
   "storage show default") printf 'config: {}\ndriver: dir\nname: default\n' ;;
   "config show "*)        exit 1 ;;   # no leftover drill boxes
   "list"|"list "*)        ;;          # daemon answers; no instances to probe
@@ -5651,6 +6128,135 @@ check "doctor: config and kernel disagreeing about the gateway is a finding" 1 \
   "but the bridge holds 10.88.0.1/24" rundoctor "$D4"
 check "doctor: ...and --fix converges the config to the kernel" 0 "" \
   dockey "$D4" ipv4.address 10.88.0.1/24
+
+# #229 — a surviving box-net is drift, and the doctor's job is to name it AND
+# name the lever. The distinction being asserted is the one the code makes:
+# claude-dev goes unreported because the tool that could fix it is retired
+# (#226), box-net is reported because setup-host converges it, so the report
+# points at something the operator can actually run.
+D229="$DOCSTATE/oldname"; drifted "$D229"
+check "doctor: a clean host says the contract has one name (#229)" 1 \
+  "no stale box-net" rundoctor "$D229"
+docstale() { ( FAKE_DOC_PROJECTS="$1"; FAKE_DOC_STALE="$2"; export FAKE_DOC_PROJECTS FAKE_DOC_STALE
+               rundoctor "$D229" ) }
+check "doctor: a surviving box-net is DIRTY, not a shrug" 1 \
+  "DIRTY box-net still exists" docstale "default (current)" "default"
+check "doctor: ...and it names the lever that removes it" 1 \
+  "fix:  box setup-host" docstale "default (current)" "default"
+check "doctor: ...saying the boxes on it are still isolated (the fault is the name)" 1 \
+  "still isolated" docstale "default (current)" "default"
+# Every project, or the check repeats the residue it exists to catch: the stale
+# copy that matters most is the one in a granted user's project, which is the
+# one nobody re-runs a grant for.
+check "doctor: ...reaching a granted user's project, not just 'default'" 1 \
+  "user-1000" docstale "$(printf 'default (current)\nuser-1000')" "user-1000"
+check "doctor: ...and naming both when both carry it" 1 \
+  "in: default user-1000" docstale "$(printf 'default (current)\nuser-1000')" "default user-1000"
+# ...and no wider than setup-host converges, because the two loops are a pair.
+# A box-net in a project outside 'default' and 'user-*' is a state box does not
+# create, and reporting it would offer 'box setup-host' as the fix for
+# something that run never touches — a lever that cannot clear what it is
+# named for is worse than silence (#229, round 1).
+docsays() { docstale "$1" "$2" | grep -q "$3"; }
+check "doctor: ...and no wider than the convergence reaches (the loops are a pair)" 1 "" \
+  docsays "$(printf 'default (current)\nscratch')" "scratch" "scratch"
+check "doctor: ...the same listing still catching the project that IS in scope" 0 "" \
+  docsays "$(printf 'default (current)\nuser-1000')" "user-1000" "user-1000"
+# ...and 'default' is the literal project, anchored at both ends: an operator's
+# own 'default-archive' is no more in setup-host's reach than 'scratch' is, so
+# reporting one would name the same lever that cannot clear it (#229, round 2).
+check "doctor: ...'default' is the project of that name, not a prefix" 1 "" \
+  docsays "$(printf 'default (current)\ndefault-archive')" "default-archive" "default-archive"
+# --fix cannot reach it, and says so rather than passing silently: converging
+# the rename is setup-host's, and a second mechanism for one convergence is
+# exactly what this change refused to add.
+check "doctor: ...registering a STATED refusal, since --fix cannot reach it" 1 \
+  "--fix cannot reach this: the rename" docstale "default (current)" "default"
+
+# A 'project list' the daemon will not answer is not a host with nothing to
+# report. Piped into the loop the two are the same empty stream, and the OK
+# below it — "the placement contract has one name on this host" — would be a
+# clean bill of health for a question nobody asked. The doctor's own rule from
+# #227, one check over: an unreadable read is not an empty result.
+docblind()    { ( FAKE_DOC_PROJECTS_FAIL=1; export FAKE_DOC_PROJECTS_FAIL; rundoctor "$D229" ) }
+docblindfix() { ( FAKE_DOC_PROJECTS_FAIL=1; export FAKE_DOC_PROJECTS_FAIL; rundoctor "$D229" --fix ) }
+check "doctor: an unreadable project list is DIRTY, not 'no stale box-net' (#229)" 1 \
+  "the project list could not be read" docblind
+docblindsays() { docblind | grep -q "$1"; }
+check "doctor: ...and it does NOT claim the contract has one name" 1 "" \
+  docblindsays "no stale box-net"
+check "doctor: ...naming the daemon, not the host, as what to check" 1 \
+  "incus project list" docblind
+check "doctor: ...and --fix holds rather than reporting on projects it cannot name" 1 \
+  "--fix cannot reach this: the box-net check" docblindfix
+
+# The second shape of the same ignorance, and the one an emptiness test cannot
+# see: a listing that writes a row and THEN fails. The fake above exits
+# non-zero with nothing on stdout, so a condition that reads emptiness alone
+# still catches it — this one exits non-zero having already printed
+# 'default (current)', which is a NONEMPTY answer from a daemon that never
+# finished enumerating. Read by emptiness, the doctor sweeps that one project,
+# finds no box-net in it, and certifies a host whose user-<uid> projects were
+# never listed. So the status is checked as well as the output, and this is the
+# case that holds it (#229 round 3).
+docpart()    { ( FAKE_DOC_PROJECTS_PARTIAL=1; export FAKE_DOC_PROJECTS_PARTIAL; rundoctor "$D229" ) }
+docpartfix() { ( FAKE_DOC_PROJECTS_PARTIAL=1; export FAKE_DOC_PROJECTS_PARTIAL; rundoctor "$D229" --fix ) }
+check "doctor: a project list that fails AFTER a row is unread too, not clean (#229)" 1 \
+  "the project list could not be read" docpart
+docpartsays() { docpart | grep -q "$1"; }
+check "doctor: ...and the nonempty partial answer earns no 'no stale box-net'" 1 "" \
+  docpartsays "no stale box-net"
+check "doctor: ...saying a partial listing is not the host's inventory" 1 \
+  "not the host's inventory" docpart
+check "doctor: ...and --fix holds on it exactly as on the silent refusal" 1 \
+  "--fix cannot reach this: the box-net check" docpartfix
+
+# THE RESTRICTED TIER, DRIVEN (#229 round 5, @claude-bot-andresmgsl's N2). Its
+# three arms were read and not run: the tier exits at its own verdict long
+# before the admin sweep above, so not one of the cases above enters it. The
+# middle arm is the one that matters and the one nothing was holding — a
+# granted user whose project did not converge carries the tier under the OLD
+# name, and the obvious reading ("no profile, so not granted") sends them at a
+# re-grant, which installs box-profile BESIDE the stale copy instead of
+# converging it. That is a wrong fix offered to the person least able to see it
+# is wrong.
+docres()    { ( BOX_TIER=restricted; export BOX_TIER; rundoctor "$D229" ) }
+docresfix() { ( BOX_TIER=restricted; export BOX_TIER; rundoctor "$D229" --fix ) }
+docresold() { ( BOX_TIER=restricted FAKE_DOC_NO_PROFILE=1 FAKE_DOC_STALE=default
+                export BOX_TIER FAKE_DOC_NO_PROFILE FAKE_DOC_STALE
+                rundoctor "$D229" ) }
+docresnone() { ( BOX_TIER=restricted FAKE_DOC_NO_PROFILE=1
+                 export BOX_TIER FAKE_DOC_NO_PROFILE
+                 rundoctor "$D229" ) }
+# -e, because one of the strings asserted absent begins with a dash.
+docresoldsays() { docresold | grep -q -e "$1"; }
+# Arm 1 — the tier is granted under the new name, and this is the clean run.
+check "doctor restricted: a granted project reports the contract by its new name (#229)" 0 \
+  "the box-profile profile is in your project" docres
+check "doctor restricted: ...and that host is clean on this tier" 0 "clean" docres
+check "doctor restricted: ...with the admin levers named as admin's, not run" 0 \
+  "admin levers — ignored on this tier" docresfix
+# Arm 2 — granted, unconverged: the tier IS granted, wearing the pre-0.10.0 name.
+check "doctor restricted: a project still on box-net is DIRTY, not ungranted (#229)" 1 \
+  "the pre-0.10.0 name for the placement contract" docresold
+check "doctor restricted: ...saying the tier IS granted, this project did not converge" 1 \
+  "the tier is granted, but this project did not converge" docresold
+check "doctor restricted: ...naming setup-host, the lever that converges every project" 1 \
+  "box setup-host" docresold
+# The wrong fix, asserted absent. 'box grant' here would install box-profile
+# beside the survivor and tell the user nothing about what was left behind.
+check "doctor restricted: ...and NOT the re-grant, which would leave the old copy" 1 "" \
+  docresoldsays "the restricted tier is granted per user"
+# 'inf' and not 'hold', deliberately: HELD is rendered by the admin verdict this
+# tier exits before reaching, so a hold line here would be written and never
+# printed — and the banner has already said --fix is ignored on this tier.
+check "doctor restricted: ...registering no hold, which this tier could never print" 1 "" \
+  docresoldsays "--fix cannot reach"
+# Arm 3 — neither name: genuinely not granted, and here the re-grant IS the fix.
+check "doctor restricted: no profile at all is the ungranted case (#229)" 1 \
+  "no box-profile profile in your project" docresnone
+check "doctor restricted: ...and THAT one is fixed by a re-grant" 1 \
+  "box grant" docresnone
 unset DOC_SHOW
 
 # ---------------------------------------------------------------------------

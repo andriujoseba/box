@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time host setup: install Incus, create the isolated network + ACL and
-# the box-net profile. Idempotent. Ubuntu 24.04 / Debian 13.
+# the box-profile profile. Idempotent. Ubuntu 24.04 / Debian 13.
 set -euo pipefail
 
 self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -287,7 +287,7 @@ if [ "$(id -u)" -eq 0 ]; then
 elif ! id -nG | grep -qw incus-admin; then
   $SUDO usermod -aG incus-admin "$USER"
   # Then finish the job rather than adjourning it. Exiting 0 here was a
-  # success-shaped no-op: no boxnet, no ACL, no box-net profile, no firewall —
+  # success-shaped no-op: no boxnet, no ACL, no box-profile profile, no firewall —
   # and the burden of knowing that on the reader of a NOTE (#63). 'sg' runs us
   # again with the new group in our credentials, no re-login, one invocation.
   # The guard makes that at most one hop: if sg somehow lands without the
@@ -393,7 +393,7 @@ yaml_value() {
 #
 # One read answers "is anything attached?" because Incus computes used_by from
 # every instance's EXPANDED devices: a box that reaches boxnet through the
-# box-net profile — which is every box — is listed here by its own name, beside
+# box-profile profile — which is every box — is listed here by its own name, beside
 # the profiles. Reading the profile entries instead would need the names of the
 # restricted tier's per-user profile copies, which 'box grant' creates and this
 # script has never known. The profile entries are why the bridge cannot simply
@@ -666,7 +666,7 @@ fi
 # /24); the gateway and every rule below derive from it.
 #
 # Create if missing, then CONVERGE — the same shape as the ACL below and the
-# box-net profile at the end of this file, and for the same reason. The create
+# box-profile profile at the end of this file, and for the same reason. The create
 # arguments used to be the ONLY place these keys were written, so they ran on a
 # fresh host and never again: a bridge that drifted, or that predates a key,
 # was detected by every tool in this repo and repaired by none. Measured on a
@@ -822,15 +822,158 @@ $SUDO systemctl restart box-firewall.service
 $SUDO systemctl enable --now incus-user.socket 2>/dev/null \
   || echo "NOTE: could not enable incus-user.socket — 'box grant' (the restricted tier) needs it; this Incus may not ship incus-user (#74)." >&2
 
-# Profile — box-net, the placement contract: the isolated NIC and the root
+# Profile — box-profile, the placement contract: the isolated NIC and the root
 # disk, nothing a template controls (resources are stamped per-instance from
 # the template at mint time). A legacy claude-dev profile is left alone:
 # Incus refuses to delete an in-use profile, and pre-rename boxes reference
 # it until their last one is gone — teardown-host removes it then.
-if ! incus profile show box-net >/dev/null 2>&1; then
-  incus profile create box-net
+#
+# Converge the #229 rename first. Up to 0.9.x this profile was 'box-net', one
+# hyphen from the 'boxnet' bridge its NIC attaches to, which read as a typo to
+# anyone holding raw 'incus' output and no context. Converging a host's own
+# stack is what this script already does for the bridge, the ACL, dns.mode and
+# the resolver; the rename joins that list rather than becoming migration
+# tooling, which box is leaving (#226).
+#
+# Projects this run could not converge, collected rather than thrown: one
+# project that cannot converge must not stop the ones after it from trying,
+# and it must not be forgotten by the time the run reports (#229, round 1).
+PROFILE_UNCONVERGED=""
+# Three ways this convergence can end short, and they are held apart because
+# they leave the host in three different states and each is cleared by a
+# different act. Collapsing them would put the run's most detailed report —
+# "boxes are placed on each, move the stragglers" — on top of two states where
+# it is simply untrue (#229, round 2).
+PROFILE_HALFDONE=""
+PROJECTS_UNREAD=""
+
+converge_profile_name() {
+  local project="$1" label="$2"
+
+  incus --project "$project" profile show box-net >/dev/null 2>&1 || return 0
+
+  # Both names present, which is where an interrupted upgrade lands. The new
+  # name wins and the old is removed — and this case is decided BEFORE any
+  # rename is attempted, never as a fallback from one failing. Incus refuses a
+  # rename onto an existing name outright ("Profile %q already exists",
+  # cmd/incusd/profiles.go), so ordering it the other way would turn the
+  # resume-an-interrupted-upgrade path into a hard error under 'set -e'.
+  if incus --project "$project" profile show box-profile >/dev/null 2>&1; then
+    if incus --project "$project" profile delete box-net >/dev/null 2>&1; then
+      echo "profile: removed the stale box-net in $label (box-profile is already there)"
+      return 0
+    fi
+
+    # The delete was refused, which says one thing: something is still placed
+    # on the old name. That is not a state to warn about and walk away from —
+    # 'box grant' produces it on every upgraded host, installing a fresh
+    # box-profile beside the in-use box-net it does not converge, and a run
+    # that leaves both names behind has not converged the rename whatever it
+    # printed afterwards.
+    #
+    # So converge it the other way round. The box-profile beside it is the
+    # copy grant just wrote: same body, and by construction nothing is placed
+    # on it yet, so it is the one that can go. Then the ordinary rename
+    # carries the in-use profile onto the new name, and by D6 every attached
+    # box keeps its placement across it — the association is by profiles.id
+    # and the rename writes the name column alone. One name afterwards, no
+    # instance reassignment, no restart, and nothing here that is migration
+    # tooling: it is the same two calls in the other order.
+    #
+    # The two calls are written apart rather than as one '&&' compound because
+    # they fail differently and a single report for both would be false in one
+    # of the cases: once the delete has succeeded the target name is FREE, so
+    # a rename failing after it does not mean "boxes are placed on each" — it
+    # means this project now carries box-net alone, with no box-profile for
+    # 'box new' to place on, and the operator needs to be told that and not
+    # the other thing (#229, round 2).
+    if incus --project "$project" profile delete box-profile >/dev/null 2>&1; then
+      if incus --project "$project" profile rename box-net box-profile >/dev/null 2>&1; then
+        echo "profile: box-net was in use in $label — renamed it onto box-profile (#229)"
+        return 0
+      fi
+
+      # Not a state Incus's own refusals can produce — it has just accepted the
+      # delete, and neither of the rename's two refusals (target exists, source
+      # missing) applies. A transient daemon error, then, and the report says
+      # what the run actually left rather than what it set out to do.
+      echo "WARNING: $label had box-net in use, so the unused box-profile was removed to" >&2
+      echo "         make room — and the rename onto it then failed. The old name is" >&2
+      echo "         still there and this project is NOT converged. In a user-<uid>" >&2
+      echo "         project box-net is now the ONLY profile, and 'box new' there will" >&2
+      echo "         not find one until this is cleared ('default' gets its copy back" >&2
+      echo "         from this run's own create-if-missing, a few lines below)." >&2
+      echo "         Converge it by hand, or re-run this script:" >&2
+      echo "           incus --project $project profile rename box-net box-profile" >&2
+      PROFILE_HALFDONE="$PROFILE_HALFDONE${PROFILE_HALFDONE:+ }$project"
+      return 0
+    fi
+
+    # Both names are in use: some boxes are placed on each, and no ordering of
+    # delete and rename converges that. Moving instances between profiles is
+    # the reassignment pass D4 rules out, so this run reports the residue
+    # rather than claiming a convergence it did not perform. Not fatal HERE —
+    # the rest of the stack still converges — but the run does not end green:
+    # PROFILE_UNCONVERGED is what suppresses 'Host ready' at the bottom.
+    echo "WARNING: $label carries BOTH box-profile and box-net, and neither can be" >&2
+    echo "         removed — boxes are placed on each. Name them with:" >&2
+    echo "           incus --project $project profile show box-net" >&2
+    echo "           incus --project $project list --format csv --columns nP" >&2
+    PROFILE_UNCONVERGED="$PROFILE_UNCONVERGED${PROFILE_UNCONVERGED:+ }$project"
+    return 0
+  fi
+
+  # The ordinary upgrade: one rename, and every attached box keeps its
+  # placement across it. That is measured, not assumed (#229 D6): Incus stores
+  # the instance-profile association by profile id in instances_profiles, and
+  # the rename is an UPDATE of the name column alone, identical on main and on
+  # the stable-6.0 line this script's 'apt-get install -y incus' lands. So
+  # unlike the bridge's ipv4.address above, this convergence cannot move
+  # anything out from under a running fleet, and needs no reassignment pass.
+  incus --project "$project" profile rename box-net box-profile
+  echo "profile: renamed box-net -> box-profile in $label (#229)"
+}
+
+# Every project, not just 'default'. 'box grant' installs a COPY of this
+# profile into each user-<uid> project and refreshes it on every re-run, so new
+# and re-run grants land on the new name by themselves — but an existing grant
+# nobody re-runs would keep a stale box-net forever, which is precisely the
+# claude-dev residue #226 is deleting. Converging only 'default' would repeat
+# it exactly.
+#
+# The trap in the listing: Incus marks the session's own project by appending
+# " (current)" to the name in the CSV, so the column is stripped before it is
+# used as a project name — unstripped, 'default (current)' names no project
+# and every convergence below it silently does nothing.
+#
+# The listing is READ FIRST and checked, not piped straight into the loop. A
+# 'project list' that fails and a host with no grants both hand the loop an
+# empty stream, and the '|| true' that keeps grep's no-match clear of 'set -e'
+# closes over the difference — so piped, a daemon that cannot answer converges
+# zero user-<uid> projects and the run goes on to print 'Host ready' having
+# checked none of them. That is the same rule the bridge's 'network show'
+# above already holds (#227): an unreadable read is not an empty result. An
+# empty answer counts as unreadable too — a daemon that can list projects at
+# all lists 'default', so nothing is the shape of a broken read, not of a
+# host without grants (#229, round 2).
+converge_profile_name default "the default project"
+if PROJECT_CSV="$(incus project list --format csv 2>/dev/null)" && [ -n "$PROJECT_CSV" ]; then
+  while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    converge_profile_name "$project" "project $project"
+  done < <(printf '%s\n' "$PROJECT_CSV" | cut -d, -f1 | sed 's/ (current)$//' | grep '^user-' || true)
+else
+  echo "WARNING: 'incus project list' answered nothing, so the granted user-<uid>" >&2
+  echo "         projects could not be enumerated and NONE of them was converged." >&2
+  echo "         The default project was. Check the daemon and run this again:" >&2
+  echo "           incus project list" >&2
+  PROJECTS_UNREAD=1
 fi
-incus profile edit box-net < "$here/profiles/box-net.yaml"
+
+if ! incus profile show box-profile >/dev/null 2>&1; then
+  incus profile create box-profile
+fi
+incus profile edit box-profile < "$here/profiles/box-profile.yaml"
 
 # The sibling drop is the one rule whose absence is invisible: everything keeps
 # working, and boxes can simply reach each other. Assert it landed.
@@ -848,6 +991,57 @@ if [ -n "${BOXNET_IPV4_DRIFT:-}" ]; then
   echo "WARNING: boxnet's ipv4.address is still $BOXNET_IPV4_DRIFT, not $BOX_GW/24 —" >&2
   echo "         this run refused to renumber the bridge. See the WARNING further up" >&2
   echo "         for why, and for the single command that converges it." >&2
+fi
+
+# The rename is the one convergence this run can fail to perform while every
+# other piece of the stack lands, so it is the one that decides whether the run
+# gets to say it converged. 'Host ready' is that claim; a host still carrying
+# both names is not entitled to it, however well the rest went (#229 round 1).
+# Each of the three ways it can end short reports separately and in full — a
+# run that hit two of them owes the operator both remedies — and the exit is
+# taken once, below them (#229 round 2).
+if [ -n "$PROFILE_UNCONVERGED" ]; then
+  echo "" >&2
+  echo "NOT converged: the placement contract still has two names in: $PROFILE_UNCONVERGED" >&2
+  echo "         Boxes are placed on box-profile AND on box-net there, so neither can be" >&2
+  echo "         removed and no rename converges them. Move the stragglers onto" >&2
+  echo "         box-profile — for each box the second command names:" >&2
+  echo "           incus --project <project> list --format csv --columns nP" >&2
+  echo "           incus --project <project> profile assign <box> box-profile" >&2
+  echo "         then run this script again. Everything else on this host is set up;" >&2
+  echo "         this run does not report ready because the rename did not converge." >&2
+fi
+
+# The half-done one: the old name's copy went, the rename after it did not, and
+# the project is left carrying box-net alone. The next run converges it by the
+# ordinary path — box-net present, box-profile gone, one rename — so the
+# remedy is genuinely just to run this again once the daemon is well.
+if [ -n "$PROFILE_HALFDONE" ]; then
+  echo "" >&2
+  echo "NOT converged: box-profile was removed to make room for the rename, and the" >&2
+  echo "         rename then failed, in: $PROFILE_HALFDONE" >&2
+  echo "         Those projects carry box-net alone and have no profile for 'box new'" >&2
+  echo "         to place a box on. Running this script again converges them by the" >&2
+  echo "         ordinary rename; the WARNING further up names the single command if" >&2
+  echo "         you would rather do it by hand." >&2
+fi
+
+# ...and the quietest: the run never learned which projects it owed a
+# convergence to. 'Host ready' would be a claim about every granted user, made
+# by a run that looked at none of them, so it is not made here either.
+if [ -n "$PROJECTS_UNREAD" ]; then
+  echo "" >&2
+  echo "NOT converged: the granted user-<uid> projects could not be listed, so this run" >&2
+  echo "         does not know whether any of them still carries box-net. It converged" >&2
+  echo "         the default project and nothing else. Everything else on this host is" >&2
+  echo "         set up; this run does not report ready because it cannot say the" >&2
+  echo "         placement contract has one name on it. Check the daemon:" >&2
+  echo "           incus project list" >&2
+  echo "         then run this script again." >&2
+fi
+
+if [ -n "$PROFILE_UNCONVERGED$PROFILE_HALFDONE$PROJECTS_UNREAD" ]; then
+  exit 1
 fi
 
 echo "Host ready. Launch with: box new --name <box>"
