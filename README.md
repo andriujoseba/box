@@ -532,7 +532,9 @@ box export <box> [<file>] [--instance-only]
 box import <file> [--name <box>]
                              # mint a box back from an exported file, re-stamped
 box rename <box> <new>       # rename a box (stop it first)
-box down <box>|all           # stop (state kept; `start` resumes)
+box down <box>|all [--force]
+                             # stop (state kept; `start` resumes) — `--force`
+                             # pulls the plug on a guest that will not stop
 box start <box>|all          # start a stopped box
 box restart <box>|all        # restart — one incus call, not down-then-start
 box rm <box> [--force]       # delete the box + its snapshots (asks first)
@@ -568,6 +570,17 @@ as a success: `box down all` reports the ones that were already down and
 `box restart all` starts a stopped box instead of erroring on it. That keeps
 the exit status meaningful — non-zero means something went wrong, not that a
 box had nothing to do.
+
+A guest that stops answering the graceful stop hangs there, so `box down`
+takes `--force` — `incus stop --force`, the power button. **Anything the
+guest had not flushed to disk is lost**; the box itself, its disk and its
+snapshots survive, and `box start` brings it back. It never happens on its
+own: there is no timeout after which a graceful stop escalates, because a
+`down` that is slow because the guest is flushing a large write is doing what
+you asked. The boundary holds under it exactly as without it — box only acts
+on an instance it tagged, so forcing skips the politeness, never the check.
+`box down all --force` forces the fleet; the boxes already stopped are still
+reported as the successes they are, untouched.
 
 `new` fresh-launches a small blank box by default, or with `--from` clones an
 existing box or snapshot.
