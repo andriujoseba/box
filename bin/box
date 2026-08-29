@@ -2694,19 +2694,25 @@ artifact_lowlevel_keys() {
        sub(/:$/, "", k) && k ~ /^(volatile|raw)\./ { print k }' | sort -u
 }
 
-# The instance profile names carried in backup/index.yaml. Incus stores the
-# instance under the historical top-level "container" key even for a VM; its
-# "profiles" list is indented beneath that key. The backup also embeds full
-# top-level profile definitions, so matching every "name:" or "profiles:"
-# would confuse what the instance USES with what the artifact happens to
-# describe (#241).
+# The instance profile names carried in backup/index.yaml. Incus nests the
+# instance record under top-level "config", using the historical "container"
+# key even for a VM. Older measured fixtures use "instance", so accept that
+# spelling at the same location too. The backup also embeds full profile
+# definitions as the sibling config.profiles list; matching every "name:" or
+# "profiles:" would confuse what the instance USES with what the artifact
+# happens to describe (#241).
 artifact_profile_names() {
   awk '
-    /^container:[[:space:]]*$/ { in_container = 1; next }
-    in_container && /^[^[:space:]]/ { exit }
-    in_container && /^  profiles:[[:space:]]*$/ { in_profiles = 1; next }
-    in_profiles && /^  -[[:space:]]+/ {
-      sub(/^  -[[:space:]]+/, "")
+    /^config:[[:space:]]*$/ { in_config = 1; next }
+    in_config && /^[^[:space:]]/ { exit }
+    in_config && /^  (container|instance):[[:space:]]*$/ {
+      in_instance = 1
+      next
+    }
+    in_instance && /^  [^[:space:]]/ { exit }
+    in_instance && /^    profiles:[[:space:]]*$/ { in_profiles = 1; next }
+    in_profiles && /^    -[[:space:]]+/ {
+      sub(/^    -[[:space:]]+/, "")
       gsub(/^['\''"]|['\''"]$/, "")
       print
       next

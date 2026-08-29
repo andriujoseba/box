@@ -3741,11 +3741,54 @@ exit 0
 SHIM
 chmod +x "$ISHIM/incus"
 
+# One realistic index writer drives both the #241 profile boundary and the
+# #160 restricted-tier reader. Incus marshals the instance beneath config;
+# profile definitions are a sibling of the instance-use list and deliberately
+# carry the same names so indentation-blind parsing fails visibly.
+write_import_index() {  # write_import_index <path> <container|instance> <used> [defined]
+  local path="$1" record_key="$2" used="$3" defined="${4:-$3}"
+  {
+    echo 'name: work'
+    echo 'backend: dir'
+    echo 'pool: default'
+    echo 'type: virtual-machine'
+    echo 'config:'
+    printf '  %s:\n' "$record_key"
+    echo '    architecture: x86_64'
+    echo '    config:'
+    echo '      image.os: Debian'
+    echo '      limits.cpu: "4"'
+    echo '      volatile.base_image: 5b1f9d0c4a'
+    echo '      volatile.cloud-init.instance-id: 3d0b7e11'
+    echo '      volatile.eth0.hwaddr: 00:16:3e:2f:11:aa'
+    echo '      volatile.last_state.power: RUNNING'
+    echo '      volatile.uuid: 8f4a1c22-0000-4000-8000-000000000000'
+    echo '      volatile.uuid.generation: 8f4a1c22-0000-4000-8000-000000000000'
+    echo '    profiles:'
+    local profile
+    for profile in $used; do printf '    - %s\n' "$profile"; done
+    echo '    devices:'
+    echo '      root:'
+    echo '        path: /'
+    echo '        pool: default'
+    echo '        type: disk'
+    echo '  profiles:'
+    for profile in $defined; do printf '  - name: %s\n' "$profile"; done
+  } > "$path"
+}
+
 # A real tarball, because cmd_import reads the instance name out of the
 # artifact with tar before incus is ever called — a stub cannot fake that.
+# Keep this name-only artifact untouched: #160 uses it to prove that no
+# readable config degrades to the old path instead of guessing.
 ARTIFACT="$IWORK/work-20260718T120000Z.tar.gz"
 mkdir -p "$IWORK/backup" && printf 'name: work\n' > "$IWORK/backup/index.yaml"
 tar -czf "$ARTIFACT" -C "$IWORK" backup/index.yaml
+
+# Profile cases mutate only this independent realistic artifact.
+PROFILE_ARTIFACT="$IWORK/profile-work.tar.gz"
+PROFILE_INDEX="$IWORK/profile-index.yaml"
+mkdir -p "$IWORK/profile-art/backup"
 
 # importbox <logfile> <cfg-file|""> [artifact-profiles] [host-profiles]
 # The last two default to a same-release artifact landing on a converged host,
@@ -3758,19 +3801,14 @@ importbox() {  # the real box, shimmed
   local flags=()
   if [ "$#" -gt 5 ]; then shift 5; flags=("$@"); fi
   : > "$log"
-  {
-    echo 'container:'
-    echo '  name: work'
-    echo '  profiles:'
-    local profile
-    for profile in $art; do printf '  - %s\n' "$profile"; done
-  } > "$IWORK/backup/index.yaml"
-  tar -czf "$ARTIFACT" -C "$IWORK" backup/index.yaml
+  write_import_index "$PROFILE_INDEX" container "$art"
+  cp "$PROFILE_INDEX" "$IWORK/profile-art/backup/index.yaml"
+  tar -czf "$PROFILE_ARTIFACT" -C "$IWORK/profile-art" backup/index.yaml
   env FAKE_INCUS_LOG="$log" FAKE_CFG="$cfg" \
     FAKE_ART_PROFILES="$art" FAKE_HOST_PROFILES="$host" \
     FAKE_STACK_PRESENT="$stack" FAKE_PROJECT_STATE="$project_state" \
     PATH="${SHIM_PREFIX:+$SHIM_PREFIX:}$ISHIM:$PATH" \
-    "$BOX" import "$ARTIFACT" "${flags[@]}" </dev/null >"$log.out" 2>&1
+    "$BOX" import "$PROFILE_ARTIFACT" "${flags[@]}" </dev/null >"$log.out" 2>&1
   local rc=$?
   cat "$log.out"
   return "$rc"
@@ -3990,29 +4028,7 @@ chmod +x "$RESTRICTED/id"
 # forbidden keys ride. The bare ARTIFACT above carries a name and nothing else
 # — deliberately kept, because it is also the no-evidence fixture below.
 VM_IDX="$IWORK/vm-index.yaml"
-cat > "$VM_IDX" <<'IDX'
-name: work
-backend: dir
-pool: default
-type: virtual-machine
-config:
-  instance:
-    architecture: x86_64
-    config:
-      image.os: Debian
-      limits.cpu: "4"
-      volatile.base_image: 5b1f9d0c4a
-      volatile.cloud-init.instance-id: 3d0b7e11
-      volatile.eth0.hwaddr: 00:16:3e:2f:11:aa
-      volatile.last_state.power: RUNNING
-      volatile.uuid: 8f4a1c22-0000-4000-8000-000000000000
-      volatile.uuid.generation: 8f4a1c22-0000-4000-8000-000000000000
-    devices:
-      root:
-        path: /
-        pool: default
-        type: disk
-IDX
+write_import_index "$VM_IDX" instance box-profile
 VM_ART="$IWORK/vm-work.tar.gz"
 mkdir -p "$IWORK/vmart/backup" && cp "$VM_IDX" "$IWORK/vmart/backup/index.yaml"
 tar -czf "$VM_ART" -C "$IWORK/vmart" backup/index.yaml
@@ -4323,6 +4339,31 @@ CONVLOG="$IWORK/converged.log"
 check "import: box refuses a pre-rename artifact itself (#241)" 1 \
   "artifact was exported by a box release that used 'box-net'" \
   importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
+
+# The measured #160 fixture used config.instance while current Incus marshals
+# config.container. Both are instance-record spellings at the same nesting;
+# keep the compatibility explicit rather than letting only one fixture shape
+# exercise the parser.
+INSTANCE_OLD_ART="$IWORK/instance-old-profile.tar.gz"
+mkdir -p "$IWORK/instance-old/backup"
+write_import_index "$IWORK/instance-old/backup/index.yaml" instance box-net
+tar -czf "$INSTANCE_OLD_ART" -C "$IWORK/instance-old" backup/index.yaml
+check "import: ...also reads the measured config.instance shape (#241)" 1 \
+  "artifact was exported by a box release that used 'box-net'" \
+  importfile "$IWORK/instance-old.log" "$INSTANCE_OLD_ART"
+
+# Embedded profile definitions are config.profiles, a sibling of the
+# instance-use list. A stale definition alone says nothing about what the
+# artifact uses and must not trigger the release-boundary refusal.
+DEFINITION_OLD_ART="$IWORK/definition-only-old-profile.tar.gz"
+mkdir -p "$IWORK/definition-old/backup"
+write_import_index "$IWORK/definition-old/backup/index.yaml" \
+  container box-profile "box-profile box-net"
+tar -czf "$DEFINITION_OLD_ART" -C "$IWORK/definition-old" backup/index.yaml
+check "import: an embedded box-net definition alone does not trigger (#241)" 0 \
+  "imported work" importfile "$IWORK/definition-old.log" "$DEFINITION_OLD_ART"
+check "import: ...because only the instance-use list is the boundary" 1 "" \
+  grep -qF "used 'box-net'" "$IWORK/definition-old.log.out"
 check "import: ...names the 0.10.0 boundary and unsupported migration" 1 \
   "0.10.0 renamed that profile to 'box-profile'" \
   importbox "$CONVLOG" "$MINTED_ART" box-net box-profile
