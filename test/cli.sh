@@ -9731,7 +9731,7 @@ check "pin: a /blob/ link into the old ref reds — the other URL shape" 1 "read
 # A thirteenth caller, at the right ref. Every site agrees, so only the count
 # catches it — which is what the count is for.
 THIRTEEN="$(mkpintree thirteen)"
-sed -i 's|\(^ *\)uses: heavy-duty/ceremony/actions/sha-pinned@0\.7\.6|&\n\1uses: heavy-duty/ceremony/actions/nonesuch@0.7.6|' \
+sed -i 's|\(^ *\)uses: heavy-duty/ceremony/actions/sha-pinned@0\.7\.7|&\n\1uses: heavy-duty/ceremony/actions/nonesuch@0.7.7|' \
   "$THIRTEEN/.github/workflows/ci.yml"
 check "pin: a thirteenth caller at the right ref still reds" 1 "found 13" \
   ceremony_pin_is_one_pin "$THIRTEEN"
