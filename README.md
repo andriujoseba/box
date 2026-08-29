@@ -95,13 +95,38 @@ box versions        # what is installed, which is current, which is running
 box use <version>   # flip the default (same refusal while boxes exist)
 ```
 
+While box is `0.x`, compatibility is decided **release by release**. When
+carrying existing hosts or artifacts forward is cheap, the release includes
+that path; when it is unusually expensive, the release may skip it and says so
+in both the changelog and the failure. Read the target release's changelog
+before switching. This is not a blanket promise that any `0.x` release may
+break anything. At `1.0.0` this per-release policy ends and box must publish
+the compatibility promise it will support; this paragraph does not choose that
+promise in advance.
+
+`0.10.0` is one skipped boundary. It renames the placement profile from
+its former name to `box-profile`, while an artifact exported by `0.9.x` still
+names the former profile. On a converged `0.10.0` host, Incus refuses that
+missing profile before box can reassign it; on an unconverged host, box may
+instead report that the `box-profile` host stack is missing and suggest
+`box setup-host`, which does not make the old artifact importable.
+[#241](https://github.com/heavy-duty/box/issues/241) tracks the loud
+version-boundary refusal. The supported path across this boundary is to
+uninstall the old box installation, install `0.10.0`, and re-create the boxes.
+
+If the old artifact's data must be recovered anyway, an administrator can use
+the unsupported manual route recorded in the `0.10.0` changelog: create the old
+placement profile under the name recorded in the artifact, import so box can
+re-home the instance onto `box-profile`, then let `box doctor` report the
+old-name residue before `box setup-host` clears it.
+
 A pre-0.7.0 flat install is migrated into `versions/` automatically on the
 next installer run — the tree is moved, not re-downloaded, and your boxes are
-untouched. After switching versions (and `box setup-host`, if the stack was
-torn down), `box import <file>` brings each exported box back — snapshots,
-logins and all. A version-aware upgrade that migrates boxes instead of asking
-you to is [#67](https://github.com/heavy-duty/box/issues/67). For unattended
-installs (CI, images), `BOX_YES=1` answers every prompt yes,
+untouched. After switching versions, import an exported box only when the
+target release declares that artifact compatible; across a skipped boundary,
+re-create it instead. A version-aware upgrade that migrates boxes instead of
+asking you to is [#67](https://github.com/heavy-duty/box/issues/67). For
+unattended installs (CI, images), `BOX_YES=1` answers every prompt yes,
 `BOX_SKIP_SETUP_HOST=1` declines the host-setup step, and
 `BOX_INSTALL_SOURCE=<dir-or-tarball>` installs from a local tree instead of
 downloading (how CI proves the installer under review, and how the drill can
@@ -470,19 +495,20 @@ outlives the box, the host stack, and the machine.
 box down work                        # export wants a settled disk
 box export work                      # → work-<UTC stamp>.tar.gz, snapshots included
 box rm work                          # nothing is lost anymore
-# ...upgrade box / rebuild the host / carry the file to another machine...
+# ...rebuild the host / carry the file to another machine...
 box import work-<stamp>.tar.gz       # the box is back — snapshots, logins and all
 box import work-<stamp>.tar.gz --name work2   # or under a new name
 ```
 
-This is what makes the upgrade flow humane
-([#66](https://github.com/heavy-duty/box/issues/66)): stop, export, remove
-every box, upgrade, re-import. Everything `incus import` restores is the
-artifact's truth (disk, config, snapshots); what box re-stamps on import is
-_this_ host's truth — the `user.box=1` boundary tag, the `box-profile` placement
-(re-assigned if the artifact's differs), and a fresh machine identity, the
-same move a clone gets, so an imported box can never collide with the box it
-was exported from. Import refuses a name any existing instance already holds.
+This flow survives `box rm`, a host rebuild, and a move to another machine; it
+does not promise migration across box releases. Everything `incus import`
+restores is the artifact's truth (disk, config, snapshots); what box re-stamps
+on import is _this_ host's truth — the `user.box=1` boundary tag, the
+`box-profile` placement when every profile named by the artifact already exists
+on this host, and a fresh machine identity, the same move a clone gets. If the
+artifact names a profile this host lacks, Incus refuses it before box is
+consulted. An imported box can therefore never collide with the box it was
+exported from. Import also refuses a name any existing instance already holds.
 `--instance-only` exports the live state without the snapshots.
 
 **The file is a credential.** A box's disk carries everything inside it —
@@ -672,7 +698,7 @@ owes only the identity itself.
 The `IMPORTED` line sits directly under `MINTED` because that adjacency is what
 stops the mint time being misread as this host's. Note what it does not claim:
 box has no record of _which_ host minted the box, and a box can be exported and
-re-imported onto the same host (that is the upgrade flow above), so the line
+re-imported onto the same host during a rebuild, so the line
 states only the ordering — the one thing box actually knows.
 
 **A box can make the trip more than once**, and both ends are kept: the first
