@@ -60,11 +60,46 @@ jobs:
         run: bash test/cli.sh
       - name: release-flow tests
         run: bash test/release.sh
+      # ---- the ceremony guard block: seven independent assertions ----------
+      # Every step from here down carries `if: always()`, and the three build
+      # steps above deliberately do not. The line between them is a data
+      # dependency, not tidiness (#224).
+      #
+      # The build steps CHAIN: shellcheck, then the two suites. A tree that
+      # cannot lint has nothing trustworthy to say about its own tests, so a
+      # red shellcheck skipping them is the correct signal and stays.
+      #
+      # The seven below assert seven unrelated facts about ONE tree and share
+      # no input, so one of them failing says nothing about the next. Without
+      # `if: always()` the first red hides every verdict behind it — measured
+      # on the 0.10.0 cut (PR #223, Actions job 98312187142): step 7,
+      # drill-recorded, failed and steps 8-12 read `skipped`. That red is
+      # DESIGNED — a release cut opens knowingly red on drill-recorded and
+      # waits for the operator's drills/X.Y.Z.md to land on the branch (#182)
+      # — so on exactly the pull requests changelog-assembled exists to
+      # police, the gate that proves a stamped section is exactly its
+      # fragments never ran, for the whole window in which that section is
+      # reviewed and approved.
+      #
+      # `if: always()` rather than a reorder. Moving drill-recorded last would
+      # fix the 0.10.0 symptom and rebuild the same trap for the next guard
+      # whose red is legitimate, with the ordering encoding a policy nobody
+      # wrote down; the condition states the actual invariant and survives an
+      # eighth guard being inserted in the middle. It also runs these steps on
+      # cancellation; if that ever proves noisy, `!cancelled()` is the
+      # sanctioned narrowing and needs no further ruling.
+      #
+      # Nothing is loosened. A red guard still fails `check`, so branch
+      # protection, the reconciler and the merge gate see exactly what they
+      # saw before; the only change is that a red step stops hiding the
+      # verdicts of its successors.
+      #
       # The changelog is ARMED for the next entry (#108). Its own step rather
       # than a line inside test/release.sh: this one asserts a fact about THIS
       # tree, not about the release machinery, so when it goes red the log
       # says which check found the drift without anyone reading a suite.
       - name: changelog is armed for the next entry
+        if: always()
         uses: heavy-duty/ceremony/actions/changelog-armed@0.7.7
       # ...and no SHIPPED release heading was deleted or DUPLICATED (#122, #143).
       # Its own step for the same reason as the one above — when it goes red the
@@ -102,8 +137,10 @@ jobs:
       # every ordinary push and PR, the script no-ops green by design, so
       # running it everywhere costs nothing and closes the route.
       - name: a release tree has a drill record
+        if: always()
         uses: heavy-duty/ceremony/actions/drill-recorded@0.7.7
       - name: no shipped changelog heading was deleted or duplicated
+        if: always()
         uses: heavy-duty/ceremony/actions/changelog-monotonic@0.7.7
       # A fourth changelog invariant, and a different one again: armed is the
       # shape of this tree, monotonic the diff against the merge base, and
@@ -118,8 +155,10 @@ jobs:
       # 0.2.0), which is why a repo on the old pin could convert to fragments
       # and have nothing assert the conversion stayed honest.
       - name: a release section is exactly its fragments
+        if: always()
         uses: heavy-duty/ceremony/actions/changelog-assembled@0.7.7
       - name: vendored ceremony doctrine matches the pin
+        if: always()
         uses: heavy-duty/ceremony/actions/docs-sync@0.7.7
       # No workflow that executes PR-authored code may name a self-hosted
       # runner nobody vouched for — a pull_request run IS the branch's code,
@@ -143,6 +182,7 @@ jobs:
       # host/setup-host.sh as root from the PR's own checkout, so it needs a
       # runner that IS the blast radius.
       - name: no PR-code workflow runs on an unvouched self-hosted runner
+        if: always()
         uses: heavy-duty/ceremony/actions/runner-isolated@0.7.7
       # Third-party actions and reusable workflows carry a full commit SHA
       # and a readable trailing comment, not a moving tag. References owned
@@ -154,6 +194,7 @@ jobs:
       # Order matters and is why both halves are in one change: adding the
       # step before pinning the references merely makes a known sweep red.
       - name: third-party references are SHA-pinned
+        if: always()
         uses: heavy-duty/ceremony/actions/sha-pinned@0.7.7
 
   # The multi-user rehearsal, on a REAL incus — a GitHub runner is root on a

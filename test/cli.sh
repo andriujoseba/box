@@ -9963,10 +9963,33 @@ mkpintree() {   # mkpintree <name> — a copy of every pin-carrying file
 }
 
 previous_pin=0.7.6
+
+# only_line <file> <fixed-string> — the single line number it sits on, for the
+# two checks below that assert the message names a file AND a line. The number
+# is READ off the fixture and never written here: which line ci.yml puts a
+# reference on is a coordinate, and a coordinate written into a check is a
+# measurement that the next correct edit above it invalidates. These two read
+# `157` and `150` until #224 added the guard block's comment and moved both,
+# breaking a check whose subject that edit did not touch. A non-unique match
+# reds rather than silently weakening the assertion to a bare `ci.yml:`.
+only_line() {
+  local hits n
+  hits="$(grep -nF -e "$2" "$1" | cut -d: -f1)"
+  n="$(printf '%s\n' "$hits" | grep -c .)"
+  if [ "$n" -ne 1 ]; then
+    echo "fixture: '$2' is on $n lines of $1, wanted exactly 1" >&2
+    printf 'NO-UNIQUE-LINE'
+    return 1
+  fi
+  printf '%s' "$hits"
+}
+
 MIXED="$(mkpintree mixed)"
 sed -i "s|actions/sha-pinned@0\\.7\\.7|actions/sha-pinned@$previous_pin|" "$MIXED/.github/workflows/ci.yml"
 check "pin: one caller left at the old ref reds" 1 "reads $previous_pin" ceremony_pin_is_one_pin "$MIXED"
-check "pin: ...naming the file and line it is on" 1 "ci.yml:157" ceremony_pin_is_one_pin "$MIXED"
+check "pin: ...naming the file and line it is on" 1 \
+  "ci.yml:$(only_line "$MIXED/.github/workflows/ci.yml" "actions/sha-pinned@$previous_pin")" \
+  ceremony_pin_is_one_pin "$MIXED"
 
 # The comment beside sha-pinned. It is the one site that names the pin in prose
 # inside a workflow, and no guard reads a comment — so if this fixture passed,
@@ -9974,7 +9997,9 @@ check "pin: ...naming the file and line it is on" 1 "ci.yml:157" ceremony_pin_is
 # exemption no longer applies to.
 STALECOMMENT="$(mkpintree stalecomment)"
 sed -i "s|# heavy-duty/ceremony@0\\.7\\.7|# heavy-duty/ceremony@$previous_pin|" "$STALECOMMENT/.github/workflows/ci.yml"
-check "pin: the prose comment left behind reds" 1 "ci.yml:150" ceremony_pin_is_one_pin "$STALECOMMENT"
+check "pin: the prose comment left behind reds" 1 \
+  "ci.yml:$(only_line "$STALECOMMENT/.github/workflows/ci.yml" "# heavy-duty/ceremony@$previous_pin")" \
+  ceremony_pin_is_one_pin "$STALECOMMENT"
 
 # The sentence a contributor reads to learn what this repo is governed by.
 STALEDOC="$(mkpintree staledoc)"
