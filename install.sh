@@ -22,6 +22,11 @@ set -euo pipefail
 #
 # BOX_INSTALL_SOURCE=<dir-or-tarball> installs from a local tree instead of
 # downloading — for CI and the drill, so what lands is the code under review.
+#
+# BOX_INSTALLED_FROM=<one-line string> overrides the provenance recorded for
+# such a local-source install, because a caller whose source is a temp
+# directory it deletes seconds later would otherwise record a dead path on the
+# one file whose whole job is to name the source (#250).
 
 REPO="${BOX_REPO:-heavy-duty/box}"
 # Three install channels, one knob (#83): BOX_REF unset installs the LATEST
@@ -120,6 +125,21 @@ if [ -z "${BOX_INSTALL_SOURCE:-}" ]; then
 fi
 command -v tar  >/dev/null 2>&1 || die "tar is required but was not found. Please install tar and re-run."
 
+# $VDIR/INSTALLED_FROM is a ONE-LINE file: it is written with printf '%s\n' and
+# read back with a bare `cat` (below, and by the drill), so a value carrying a
+# newline would make that contract false and every reader would silently see
+# only its first line — a provenance file lying by truncation is worse than one
+# that was never written (#250). printf cannot be talked into interpreting the
+# value, so this is the whole of the bound. Checked HERE, before the flat-tree
+# migration moves anything and before the confirm asks: malformed input is
+# refused before the run touches the operator's disk, not halfway through it.
+# Unconditional, though only the local-source branch consumes the value: a
+# variable that is malformed is malformed whichever channel ignores it, and
+# dying loudly beats installing while quietly discarding what the caller said.
+case "${BOX_INSTALLED_FROM:-}" in
+  *$'\n'*) die "BOX_INSTALLED_FROM must not contain a newline — it is recorded as a single line in <version>/INSTALLED_FROM. Give a one-line name for the source (e.g. 'artifact:box-installer.sh sha256:<payload sha>')." ;;
+esac
+
 if [ -n "${BOX_INSTALL_SOURCE:-}" ]; then
   SRCDESC="local source $BOX_INSTALL_SOURCE"
 else
@@ -204,7 +224,14 @@ trap cleanup EXIT
 # --- acquire the tree ------------------------------------------------------
 if [ -n "${BOX_INSTALL_SOURCE:-}" ]; then
   SRC="$BOX_INSTALL_SOURCE"
-  INSTALLED_FROM="local:$SRC"
+  # The override lives on THIS branch alone (#250). $SRC is the one source name
+  # that can be a lie the moment it is written: the scp-able artifact unpacks
+  # its payload to a temp directory, hands that to BOX_INSTALL_SOURCE, and its
+  # own trap deletes it — so every artifact install would record a path naming
+  # nothing. The GitHub branch's "$REPO@$REF" below is already durable and
+  # takes no override, a second override point being a second way to lie about
+  # provenance. Unset, this is byte-identical to what it has always written.
+  INSTALLED_FROM="${BOX_INSTALLED_FROM:-local:$SRC}"
   if [ -d "$SRC" ]; then
     log "copying local tree $SRC"
     mkdir -p "$TMPDIR/tree"
