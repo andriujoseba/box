@@ -41,9 +41,20 @@ ASSETS="$WORK/assets"
 VERSION=0.0.0-test
 ARTIFACT="$ASSETS/box-$VERSION.sh"
 SIDECAR="$ARTIFACT.sha256"
+ACTION="$ROOT/.github/actions/release-artifact/action.yml"
 
 check "release artifact: script is valid bash" 0 "" \
   bash -n "$ROOT/dist/release-artifact.sh"
+check "release artifact: hook has exactly one run step" 0 "1" \
+  grep -c '^      run:' "$ACTION"
+check "release artifact: hook delegates to the tested build script" 0 "" \
+  grep -qF "\"\$GITHUB_WORKSPACE/dist/release-artifact.sh\"" "$ACTION"
+check "release artifact: hook passes the release version" 0 "" \
+  grep -qF -- "--version \"\$VERSION\"" "$ACTION"
+check "release artifact: hook passes the workspace root" 0 "" \
+  grep -qF -- "--root \"\$GITHUB_WORKSPACE\"" "$ACTION"
+check "release artifact: hook does not duplicate installer build logic" 1 "" \
+  grep -qF 'make-installer.sh' "$ACTION"
 printf 'release-job workspace state, never payload\n' > "$WORKSPACE_SENTINEL"
 check "release artifact: builds from the committed checkout" 0 "wrote" \
   env RELEASE_ASSETS_DIR="$ASSETS" \
