@@ -307,6 +307,9 @@ mkdir -p "$ARTTMP"
 check "self-installer: truncated payload is refused by --check (#249)" 1 \
   "payload checksum MISMATCH" env TMPDIR="$ARTTMP" WIDGET_OUTPUT="$ARTLOG" \
   bash "$TRUNCATED" --check
+check "self-installer: truncated install is refused before unpacking (#249)" 1 \
+  "payload checksum MISMATCH" env TMPDIR="$ARTTMP" WIDGET_OUTPUT="$ARTLOG" \
+  bash "$TRUNCATED"
 check "self-installer: refusal runs no entrypoint (#249)" 1 "" \
   test -e "$ARTLOG"
 # shellcheck disable=SC2016  # $1 expands in the inner bash, by design
