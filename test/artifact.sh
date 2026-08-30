@@ -35,7 +35,8 @@ dir_empty() {
 }
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+WORKSPACE_SENTINEL="$ROOT/.ceremony-src-artifact-test-$$"
+trap 'rm -rf "$WORK"; rm -f "$WORKSPACE_SENTINEL"' EXIT
 ASSETS="$WORK/assets"
 VERSION=0.0.0-test
 ARTIFACT="$ASSETS/box-$VERSION.sh"
@@ -43,9 +44,11 @@ SIDECAR="$ARTIFACT.sha256"
 
 check "release artifact: script is valid bash" 0 "" \
   bash -n "$ROOT/dist/release-artifact.sh"
+printf 'release-job workspace state, never payload\n' > "$WORKSPACE_SENTINEL"
 check "release artifact: builds from the committed checkout" 0 "wrote" \
   env RELEASE_ASSETS_DIR="$ASSETS" \
-  bash "$ROOT/dist/release-artifact.sh" --version "$VERSION" --root "$ROOT"
+  bash "$ROOT/dist/release-artifact.sh" --version "$VERSION"
+rm -f "$WORKSPACE_SENTINEL"
 check "release artifact: output directory contains exactly the two assets" 0 "" \
   asset_shape "$ASSETS" "$ARTIFACT" "$SIDECAR"
 check "release artifact: installer proves its payload" 0 "payload intact" \
@@ -76,6 +79,8 @@ check "release artifact: provenance names the asset and payload checksum" 0 \
   grep -F "artifact:box-$VERSION.sh sha256:" "$ART_TREE/INSTALLED_FROM"
 check "release artifact: provenance is one line" 0 "1" \
   awk 'END { print NR; exit NR == 1 ? 0 : 1 }' "$ART_TREE/INSTALLED_FROM"
+check "release artifact: release-job workspace state is not packed" 1 "" \
+  test -e "$ART_TREE/$(basename "$WORKSPACE_SENTINEL")"
 
 BAD_ROOT="$WORK/not-box"
 BAD_ASSETS="$WORK/bad-assets"
