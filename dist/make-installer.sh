@@ -14,7 +14,7 @@ set -euo pipefail
 # entrypoint, source env var — is an argument. There is no product-specific
 # string in the logic, so this file promotes to a shared action (a later
 # ceremony/actions/self-installer) as a move, not a rewrite. The must-not-drift
-# gate is the throwaway-tree test in shared/test/artifact.sh, which builds an
+# gate is the throwaway-tree block in test/cli.sh, which builds an
 # artifact for a differently-named tree and asserts it installs.
 
 usage() {
