@@ -93,6 +93,23 @@ check "release artifact: provenance is one line" 0 "1" \
 check "release artifact: release-job workspace state is not packed" 1 "" \
   test -e "$ART_TREE/$(basename "$WORKSPACE_SENTINEL")"
 
+UNPACKED_ROOT="$WORK/unpacked-box"
+UNPACKED_ASSETS="$WORK/unpacked-assets"
+UNPACKED_HOME="$WORK/unpacked-home"
+UNPACKED_BIN="$WORK/unpacked-bin"
+mkdir -p "$UNPACKED_ROOT" "$UNPACKED_BIN"
+git -C "$ROOT" archive --format=tar HEAD | tar -xf - -C "$UNPACKED_ROOT"
+printf 'unpacked source member\n' > "$UNPACKED_ROOT/unpacked-only"
+check "release artifact: builds from an unpacked non-Git tree" 0 "wrote" \
+  bash "$ROOT/dist/release-artifact.sh" --version "$VERSION" \
+  --root "$UNPACKED_ROOT" --assets-dir "$UNPACKED_ASSETS"
+check "release artifact: installer from an unpacked tree is valid" 0 "done" \
+  env BOX_HOME="$UNPACKED_HOME" BOX_BIN="$UNPACKED_BIN" BOX_YES=1 \
+  BOX_SKIP_SETUP_HOST=1 bash "$UNPACKED_ASSETS/box-$VERSION.sh"
+check "release artifact: an unpacked tree is read as-is" 0 "unpacked source member" \
+  grep -F 'unpacked source member' \
+  "$UNPACKED_HOME/versions/$TREE_VERSION/unpacked-only"
+
 BAD_ROOT="$WORK/not-box"
 BAD_ASSETS="$WORK/bad-assets"
 mkdir -p "$BAD_ROOT" "$BAD_ASSETS"
