@@ -141,6 +141,7 @@ probe_up() { # probe_up <user> <box> <url>
 # when it answers; on the timeout, preserve enough state to tell a guest that
 # refused shutdown from a daemon operation that wedged, then force-stop only
 # as recovery so the remaining criteria and cleanup can still report.
+# Recovery stays on raw incus, not `box down --force`, because it runs only after `box down all` exceeded its bound and must not depend on the verb whose failure it survives.
 bounded_admin_down() { # bounded_admin_down <box>
   local b="$1" out rc ops guest capture
   capture="$(mktemp)"
