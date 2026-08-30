@@ -110,6 +110,29 @@ check "release artifact: an unpacked tree is read as-is" 0 "unpacked source memb
   grep -F 'unpacked source member' \
   "$UNPACKED_HOME/versions/$TREE_VERSION/unpacked-only"
 
+EMPTY_ROOT="$WORK/empty-builder-box"
+EMPTY_ASSETS="$WORK/empty-builder-assets"
+mkdir -p "$EMPTY_ROOT" "$EMPTY_ASSETS"
+cp -a "$UNPACKED_ROOT/." "$EMPTY_ROOT/"
+cat > "$EMPTY_ROOT/dist/make-installer.sh" <<'EMPTY_BUILDER'
+#!/usr/bin/env bash
+set -euo pipefail
+out=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+: > "${out:?--out was not passed}"
+EMPTY_BUILDER
+chmod +x "$EMPTY_ROOT/dist/make-installer.sh"
+check "release artifact: a successful empty build aborts" 1 "no usable artifact" \
+  bash "$ROOT/dist/release-artifact.sh" --version "$VERSION" \
+  --root "$EMPTY_ROOT" --assets-dir "$EMPTY_ASSETS"
+check "release artifact: an empty build publishes nothing" 0 "" \
+  dir_empty "$EMPTY_ASSETS"
+
 BAD_ROOT="$WORK/not-box"
 BAD_ASSETS="$WORK/bad-assets"
 mkdir -p "$BAD_ROOT" "$BAD_ASSETS"

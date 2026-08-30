@@ -69,6 +69,8 @@ fi
   --srcvar BOX_INSTALL_SOURCE
 
 # Prove the finished installer before either release asset becomes visible.
+[ -s "$work/assets/$artifact" ] \
+  || die "the installer build left no usable artifact"
 bash "$work/assets/$artifact" --check
 (
   cd "$work/assets"
