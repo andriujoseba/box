@@ -9778,6 +9778,7 @@ check "multiuser: (p) records the daemon journal after a prompt stop failure" 0 
 # shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "multiuser: (p) force-stops only as post-failure recovery" 0 "" \
   grep -qF 'incus stop "$b" --force' "$ROOT/drill/multiuser.sh"
+# shellcheck disable=SC2016  # the backtick strings are literal target-file prose
 check "multiuser: (p) explains why recovery deliberately stays on raw incus" 0 "" \
   grep -qF 'Recovery stays on raw incus, not `box down --force`, because it runs only after `box down all` exceeded its bound and must not depend on the verb whose failure it survives.' "$ROOT/drill/multiuser.sh"
 check "multiuser: (p) prints the captured wedge evidence before exiting" 0 "" \
