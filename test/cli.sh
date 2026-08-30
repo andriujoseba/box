@@ -8671,12 +8671,15 @@ check "install: INSTALLED_FROM records the local source" 0 "local:" cat "$H1/ver
 # own roots, so nothing here perturbs the H1 chain the rest of this section
 # walks. Equality, not a substring: the contract is that the file holds EXACTLY
 # the value, and a substring check passes on a file that also holds the path.
+installed_from_is() {  # <version-dir> <string> — the file holds EXACTLY <string>
+  [ "$(cat "$1/INSTALLED_FROM")" = "$2" ]
+}
+
 HP1="$WORK/hp1"; BP1="$WORK/bp1"
 check "provenance: an install with BOX_INSTALLED_FROM set runs clean" 0 "done" \
   inst "$HP1" "$BP1" BOX_INSTALLED_FROM='artifact:box-installer.sh sha256:deadbeef'
 check "provenance: ...and INSTALLED_FROM holds exactly that value" 0 "" \
-  bash -c '[ "$(cat "$1")" = "artifact:box-installer.sh sha256:deadbeef" ]' _ \
-  "$HP1/versions/$VER/INSTALLED_FROM"
+  installed_from_is "$HP1/versions/$VER" 'artifact:box-installer.sh sha256:deadbeef'
 check "provenance: ...so the source path appears nowhere in it" 1 "" \
   grep -qF "$ROOT" "$HP1/versions/$VER/INSTALLED_FROM"
 
@@ -8685,8 +8688,7 @@ check "provenance: ...so the source path appears nowhere in it" 1 "" \
 HP2="$WORK/hp2"; BP2="$WORK/bp2"
 check "provenance: unset, the install still runs clean" 0 "done" inst "$HP2" "$BP2"
 check "provenance: ...and the recorded source is 'local:\$SRC', byte for byte" 0 "" \
-  bash -c '[ "$(cat "$1")" = "local:$2" ]' _ \
-  "$HP2/versions/$VER/INSTALLED_FROM" "$ROOT"
+  installed_from_is "$HP2/versions/$VER" "local:$ROOT"
 
 # A newline would make the one-line contract false and leave `cat` readers
 # seeing only the first line, so it dies before the run touches anything.
