@@ -235,6 +235,96 @@ check "install.sh: still no-ops on an existing install (#66)" 0 "" \
   grep -qF 'already installed' "$ROOT/install.sh"
 
 # ---------------------------------------------------------------------------
+# Self-extracting installer builder — #249's offline transport contract. Drive
+# it with a throwaway product so a box-specific source/provenance variable, path
+# or entrypoint cannot hide behind this repository's own happy path.
+# ---------------------------------------------------------------------------
+MAKE_INSTALLER="$ROOT/dist/make-installer.sh"
+ARTWORK="$(mktemp -d)"
+ARTTREE="$ARTWORK/widget-tree"
+ARTIFACT="$ARTWORK/widget-1.2.3.sh"
+ARTLOG="$ARTWORK/installed"
+mkdir -p "$ARTTREE"
+printf '1.2.3\n' > "$ARTTREE/VERSION"
+cat > "$ARTTREE/install-widget.sh" <<'WIDGET'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${WIDGET_INSTALL_SOURCE:?}"
+: "${WIDGET_INSTALLED_FROM:?}"
+printf 'source=%s\nprovenance=%s\n' \
+  "$WIDGET_INSTALL_SOURCE" "$WIDGET_INSTALLED_FROM" > "$WIDGET_OUTPUT"
+WIDGET
+chmod +x "$ARTTREE/install-widget.sh"
+
+check "self-installer: builder is valid bash (#249)" 0 "" \
+  bash -n "$MAKE_INSTALLER"
+for product_arg in --name --version --root --out --entrypoint --srcvar; do
+  check "self-installer: help names $product_arg (#249)" 0 "$product_arg" \
+    "$MAKE_INSTALLER" --help
+done
+# shellcheck disable=SC2016  # $1 expands in the inner bash, by design
+check "self-installer: help carries no box-specific product fact (#249)" 1 "" \
+  bash -c '"$1" --help | grep -qi box' _ "$MAKE_INSTALLER"
+
+check "self-installer: builds a differently named throwaway tree (#249)" 0 \
+  "make-installer: wrote $ARTIFACT" \
+  "$MAKE_INSTALLER" --name widget --version 1.2.3 --root "$ARTTREE" \
+  --out "$ARTIFACT" --entrypoint install-widget.sh
+check "self-installer: generated artifact is executable (#249)" 0 "" \
+  test -x "$ARTIFACT"
+# shellcheck disable=SC2016  # $1 expands in the inner bash, by design
+check "self-installer: widget stub carries no box string (#249)" 1 "" \
+  bash -c 'sed "/^__SELF_INSTALLER_PAYLOAD__$/q" "$1" | grep -qi box' \
+  _ "$ARTIFACT"
+
+check "self-installer: --version identifies without installing (#249)" 0 \
+  "widget 1.2.3" env WIDGET_OUTPUT="$ARTLOG" bash "$ARTIFACT" --version
+check "self-installer: --version touches no install output (#249)" 1 "" \
+  test -e "$ARTLOG"
+check "self-installer: --check verifies without installing (#249)" 0 \
+  "payload intact" env WIDGET_OUTPUT="$ARTLOG" bash "$ARTIFACT" --check
+check "self-installer: --check touches no install output (#249)" 1 "" \
+  test -e "$ARTLOG"
+
+check "self-installer: artifact installs the throwaway tree (#249)" 0 \
+  "installing widget 1.2.3" env WIDGET_OUTPUT="$ARTLOG" bash "$ARTIFACT"
+check "self-installer: source variable is derived from product name (#249)" 0 \
+  "source=" grep -F 'source=' "$ARTLOG"
+check "self-installer: provenance variable is derived from product name (#249)" 0 \
+  "provenance=artifact:widget-1.2.3.sh sha256:" \
+  grep -F 'provenance=artifact:widget-1.2.3.sh sha256:' "$ARTLOG"
+
+# Damage the payload while keeping the complete shell stub. The checksum must
+# refuse it before the execution path creates an unpack directory or runs the
+# throwaway entrypoint.
+ARTSIZE="$(wc -c < "$ARTIFACT" | tr -d ' ')"
+TRUNCATED="$ARTWORK/widget-truncated.sh"
+head -c "$((ARTSIZE - 1))" "$ARTIFACT" > "$TRUNCATED"
+chmod +x "$TRUNCATED"
+rm -f "$ARTLOG"
+ARTTMP="$ARTWORK/exec-tmp"
+mkdir -p "$ARTTMP"
+check "self-installer: truncated payload is refused by --check (#249)" 1 \
+  "payload checksum MISMATCH" env TMPDIR="$ARTTMP" WIDGET_OUTPUT="$ARTLOG" \
+  bash "$TRUNCATED" --check
+check "self-installer: refusal runs no entrypoint (#249)" 1 "" \
+  test -e "$ARTLOG"
+# shellcheck disable=SC2016  # $1 expands in the inner bash, by design
+check "self-installer: refusal unpacks nothing (#249)" 1 "" \
+  bash -c 'find "$1" -mindepth 1 -print -quit | grep -q .' _ "$ARTTMP"
+
+# The issue's box-shaped smoke command is intentionally check-only: the
+# throwaway tree above is the stronger proof that the builder logic is generic.
+BOX_ARTIFACT="$ARTWORK/box-0.0.0-test.sh"
+check "self-installer: repository tree builds with the documented command (#249)" 0 \
+  "make-installer: wrote $BOX_ARTIFACT" \
+  "$MAKE_INSTALLER" --name box --version 0.0.0-test --root "$ROOT" \
+  --out "$BOX_ARTIFACT"
+check "self-installer: repository artifact passes --check (#249)" 0 \
+  "payload intact" bash "$BOX_ARTIFACT" --check
+rm -rf "$ARTWORK"
+
+# ---------------------------------------------------------------------------
 # Templates — DYNAMIC over templates/*/ (#68): the loop discovers every
 # template directory, so a new template cannot ship without passing these (the
 # old hardcoded blank/claude/codex/grok list let exactly that happen). The
