@@ -8756,6 +8756,39 @@ check "install: the PATH symlink rides the chain" 0 "$H1/current/bin/box" readli
 check "install: box --version answers through the whole chain" 0 "box $VER" ibox "$B1/box" --version
 check "install: INSTALLED_FROM records the local source" 0 "local:" cat "$H1/versions/$VER/INSTALLED_FROM"
 
+# --- BOX_INSTALLED_FROM: the provenance override (#250) ---------------------
+# The scp-able artifact stub unpacks its payload to a temp directory, hands
+# THAT to BOX_INSTALL_SOURCE, and deletes it on its own trap — so without the
+# override every artifact install writes 'local:/tmp/tmp.XXXX/tree' into the
+# one file whose job is to name the source. These are REAL installs on their
+# own roots, so nothing here perturbs the H1 chain the rest of this section
+# walks. Equality, not a substring: the contract is that the file holds EXACTLY
+# the value, and a substring check passes on a file that also holds the path.
+installed_from_is() {  # <version-dir> <string> — the file holds EXACTLY <string>
+  [ "$(cat "$1/INSTALLED_FROM")" = "$2" ]
+}
+
+HP1="$WORK/hp1"; BP1="$WORK/bp1"
+check "provenance: an install with BOX_INSTALLED_FROM set runs clean" 0 "done" \
+  inst "$HP1" "$BP1" BOX_INSTALLED_FROM='artifact:box-installer.sh sha256:deadbeef'
+check "provenance: ...and INSTALLED_FROM holds exactly that value" 0 "" \
+  installed_from_is "$HP1/versions/$VER" 'artifact:box-installer.sh sha256:deadbeef'
+check "provenance: ...so the source path appears nowhere in it" 1 "" \
+  grep -qF "$ROOT" "$HP1/versions/$VER/INSTALLED_FROM"
+
+# Unset is the regression that matters most: this file is what the drill reads,
+# so every existing install path must keep the exact string it wrote before.
+HP2="$WORK/hp2"; BP2="$WORK/bp2"
+check "provenance: unset, the install still runs clean" 0 "done" inst "$HP2" "$BP2"
+check "provenance: ...and the recorded source is 'local:\$SRC', byte for byte" 0 "" \
+  installed_from_is "$HP2/versions/$VER" "local:$ROOT"
+
+# A newline would make the one-line contract false and leave `cat` readers
+# seeing only the first line, so it dies before the run touches anything.
+check "provenance: a newline-bearing value is REFUSED (#250 D4)" 1 "must not contain a newline" \
+  inst "$WORK/hp3" "$WORK/bp3" BOX_INSTALLED_FROM=$'artifact:one\nsha256:two'
+check "provenance: ...and the refusal installed nothing" 1 "" test -e "$WORK/hp3/versions"
+
 # --- converge, don't clobber ------------------------------------------------
 touch "$H1/versions/$VER/CANARY"
 check "install: a same-version re-run is a no-op that says so (#66)" 0 "already installed" inst "$H1" "$B1"
