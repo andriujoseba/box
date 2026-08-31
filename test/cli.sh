@@ -63,6 +63,7 @@ check "option before command exits 2"          2 "options come after the command
 check "new without --name exits 2"             2 "usage: box new"    "$BOX" new
 check "shell without a box exits 2"            2 "usage: box shell"  "$BOX" shell
 check "root without a box exits 2"             2 "usage: box root"   "$BOX" root
+check "checkup without a box exits 2"          2 "usage: box checkup" "$BOX" checkup
 check "restore without arg2 needs a box first" 2 "usage: box restore" "$BOX" restore
 # An unknown flag is refused, not swallowed as a positional (the --labl bug).
 check "unknown flag on list exits 2"           2 "unknown option"   "$BOX" list --nope
@@ -105,6 +106,106 @@ check "new: an unknown named size is refused (#159)" 2 \
   "--size must be small, medium, or large" "$BOX" new --name work --size huge
 check "help new: publishes the large size row (#159)" 0 "large       8    16GiB  120GiB" \
   "$BOX" help new
+
+# ---------------------------------------------------------------------------
+# box checkup — the guest-side fitness report (#258). doctor remains the host
+# report; this path enters one named guest as root and only reads state.
+# ---------------------------------------------------------------------------
+check "help checkup: asks whether one guest is fit" 0 "guest fit" "$BOX" help checkup
+check "checkup: is a separate command from doctor" 0 "checkup" \
+  bash -c 'row="$(grep '\''^  "checkup\^'\'' "$1")"; case "$row" in *"fn:cmd_checkup"*) exit 0;; *) exit 1;; esac' _ "$BOX"
+check "checkup: current mints carry the #178 seed generation" 0 "user.box.seed" \
+  grep -F 'user.box.seed=' "$BOX"
+
+CHECKUP="$ROOT/guest/checkup.sh"
+check "checkup: guest probe exists" 0 "" test -f "$CHECKUP"
+check "checkup: guest probe is valid bash" 0 "" bash -n "$CHECKUP"
+
+CKWORK="$(mktemp -d)"
+CKSHIM="$CKWORK/shim"; mkdir -p "$CKSHIM"
+cat > "$CKSHIM/free" <<'SHIM'
+#!/usr/bin/env bash
+printf 'Mem: %s 0 0 0 0 %s\nSwap: %s 0 %s\n' \
+  "${FAKE_MEM_TOTAL:?}" "${FAKE_MEM_AVAILABLE:?}" \
+  "${FAKE_SWAP_TOTAL:-0}" "${FAKE_SWAP_TOTAL:-0}"
+SHIM
+cat > "$CKSHIM/df" <<'SHIM'
+#!/usr/bin/env bash
+printf '1B-blocks Avail Use%%\n%s %s %s\n' \
+  "${FAKE_DISK_TOTAL:?}" "${FAKE_DISK_AVAILABLE:?}" "${FAKE_DISK_USED:?}"
+SHIM
+cat > "$CKSHIM/findmnt" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s %s %s\n' "${FAKE_TMP_FSTYPE:?}" "${FAKE_TMP_SIZE:?}" "${FAKE_TMP_OPTIONS:-rw}"
+SHIM
+cat > "$CKSHIM/journalctl" <<'SHIM'
+#!/usr/bin/env bash
+[ "${FAKE_JOURNAL_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_JOURNAL_ERROR:-permission denied}" >&2; exit "${FAKE_JOURNAL_RC}"; }
+printf '%s' "${FAKE_JOURNAL_OUTPUT:-}"
+SHIM
+chmod +x "$CKSHIM"/*
+
+run_checkup() { # run_checkup <vm|container> <seed> [swap-policy]
+  env PATH="$CKSHIM:$PATH" \
+    FAKE_MEM_TOTAL="${FAKE_MEM_TOTAL:-4294967296}" \
+    FAKE_MEM_AVAILABLE="${FAKE_MEM_AVAILABLE:-2147483648}" \
+    FAKE_SWAP_TOTAL="${FAKE_SWAP_TOTAL:-0}" \
+    FAKE_DISK_TOTAL="${FAKE_DISK_TOTAL:-42949672960}" \
+    FAKE_DISK_AVAILABLE="${FAKE_DISK_AVAILABLE:-8589934592}" \
+    FAKE_DISK_USED="${FAKE_DISK_USED:-80%}" \
+    FAKE_TMP_FSTYPE="${FAKE_TMP_FSTYPE:-tmpfs}" \
+    FAKE_TMP_SIZE="${FAKE_TMP_SIZE:-2147483648}" \
+    FAKE_TMP_OPTIONS="${FAKE_TMP_OPTIONS:-rw,nosuid,nodev}" \
+    FAKE_JOURNAL_RC="${FAKE_JOURNAL_RC:-0}" \
+    FAKE_JOURNAL_OUTPUT="${FAKE_JOURNAL_OUTPUT:-}" \
+    FAKE_JOURNAL_ERROR="${FAKE_JOURNAL_ERROR:-}" \
+    bash "$CHECKUP" "$@"
+}
+
+check "checkup: legacy VM names missing swap and #178's seed as the fix" 1 "seed #178" \
+  run_checkup vm unknown
+check "checkup: legacy VM names the 50%-of-RAM /tmp finding" 1 "50% of memory" \
+  run_checkup vm unknown
+check "checkup: reports disk headroom as numbers" 1 "8.0 GiB available of 40.0 GiB" \
+  run_checkup vm unknown
+check "checkup: reports memory headroom as numbers" 1 "2.0 GiB available of 4.0 GiB" \
+  run_checkup vm unknown
+check "checkup: an empty readable kernel journal is explicitly clean" 1 "no OOM kill logged" \
+  run_checkup vm unknown
+
+checkup_current_vm() {
+  FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 run_checkup vm 2
+}
+checkup_current_vm_quiet() {
+  local out; out="$(checkup_current_vm)"
+  ! grep -q "FIX" <<<"$out" && grep -q "4.0 GiB" <<<"$out" && grep -q "1.0 GiB" <<<"$out"
+}
+check "checkup: current VM seed is quiet on swap and /tmp" 0 "" checkup_current_vm_quiet
+
+checkup_container() { FAKE_TMP_SIZE=1073741824 run_checkup container 2 allowed; }
+check "checkup: container swap is host-managed, never a missing-swap fault" 0 "host-managed" \
+  checkup_container
+checkup_container_no_vm_fault() {
+  local out; out="$(checkup_container)"
+  ! grep -q "missing swap" <<<"$out"
+}
+check "checkup: container with no swap has no VM swap finding" 0 "" \
+  checkup_container_no_vm_fault
+
+checkup_unreadable_journal() {
+  FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 \
+    FAKE_JOURNAL_RC=1 FAKE_JOURNAL_ERROR="permission denied" run_checkup vm 2
+}
+check "checkup: unreadable OOM history is not reported clean" 1 "could not read kernel journal" \
+  checkup_unreadable_journal
+checkup_unreadable_not_clean() {
+  local out; out="$(checkup_unreadable_journal 2>&1 || true)"
+  ! grep -q "no OOM kill logged" <<<"$out"
+}
+check "checkup: unreadable OOM history does not claim none" 0 "" \
+  checkup_unreadable_not_clean
+
+rm -rf "$CKWORK"
 
 # ---------------------------------------------------------------------------
 # box exec — preserve command argv across the login-environment boundary
