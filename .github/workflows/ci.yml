@@ -58,6 +58,8 @@ jobs:
           shellcheck -x "${files[@]}"
       - name: cli tests
         run: bash test/cli.sh
+      - name: release artifact tests
+        run: bash test/artifact.sh
       - name: release-flow tests
         run: bash test/release.sh
       # ---- the ceremony guard block: seven independent assertions ----------

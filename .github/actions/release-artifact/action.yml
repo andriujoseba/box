@@ -1,0 +1,20 @@
+name: Build box release artifact
+description: Build the offline box installer and checksum for the release door
+inputs:
+  version:
+    description: Release version
+    required: true
+runs:
+  using: composite
+  steps:
+    # The merge door creates its tag with GITHUB_TOKEN, and GitHub does not
+    # trigger another workflow for that ref. Keep this a thin hook over the
+    # same script CI executes; moving the build into release.yml silently
+    # recreates crew's two releases without installer assets (#251).
+    - shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: >-
+        "$GITHUB_WORKSPACE/dist/release-artifact.sh"
+        --version "$VERSION"
+        --root "$GITHUB_WORKSPACE"
