@@ -47,15 +47,11 @@ there is no `install` step and no host-run setup. See
 Starting with `0.10.0`, every release publishes `box-<version>.sh`, a
 self-contained installer, beside `box-<version>.sh.sha256`. Download both
 files from the [release page](https://github.com/heavy-duty/box/releases) on a
-workstation that can reach GitHub. Set the release and destination, then copy
-the two files to the server (replace both example values first):
+workstation that can reach GitHub. Copy the two files to the server, replacing
+the example login and host:
 
 ```sh
-BOX_VERSION=0.10.0
-ARTIFACT="box-$BOX_VERSION.sh"
-CHECKSUM="$ARTIFACT.sha256"
-BOX_SERVER='operator@server.example:'
-scp "$ARTIFACT" "$CHECKSUM" "$BOX_SERVER"
+scp box-0.10.0.sh box-0.10.0.sh.sha256 operator@server.example:
 ```
 
 On the server, from the directory that received the files, verify the external
@@ -63,13 +59,10 @@ checksum, verify the installer's embedded payload, inspect the version, and
 run it:
 
 ```sh
-BOX_VERSION=0.10.0
-ARTIFACT="box-$BOX_VERSION.sh"
-CHECKSUM="$ARTIFACT.sha256"
-sha256sum -c "$CHECKSUM"
-bash "$ARTIFACT" --check
-bash "$ARTIFACT" --version
-bash "$ARTIFACT"
+sha256sum -c box-0.10.0.sh.sha256
+bash box-0.10.0.sh --check
+bash box-0.10.0.sh --version
+bash box-0.10.0.sh
 ```
 
 Run the last command as root for one global install or as a normal account for
