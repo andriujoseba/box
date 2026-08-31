@@ -40,7 +40,11 @@ printf '%-9s%s at %s (%s)\n' TMP "$tmp_fstype" "$(gib "$tmp_size")" "$tmp_option
 if [ "$tmp_fstype" = tmpfs ] \
   && [ "$tmp_size" -gt $((mem_total * 45 / 100)) ] \
   && [ "$tmp_size" -lt $((mem_total * 55 / 100)) ]; then
-  echo "FIX       /tmp is about 50% of memory; remint with tenant seed #178 for the fixed 1.0 GiB cap."
+  if [ "$kind" = container ]; then
+    echo "FIX       /tmp is about 50% of the container's reported memory; remint with tenant seed #178 for the fixed 1.0 GiB cap."
+  else
+    echo "FIX       /tmp is about 50% of VM memory; remint with tenant seed #178 for the fixed 1.0 GiB cap."
+  fi
   problems=$((problems + 1))
 fi
 
@@ -61,7 +65,9 @@ fi
 # probe runs as root through Incus, but a missing journal or explicit denial is
 # still unknown, never "no OOM" — the false negative that bought this check.
 journal_rc=0
-journal="$(journalctl -k --no-pager -o cat 2>&1)" || journal_rc=$?
+# _TRANSPORT=kernel instead of `-k`: journalctl -k implies the current boot,
+# while "ever logged" means every retained boot in this guest (#258).
+journal="$(journalctl --no-pager -o cat _TRANSPORT=kernel 2>&1)" || journal_rc=$?
 if [ "$journal_rc" -ne 0 ] \
   || grep -qiE 'permission denied|not seeing messages|no journal files|failed to open' <<<"$journal"; then
   printf '%-9s%s\n' OOM "could not read kernel journal${journal:+ — $journal}"

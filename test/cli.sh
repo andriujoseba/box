@@ -125,6 +125,8 @@ check "checkup: tenant is the #178 generation" 0 "tenant/2" \
 CHECKUP="$ROOT/guest/checkup.sh"
 check "checkup: guest probe exists" 0 "" test -f "$CHECKUP"
 check "checkup: guest probe is valid bash" 0 "" bash -n "$CHECKUP"
+check "checkup: OOM history covers every retained boot, not only journalctl -k" 0 \
+  "_TRANSPORT=kernel" grep -F '_TRANSPORT=kernel' "$CHECKUP"
 check "checkup: guest probe contains no mutation command" 1 "" \
   grep -nE '(^|[;&|[:space:]])(touch|mkdir|rm|mv|cp|install|truncate|mount|swapon|swapoff|systemctl|sed -i)([;&|[:space:]]|$)|(^|[[:space:]])>[^&]' "$CHECKUP"
 checkup_host_mutates() {
@@ -155,6 +157,23 @@ cat > "$CKSHIM/journalctl" <<'SHIM'
 [ "${FAKE_JOURNAL_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_JOURNAL_ERROR:-permission denied}" >&2; exit "${FAKE_JOURNAL_RC}"; }
 printf '%s' "${FAKE_JOURNAL_OUTPUT:-}"
 SHIM
+cat > "$CKSHIM/incus" <<'SHIM'
+#!/usr/bin/env bash
+case "$1" in
+  config)
+    case "${*: -1}" in
+      user.box) printf '1\n' ;;
+      user.box.seed) printf 'tenant/2\n' ;;
+      limits.memory.swap) printf 'allowed\n' ;;
+    esac ;;
+  list) printf 'virtual-machine\n' ;;
+  exec)
+    while [ "$1" != -- ]; do shift; done
+    shift
+    exec "$@" ;;
+  *) exit 1 ;;
+esac
+SHIM
 chmod +x "$CKSHIM"/*
 
 run_checkup() { # run_checkup <vm|container> <seed> [swap-policy]
@@ -174,9 +193,21 @@ run_checkup() { # run_checkup <vm|container> <seed> [swap-policy]
     bash "$CHECKUP" "$@"
 }
 
+run_checkup_command() {
+  env PATH="$CKSHIM:$PATH" \
+    FAKE_MEM_TOTAL=4294967296 FAKE_MEM_AVAILABLE=2147483648 \
+    FAKE_SWAP_TOTAL=4294967296 \
+    FAKE_DISK_TOTAL=42949672960 FAKE_DISK_AVAILABLE=8589934592 \
+    FAKE_DISK_USED=80% FAKE_TMP_FSTYPE=tmpfs FAKE_TMP_SIZE=1073741824 \
+    FAKE_TMP_OPTIONS=rw,nosuid,nodev FAKE_JOURNAL_RC=0 \
+    "$BOX" checkup fixture
+}
+check "checkup: full CLI resolves the box and streams the guest probe" 0 \
+  "8.0 GiB available of 40.0 GiB" run_checkup_command
+
 check "checkup: legacy VM names missing swap and #178's seed as the fix" 1 "seed #178" \
   run_checkup vm unknown
-check "checkup: legacy VM names the 50%-of-RAM /tmp finding" 1 "50% of memory" \
+check "checkup: legacy VM names the 50%-of-RAM /tmp finding" 1 "50% of VM memory" \
   run_checkup vm unknown
 check "checkup: reports disk headroom as numbers" 1 "8.0 GiB available of 40.0 GiB" \
   run_checkup vm unknown
@@ -203,6 +234,8 @@ checkup_container_no_vm_fault() {
 }
 check "checkup: container with no swap has no VM swap finding" 0 "" \
   checkup_container_no_vm_fault
+check "checkup: legacy container branches the /tmp finding at its own mode" 1 \
+  "50% of the container's reported memory" run_checkup container unknown allowed
 
 checkup_unreadable_journal() {
   FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 \
@@ -8864,6 +8897,8 @@ ibox() {  # ibox [VAR=val ...] <cmd...> — run an installed box under the shim
 H1="$WORK/h1"; B1="$WORK/b1"
 check "install: a fresh install runs clean" 0 "done" inst "$H1" "$B1"
 check "install: the tree lands in versions/<v>" 0 "" test -x "$H1/versions/$VER/bin/box"
+check "install: the guest checkup probe lands executable beside the CLI" 0 "" \
+  test -x "$H1/versions/$VER/guest/checkup.sh"
 check "install: 'current' points at versions/<v>" 0 "versions/$VER" readlink "$H1/current"
 check "install: the PATH symlink rides the chain" 0 "$H1/current/bin/box" readlink "$B1/box"
 check "install: box --version answers through the whole chain" 0 "box $VER" ibox "$B1/box" --version
