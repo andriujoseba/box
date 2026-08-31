@@ -157,6 +157,7 @@ CMDS=(
   "templates^^^List the templates this install can mint^fn:cmd_templates^"
   "list^[--json]^^List your boxes^fn:cmd_list^"
   "info^<box> [--json]^box^One box: state, type, IP, what minted it, snapshot labels^fn:cmd_info^"
+  "checkup^<box>^box^Is this guest fit for work? Report seed, storage, memory, swap, and OOM history^fn:cmd_checkup^"
   "shell^<box>^box^Open a shell in a box, as its template's user^fn:cmd_shell^"
   "root^<box>^box^Open a root shell in a box — authorized by the host's Incus socket^fn:cmd_root^"
   "exec^<box> -- <cmd...>^box^Run a command inside a box^fn:cmd_exec^"
@@ -540,6 +541,25 @@ with the --from line to clone one.
   --json   Incus's JSON, straight through, for scripting.
 
   box info work
+EOF
+;;
+    checkup) cat <<'EOF'
+Report whether one guest is fit to do its work. This is deliberately separate
+from 'box doctor': doctor asks whether the HOST is fit to mint and isolate
+boxes; checkup enters one named GUEST and reads the state that affects its
+workload.
+
+  box checkup work
+
+The report is read-only. It prints the seed generation (or says it cannot be
+determined), numeric disk and memory headroom, /tmp's filesystem and size,
+VM swap or a container's host-managed swap policy, and whether the guest's
+kernel journal contains an OOM kill. A journal that is empty is reported as
+clean; one that cannot be read is reported as unknown, never as clean.
+
+Legacy ordinary VMs with no swap or a 50%-of-memory /tmp name seed #178 as the
+fix: remint from a current seed. checkup never provisions, deletes, remounts,
+or changes configuration; each finding can have a different owner.
 EOF
 ;;
     shell) cat <<'EOF'
@@ -2150,9 +2170,12 @@ cmd_new() {
     # (a VM's is the root device size, and a container's does not exist — its
     # root rides the pool, so a stamped value would be fiction); and tier,
     # which box_tier() derives from whoever is ASKING, not from the box.
+    local seed_generation="$t/1"
+    [ "$t" != tenant ] || seed_generation=tenant/2
     local stamp=(
       --config user.box.schema="$BOX_STAMP_SCHEMA"
       --config user.box.version="$(box_version)"
+      --config user.box.seed="$seed_generation"
       --config user.box.image="$T_IMAGE"
       --config user.box.mode="$m"
       --config user.box.mode.asked="$mode"
@@ -2546,6 +2569,31 @@ cmd_info() {
   done < <(incus snapshot list "$inst" --format csv 2>/dev/null)
   echo
   echo "Clone one:  box new --name <new> --from $box/${first:-<snapshot>}"
+}
+
+# Guest fitness is a different question from host fitness (#258). The probe is
+# shipped as a standalone, testable reader and streamed over stdin: nothing is
+# copied into the guest, no config is set, and no temporary file is created.
+# Incus exec enters as root, which is essential evidence rather than privilege
+# for mutation — the incident's unprivileged journalctl returned an empty
+# answer indistinguishable from "no OOM". The probe still treats an explicit
+# read failure as unknown, never clean.
+cmd_checkup() {
+  local script="$root/guest/checkup.sh" type types seed swap_policy
+  [ -f "$script" ] || die "guest checkup script not found at $script — re-run install.sh"
+
+  types="$(incus list "$inst" --format csv --columns t 2>/dev/null)"
+  type="$(awk 'NR == 1 { print; exit }' <<<"$types")"
+  case "$(printf '%s' "$type" | tr '[:upper:]' '[:lower:]')" in
+    virtual-machine|virtualmachine) type=vm ;;
+    container) type=container ;;
+    *) die "could not determine whether ${args[0]} is a VM or container" ;;
+  esac
+  seed="$(box_cfg "$inst" user.box.seed)"
+  swap_policy="$(incus config get --expanded "$inst" limits.memory.swap 2>/dev/null || true)"
+
+  timeout -k 5 30 incus exec "$inst" -- bash -s -- \
+    "$type" "${seed:-unknown}" "${swap_policy:-default}" < "$script"
 }
 
 # Which user does a shell land in? The template stamped it on the instance at

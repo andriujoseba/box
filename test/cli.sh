@@ -111,15 +111,27 @@ check "help new: publishes the large size row (#159)" 0 "large       8    16GiB 
 # box checkup — the guest-side fitness report (#258). doctor remains the host
 # report; this path enters one named guest as root and only reads state.
 # ---------------------------------------------------------------------------
-check "help checkup: asks whether one guest is fit" 0 "guest fit" "$BOX" help checkup
-check "checkup: is a separate command from doctor" 0 "checkup" \
-  bash -c 'row="$(grep '\''^  "checkup\^'\'' "$1")"; case "$row" in *"fn:cmd_checkup"*) exit 0;; *) exit 1;; esac' _ "$BOX"
+check "help checkup: asks whether one guest is fit" 0 "guest is fit" "$BOX" help checkup
+checkup_row() {
+  local row; row="$(grep -F '"checkup^' "$BOX")"
+  case "$row" in *"fn:cmd_checkup"*) printf checkup ;; *) return 1 ;; esac
+}
+check "checkup: is a separate command from doctor" 0 "checkup" checkup_row
 check "checkup: current mints carry the #178 seed generation" 0 "user.box.seed" \
   grep -F 'user.box.seed=' "$BOX"
+check "checkup: tenant is the #178 generation" 0 "tenant/2" \
+  grep -F 'seed_generation=tenant/2' "$BOX"
 
 CHECKUP="$ROOT/guest/checkup.sh"
 check "checkup: guest probe exists" 0 "" test -f "$CHECKUP"
 check "checkup: guest probe is valid bash" 0 "" bash -n "$CHECKUP"
+check "checkup: guest probe contains no mutation command" 1 "" \
+  grep -nE '(^|[;&|[:space:]])(touch|mkdir|rm|mv|cp|install|truncate|mount|swapon|swapoff|systemctl|sed -i)([;&|[:space:]]|$)|(^|[[:space:]])>[^&]' "$CHECKUP"
+checkup_host_mutates() {
+  awk '/^cmd_checkup\(\) \{/,/^\}/' "$BOX" \
+    | grep -qE 'incus (config set|config unset|file push)'
+}
+check "checkup: host wrapper does not change instance config" 1 "" checkup_host_mutates
 
 CKWORK="$(mktemp -d)"
 CKSHIM="$CKWORK/shim"; mkdir -p "$CKSHIM"
@@ -174,7 +186,7 @@ check "checkup: an empty readable kernel journal is explicitly clean" 1 "no OOM 
   run_checkup vm unknown
 
 checkup_current_vm() {
-  FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 run_checkup vm 2
+  FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 run_checkup vm tenant/2
 }
 checkup_current_vm_quiet() {
   local out; out="$(checkup_current_vm)"
@@ -182,7 +194,7 @@ checkup_current_vm_quiet() {
 }
 check "checkup: current VM seed is quiet on swap and /tmp" 0 "" checkup_current_vm_quiet
 
-checkup_container() { FAKE_TMP_SIZE=1073741824 run_checkup container 2 allowed; }
+checkup_container() { FAKE_TMP_SIZE=1073741824 run_checkup container tenant/2 allowed; }
 check "checkup: container swap is host-managed, never a missing-swap fault" 0 "host-managed" \
   checkup_container
 checkup_container_no_vm_fault() {
@@ -194,7 +206,7 @@ check "checkup: container with no swap has no VM swap finding" 0 "" \
 
 checkup_unreadable_journal() {
   FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 \
-    FAKE_JOURNAL_RC=1 FAKE_JOURNAL_ERROR="permission denied" run_checkup vm 2
+    FAKE_JOURNAL_RC=1 FAKE_JOURNAL_ERROR="permission denied" run_checkup vm tenant/2
 }
 check "checkup: unreadable OOM history is not reported clean" 1 "could not read kernel journal" \
   checkup_unreadable_journal
