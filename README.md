@@ -42,32 +42,94 @@ there is no `install` step and no host-run setup. See
 
 ## Install
 
+### Release artifact (recommended)
+
+Starting with `0.10.0`, every release publishes `box-<version>.sh`, a
+self-contained installer, beside `box-<version>.sh.sha256`. Download both
+files from the [release page](https://github.com/heavy-duty/box/releases) on a
+workstation that can reach GitHub. Copy the two files to the server, replacing
+the example login and host:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | bash
+scp box-0.10.0.sh box-0.10.0.sh.sha256 operator@server.example:
 ```
 
-By default that installs the **latest release** — the installer resolves the
-release tag off GitHub's `releases/latest` redirect (no API, no token) and
-downloads exactly that tree, so two operators running it get the same box.
-If the resolution fails it says so and stops — it never silently hands out
-`main`. `BOX_REF` picks another channel (a set ref is tried as a tag first,
+On the server, from the directory that received the files, verify the external
+checksum, verify the installer's embedded payload, inspect the version, and
+run it:
+
+```sh
+sha256sum -c box-0.10.0.sh.sha256
+bash box-0.10.0.sh --check
+bash box-0.10.0.sh --version
+bash box-0.10.0.sh
+```
+
+Run the last command as root for one global install or as a normal account for
+a per-user install. The artifact contains the box tree and uses that tree's own
+`install.sh`; the server needs neither GitHub nor `curl` to install box.
+
+This is a **no-GitHub install**, not a fully offline host. If you accept the
+installer's host-setup prompt, `box setup-host` still installs Incus through
+`apt`. Later, `box new` still pulls its base image from an Incus remote. Move
+the artifact onto the server by scp, USB, or another trusted route when GitHub
+is private, blocked, or unreachable; that removes the GitHub dependency from
+installing box, not the network requirements of host setup or image pulls.
+
+### Network install
+
+The smaller bootstrap downloads `install.sh` and then the selected source tree
+from GitHub. By default it installs the **latest release** — the installer
+resolves the release tag from GitHub's `releases/latest` redirect (no API, no
+token) and downloads exactly that tree, so two operators running it get the
+same box. If resolution fails it says so and stops; it never silently hands
+out `main`. `BOX_REF` picks another channel (a set ref is tried as a tag first,
 then as a branch — [#83](https://github.com/heavy-duty/box/issues/83)):
 
 ```sh
-curl -fsSL .../install.sh | bash                  # the latest release (default)
-curl -fsSL .../install.sh | BOX_REF=0.6.0 bash    # pin a release
-curl -fsSL .../install.sh | BOX_REF=main bash     # the development tip
+curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | BOX_REF=0.6.0 bash
+curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/main/install.sh | BOX_REF=main bash
 ```
 
-(A dev tree's `VERSION` carries a `-dev` suffix, so it lands beside your
-releases under `versions/`, never on top of one.)
+A dev tree's `VERSION` carries a `-dev` suffix, so it lands beside your
+releases under `versions/`, never on top of one.
 
-It asks first — **"Install box?"** — then downloads the tree into a
-**versioned** install (the way plenty of CLIs manage theirs), links `box` onto
-your `PATH`, and on a fresh host asks a second question: **"Set up this
+### Local checkout or tarball
+
+An already-present checkout can run the same installer without a download:
+
+```sh
+BOX_INSTALL_SOURCE="$PWD" bash install.sh
+```
+
+`BOX_INSTALL_SOURCE` also accepts a local source tarball. This path, like the
+release artifact, does not require `curl` or a GitHub route; the caller must
+already have both `install.sh` and the named source on the server.
+
+### Network boundary
+
+The network boundary is the download, not the installation logic:
+
+| Channel | What must reach GitHub | Private repository or no GitHub route |
+| --- | --- | --- |
+| `box-<version>.sh` release artifact | Only the machine that obtains the two release assets | Transfer the authorized download to the server; installation itself needs no GitHub access. |
+| `curl .../install.sh \| bash` with `BOX_REF` unset | The server fetches raw `install.sh`, follows `releases/latest`, then downloads the tagged source archive. | The unauthenticated public URLs fail; use a transferred artifact or local source. |
+| `BOX_REF=<tag>` | The server fetches raw `install.sh` and the named tag archive. | The unauthenticated public URLs fail; transfer the release artifact or source instead. |
+| `BOX_REF=<branch>` | The server fetches raw `install.sh` and the named branch archive. | The unauthenticated public URLs fail; transfer a checkout or source tarball instead. |
+| `BOX_INSTALL_SOURCE=<dir-or-tarball>` | Nothing, once `install.sh` and the source are local. | Works without GitHub; `curl` is not even a prerequisite. |
+
+Making `heavy-duty/box` private therefore breaks the documented unauthenticated
+`raw.githubusercontent.com` and archive downloads. It does not break an
+artifact or local-source install after an authorized user has moved those
+bytes onto the server.
+
+The installer asks first — **"Install box?"** — then uses the selected tree
+for a **versioned** install (the way plenty of CLIs manage theirs), links `box`
+onto your `PATH`, and on a fresh host asks a second question: **"Set up this
 machine as a box host now?"** Say yes and it builds the whole isolation stack
-for you (it may ask for `sudo`); say no and you can run `box setup-host`
-later. (No `git clone` needed.)
+for you (it may ask for `sudo`); say no and you can run `box setup-host` later.
+(No `git clone` needed.)
 
 The layout, under the install root (`~/.local/share/box`, or `/opt/box` for a
 root install):
