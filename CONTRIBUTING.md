@@ -58,10 +58,11 @@ and recovery paths are defined by
 [heavy-duty/ceremony](https://github.com/heavy-duty/ceremony/blob/0.7.7/README.md).
 Box pins the shared machinery and doctrine at `0.7.7`.
 
-Box uses the `file` version backend and has no artifact hook: for this
-pure-Bash tree, GitHub’s source tarball for the tag is the package, and
-`install.sh` downloads exactly that. `VERSION`, `CHANGELOG.md`, and
-`drills/<version>.md` remain box-owned release inputs.
+Box uses the `file` version backend, and ceremony's release-artifact hook
+publishes the checksummed, self-contained `box-<version>.sh` package. GitHub's
+source tarball remains the source that `install.sh` downloads; the release
+artifact embeds that same tree for transfer to a server. `VERSION`,
+`CHANGELOG.md`, and `drills/<version>.md` remain box-owned release inputs.
 
 ### What a box drill proves
 
