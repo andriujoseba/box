@@ -143,6 +143,12 @@ SELF="$(readlink -f "$0")"
 # anywhere else must still drill the tree the script belongs to rather than
 # whichever directory the operator happened to be standing in.
 CHECKOUT="$(cd -- "$(dirname -- "$SELF")/.." && pwd)"
+# A full drill is an admin rehearsal of the host stack, and that stack lives in
+# the default project. INCUS_PROJECT overrides the client's saved project
+# without rewriting ~/.config/incus/config.yml, so an admin who was last using
+# their restricted user-<uid> project cannot accidentally drill that weaker
+# surface (the failed 0.10.0 cut did exactly that, #263).
+export INCUS_PROJECT=default
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -233,6 +239,10 @@ pass=0; fail=0; findings=(); audit=()
 ok()   { printf '  %sPASS%s  %s\n' "$C_G" "$C_0" "$*"; pass=$((pass + 1)); tally; }
 no()   { printf '  %sFAIL%s  %s\n' "$C_R" "$C_0" "$*"; fail=$((fail + 1)); findings+=("FAIL: $*"); tally; }
 note() { printf '  %sNOTE%s  %s\n' "$C_Y" "$C_0" "$*"; findings+=("NOTE: $*"); }
+summary_no() { # a summary verdict is a failure, but not one of the phase probes
+  printf '  %sFAIL%s  %s\n' "$C_R" "$C_0" "$*"
+  fail=$((fail + 1)); findings+=("FAIL: $*")
+}
 inf()  { printf '        %s\n' "$*"; }
 phase(){ PHASE="$1"; shift; printf '\n%s══ %s%s\n' "$C_B" "$*" "$C_0"; }
 aud()  { audit+=("$*"); }                       # a measurement, for the record
@@ -1265,6 +1275,7 @@ EOF
   # tree or the header is the first thing in the log that is wrong about which
   # tree this run drilled (round 3, #225).
   phase - "Installing box from this checkout ($CHECKOUT @ $REC_TREE_SHA)"
+  inf "Incus project: $INCUS_PROJECT (pinned for this run; saved client configuration untouched)"
 
   # Sudo, up front and out loud. Later calls run unattended, and a password
   # prompt swallowed by a '-qq' redirect looks exactly like a hang. This now
@@ -1802,7 +1813,7 @@ else
 fi
 
 box info drill | grep -q '^IPV4' && ok "info shows an IPv4" || no "info has no IPV4 row"
-box info drill | grep -q 'SNAPSHOTS  (none)' && ok "info: no snapshots yet, offers to take one" || no "info snapshot-empty state wrong"
+box info drill | grep -q 'pristine' && ok "info lists the automatic pristine snapshot" || no "info lacks the automatic pristine snapshot"
 
 # The agent-payload probes lived here: 'claude --version' and 'gh --version'
 # inside the drill box, with a PATH diagnosis behind them. Both asked whether
@@ -1821,7 +1832,7 @@ box exec drill -- shellcheck --version >/dev/null 2>&1 \
 # --- the snapshot → clone workflow, which is the whole point of the tool ---
 box snapshot drill authed 2>&1 | grep -q authed && ok "snapshot drill authed" || no "snapshot failed"
 box info drill | grep -q 'authed' && ok "info lists the snapshot label" || no "info does not show the label"
-box info drill | grep -q -- '--from drill/authed' && ok "info prints the --from line to clone it" || no "info lacks the --from hint"
+box info drill | grep -q -- '--from drill/pristine' && ok "info's clone hint names the first snapshot it displays (pristine)" || no "info clone hint does not name drill/pristine"
 
 # --- the boundary: an instance box did NOT mint ----------------------
 incus launch images:debian/13 payroll >/dev/null 2>&1   # somebody else's instance
@@ -2147,7 +2158,7 @@ if [ "$ran" -lt "$expected" ] || [ -n "$short" ]; then
   # "never ran" is the common road here, not the only one: a block that failed
   # early emits its one `no` and leaves the rest of its phase unasserted, which
   # is short too. The verdict names both rather than diagnosing the wrong one.
-  no "the drill ran SHORT: $ran of $expected expected probes${short:+ — short in:$short} — a phase, or a block that depends on one, never ran, or failed before emitting the rest. This is not a clean sweep, whatever the pass count says (#153)."
+  summary_no "the drill ran SHORT: $ran of $expected expected probes${short:+ — short in:$short} — a phase, or a block that depends on one, never ran, or failed before emitting the rest. This is not a clean sweep, whatever the pass count says (#153)."
 fi
 printf '  %s/%s passed, %s failed\n' "$pass" "$expected" "$fail"
 if [ "${#findings[@]}" -gt 0 ]; then

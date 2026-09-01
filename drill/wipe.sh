@@ -38,6 +38,16 @@ done
 
 say()  { printf 'wipe: %s\n' "$*"; }
 
+read_projects() {
+  local inventory
+  if ! inventory="$(incus project list --format csv --columns n 2>/dev/null)" \
+    || [ -z "$inventory" ]; then
+    say "project inventory FAILED — cannot wipe or verify every project"
+    return 1
+  fi
+  projects="$inventory"
+}
+
 if [ "$YES" -ne 1 ]; then
   cat <<EOF
 This wipes EVERY trace of box/claudebox from this host ($(hostname)):
@@ -60,30 +70,39 @@ fi
 command -v incus >/dev/null || { say "incus is not installed — nothing box-shaped can exist; only firewall crumbs checked."; }
 
 if command -v incus >/dev/null; then
+  read_projects || exit 1
   # --- instances: both tags, then every name the drill has ever used --------
   # One delete at a time — a multi-name 'incus delete' aborts at the first
   # missing name (drill trap 5).
-  for tag in "user.box=1" "user.claudebox=1"; do
-    for i in $(incus list "$tag" -f csv -c n 2>/dev/null); do
-      timeout -k 5 60 incus delete -f "$i" >/dev/null 2>&1 \
-        && say "deleted instance $i ($tag)" || say "instance $i: delete FAILED — look at it by hand"
+  for project in $projects; do
+    for tag in "user.box=1" "user.claudebox=1"; do
+      for i in $(incus --project "$project" list "$tag" -f csv -c n 2>/dev/null); do
+        timeout -k 5 60 incus --project "$project" delete -f "$i" >/dev/null 2>&1 \
+          && say "deleted instance $i ($tag, project $project)" || say "instance $i in $project: delete FAILED — look at it by hand"
+      done
     done
-  done
-  for n in drill clone archive peer payroll cbprobe cbcopy cbnotours tpl; do
-    incus info "$n" >/dev/null 2>&1 || continue
-    timeout -k 5 60 incus delete -f "$n" >/dev/null 2>&1 \
-      && say "deleted untagged drill instance $n" || say "instance $n: delete FAILED — look at it by hand"
+    for n in drill clone archive peer payroll cbprobe cbcopy cbnotours tpl; do
+      incus --project "$project" info "$n" >/dev/null 2>&1 || continue
+      timeout -k 5 60 incus --project "$project" delete -f "$n" >/dev/null 2>&1 \
+        && say "deleted untagged drill instance $n (project $project)" || say "instance $n in $project: delete FAILED — look at it by hand"
+    done
   done
 
   # --- profiles, networks, ACLs — both generations ---------------------------
-  for p in box-profile box-net claude-dev; do
-    incus profile delete "$p" >/dev/null 2>&1 && say "deleted profile $p"
+  # Profiles are project-local. The old current-project-only loop left a
+  # user-1001/box-net behind, which kept the shared boxnet bridge in use and
+  # made wipe report a state it had no mechanism to clear (#263).
+  for project in $projects; do
+    for p in box-profile box-net claude-dev; do
+      incus --project "$project" profile delete "$p" >/dev/null 2>&1 \
+        && say "deleted profile $p (project $project)"
+    done
   done
   for net in boxnet claudenet; do
-    incus network delete "$net" >/dev/null 2>&1 && say "deleted network $net"
+    incus --project default network delete "$net" >/dev/null 2>&1 && say "deleted network $net"
   done
   for acl in box-isolate claude-isolate; do
-    incus network acl delete "$acl" >/dev/null 2>&1 && say "deleted ACL $acl"
+    incus --project default network acl delete "$acl" >/dev/null 2>&1 && say "deleted ACL $acl"
   done
 
   # --- cached images: NOT wiped by default -----------------------------------
@@ -164,11 +183,16 @@ fi
 # --- verdict: assert the ABSENCE, don't trust the removals' exit codes -------
 left=""
 if command -v incus >/dev/null; then
-  for tag in "user.box=1" "user.claudebox=1"; do
-    [ -n "$(incus list "$tag" -f csv -c n 2>/dev/null)" ] && left="$left instances($tag)"
+  read_projects || exit 1
+  for project in $projects; do
+    for tag in "user.box=1" "user.claudebox=1"; do
+      [ -n "$(incus --project "$project" list "$tag" -f csv -c n 2>/dev/null)" ] && left="$left instances($tag@$project)"
+    done
+    for p in box-profile box-net claude-dev; do
+      incus --project "$project" profile show "$p" >/dev/null 2>&1 && left="$left $p@$project"
+    done
   done
-  for net in boxnet claudenet; do incus network show "$net" >/dev/null 2>&1 && left="$left $net"; done
-  for p in box-profile box-net claude-dev; do incus profile show "$p" >/dev/null 2>&1 && left="$left $p"; done
+  for net in boxnet claudenet; do incus --project default network show "$net" >/dev/null 2>&1 && left="$left $net"; done
 fi
 for t in "inet box" "bridge box" "inet claudebox" "bridge claudebox"; do
   # shellcheck disable=SC2086
