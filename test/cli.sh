@@ -7681,6 +7681,18 @@ check "drill emit: a short run EXITS NON-ZERO with a record written" 1 \
 check "drill emit: ...and the record it wrote carries the shortfall, not a sweep" 0 \
   "FAIL: the drill ran SHORT:" cat "$RECOUT"
 check "drill emit: ...against the full denominator, 62/71" 0 "**62/71 passed" cat "$RECOUT"
+check "drill emit: a short run has no unattributed summary probe" 1 "" \
+  grep -q 'unattributed' "$RECOUT"
+short_ledgers_agree() {
+  local out terminal emitted
+  out="$(run_emit 'pass=62; fail=0; PHASE_RAN[C]=0')"
+  terminal="$(printf '%s\n' "$out" | grep '^  probes')"
+  # shellcheck disable=SC2016
+  emitted="$(sed -n '/^```$/,/^```$/p' "$RECOUT" | grep '^  probes')"
+  [ "$terminal" = "$emitted" ]
+}
+check "drill emit: terminal and emitted ledgers agree on a short run" 0 "" \
+  short_ledgers_agree
 
 # A record that cannot be written must not be able to turn a clean drill red:
 # the exit status is the floor's verdict on the DRILL, and a full disk has no
@@ -8501,9 +8513,9 @@ cat > "$REXWORK/stage2.sh" <<'SHIM'
 #!/usr/bin/env bash
 # The second stage, reduced to "say what you were handed". Delimited, so a value
 # that lost or gained a character is visible rather than merely different.
-printf 'argv=[%s] record=[%s] runid=[%s] dirty=[%s] keep=[%s] t0=[%s] ingroup=[%s]\n' \
+printf 'argv=[%s] record=[%s] runid=[%s] dirty=[%s] keep=[%s] t0=[%s] ingroup=[%s] project=[%s]\n' \
   "${1:-}" "$DRILL_RECORD" "$DRILL_RUN_ID" "$DRILL_ALLOW_DIRTY" \
-  "$DRILL_KEEP" "$DRILL_T0" "$IN_GROUP"
+  "$DRILL_KEEP" "$DRILL_T0" "$IN_GROUP" "$INCUS_PROJECT"
 # The latched tree, which stage 2 cannot re-measure: by the time it runs, the
 # checkout has been installed and may have moved underneath the drill.
 printf 'tree=[%s] paths=[%s] repo=[%s] ref=[%s] sha=[%s]\n' \
@@ -8518,7 +8530,7 @@ reexec() {   # reexec <record> <run-id> <allow-dirty> → what stage 2 received
   # the mistake it is here to catch.
   PATH="$REXWORK:$PATH" bash -c "set -u
     . '$REEXECFN'
-    OWNS=0; KEEP=0; DRILL_T0=1750000000
+    OWNS=0; KEEP=0; DRILL_T0=1750000000; export INCUS_PROJECT=default
     SELF='$REXWORK/stage2.sh'
     TREE_DIRTY=1; TREE_DIRTY_PATHS=' M tracked'
     REC_TREE_REPO=heavy-duty/box; REC_TREE_REF=abc1234-dirty; REC_TREE_SHA=abc1234
@@ -8553,6 +8565,8 @@ check "drill re-exec: ...and the three tree fields the record carries" 0 \
   "repo=[heavy-duty/box] ref=[abc1234-dirty] sha=[abc1234]" reexec '' '' 1
 check "drill re-exec: ...and so does IN_GROUP, or the second stage re-execs forever" 0 \
   "ingroup=[1]" reexec '' '' 0
+check "drill re-exec: the pinned default project reaches the second stage" 0 \
+  "project=[default]" reexec '' '' 0
 
 # THE boundary. An apostrophe is legal in a Unix pathname and in a run ID, and
 # this is the reproduction that was reported: the old line exited 127 here.
@@ -8581,7 +8595,7 @@ check "drill re-exec: the drill's own path may contain a space and an apostrophe
   "argv=[--in-group]" \
   bash -c "PATH='$REXWORK':\$PATH; set -u
     . '$REEXECFN'
-    OWNS=0; KEEP=0; ALLOW_DIRTY=0; DRILL_T0=1; RECORD=; RUN_ID=
+    OWNS=0; KEEP=0; ALLOW_DIRTY=0; DRILL_T0=1; RECORD=; RUN_ID=; export INCUS_PROJECT=default
     TREE_DIRTY=0; TREE_DIRTY_PATHS=
     REC_TREE_REPO=; REC_TREE_REF=; REC_TREE_SHA=
     SELF=\$1
@@ -8597,6 +8611,8 @@ awk '/^# >>> drill settings/,/^# <<< drill settings/' "$ROOT/drill/drill.sh" > "
 check "drill settings: extracted from drill.sh (guards the awk)" 0 "--emit-record" \
   cat "$SETFN"
 check "drill settings: the extracted block is valid bash" 0 "" bash -n "$SETFN"
+check "drill settings: pins Incus to default without switching saved config" 0 \
+  "export INCUS_PROJECT=default" grep -F 'export INCUS_PROJECT=default' "$SETFN"
 settings() {   # settings <env-assignment...> -- <argv...> → the resolved settings
   # Seeded rather than empty: "${env[@]}" on an empty array is an unbound
   # variable under this file's set -u on bash before 4.4.
@@ -9343,6 +9359,47 @@ for f in host/teardown-host.sh drill/wipe.sh; do
   check "$f: the numbered-delete loop breaks on absence, not on a pipe" 0 "" \
     grep -qF '[ -n "$line" ] || break' "$ROOT/$f"
 done
+
+# wipe's shared network can be held by a profile in ANY project. The 0.10.0
+# release run found user-1001/box-net after the old current-project-only loop
+# claimed to have wiped the host (#263). Drive the real script against a fake
+# three-project daemon; sudo is blocked so this fixture cannot touch its host.
+WIPEWORK="$(mktemp -d)"
+cat > "$WIPEWORK/incus" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$WIPE_LOG"
+if [ "$*" = "project list --format csv --columns n" ]; then
+  printf 'default\nuser-1000\nuser-1001\n'
+  exit 0
+fi
+case "$*" in
+  *" profile delete box-profile"|*" profile delete box-net"|*" profile delete claude-dev") exit 0 ;;
+  "--project default network delete "*|"--project default network acl delete "*) exit 0 ;;
+  *) exit 1 ;;
+esac
+SHIM
+cat > "$WIPEWORK/sudo" <<'SHIM'
+#!/bin/sh
+# Never execute a privileged command from this host-independent fixture.
+exit 1
+SHIM
+chmod +x "$WIPEWORK/incus" "$WIPEWORK/sudo"
+WIPELOG="$WIPEWORK/incus.log"
+WIPE_LOG="$WIPELOG" PATH="$WIPEWORK:/usr/bin:/bin" \
+  bash "$ROOT/drill/wipe.sh" --yes >"$WIPEWORK/out" 2>&1
+check "wipe: a three-project daemon finishes clean" 0 "clean — no trace" cat "$WIPEWORK/out"
+for project in default user-1000 user-1001; do
+  for profile in box-profile box-net claude-dev; do
+    check "wipe: deletes $profile from $project" 0 "" \
+      grep -qF -- "--project $project profile delete $profile" "$WIPELOG"
+  done
+done
+# shellcheck disable=SC2016
+check "wipe: deletes profiles before the shared network" 0 "" \
+  bash -c 'p="$(grep -n -- "--project user-1001 profile delete box-net" "$1" | cut -d: -f1)"
+    n="$(grep -n -- "--project default network delete boxnet" "$1" | cut -d: -f1)"
+    [ -n "$p" ] && [ -n "$n" ] && [ "$p" -lt "$n" ]' _ "$WIPELOG"
+check "wipe: never deletes an unrelated profile" 1 "" grep -q 'profile delete default' "$WIPELOG"
 
 # Same other-direction pin for the non-ufw writer the sweep now names: the
 # --purge leftover assert must match a captured trust store, so the sweep
