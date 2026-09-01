@@ -38,6 +38,16 @@ done
 
 say()  { printf 'wipe: %s\n' "$*"; }
 
+read_projects() {
+  local inventory
+  if ! inventory="$(incus project list --format csv --columns n 2>/dev/null)" \
+    || [ -z "$inventory" ]; then
+    say "project inventory FAILED — cannot wipe or verify every project"
+    return 1
+  fi
+  projects="$inventory"
+}
+
 if [ "$YES" -ne 1 ]; then
   cat <<EOF
 This wipes EVERY trace of box/claudebox from this host ($(hostname)):
@@ -60,8 +70,7 @@ fi
 command -v incus >/dev/null || { say "incus is not installed — nothing box-shaped can exist; only firewall crumbs checked."; }
 
 if command -v incus >/dev/null; then
-  projects="$(incus project list --format csv --columns n 2>/dev/null || true)"
-  [ -n "$projects" ] || projects=default
+  read_projects || exit 1
   # --- instances: both tags, then every name the drill has ever used --------
   # One delete at a time — a multi-name 'incus delete' aborts at the first
   # missing name (drill trap 5).
@@ -174,8 +183,7 @@ fi
 # --- verdict: assert the ABSENCE, don't trust the removals' exit codes -------
 left=""
 if command -v incus >/dev/null; then
-  projects="$(incus project list --format csv --columns n 2>/dev/null || true)"
-  [ -n "$projects" ] || projects=default
+  read_projects || exit 1
   for project in $projects; do
     for tag in "user.box=1" "user.claudebox=1"; do
       [ -n "$(incus --project "$project" list "$tag" -f csv -c n 2>/dev/null)" ] && left="$left instances($tag@$project)"

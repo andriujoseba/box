@@ -9369,6 +9369,11 @@ cat > "$WIPEWORK/incus" <<'SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$WIPE_LOG"
 if [ "$*" = "project list --format csv --columns n" ]; then
+  project_list_reads="$(grep -cF 'project list --format csv --columns n' "$WIPE_LOG")"
+  if [ "${WIPE_PROJECT_LIST_PARTIAL_AT:-0}" = "$project_list_reads" ]; then
+    printf 'default\n'
+    exit 1
+  fi
   printf 'default\nuser-1000\nuser-1001\n'
   exit 0
 fi
@@ -9400,6 +9405,24 @@ check "wipe: deletes profiles before the shared network" 0 "" \
     n="$(grep -n -- "--project default network delete boxnet" "$1" | cut -d: -f1)"
     [ -n "$p" ] && [ -n "$n" ] && [ "$p" -lt "$n" ]' _ "$WIPELOG"
 check "wipe: never deletes an unrelated profile" 1 "" grep -q 'profile delete default' "$WIPELOG"
+
+WIPE_PROJECT_LIST_PARTIAL_AT=1 WIPE_LOG="$WIPEWORK/partial-removal.log" \
+  PATH="$WIPEWORK:/usr/bin:/bin" \
+  bash "$ROOT/drill/wipe.sh" --yes >"$WIPEWORK/partial.out" 2>&1 || partial_status=$?
+check "wipe: a partial removal inventory makes the run fail closed" 1 "" \
+  test "${partial_status:-0}" -eq 0
+check "wipe: a failed inventory explains why it cannot verify the host" 0 \
+  "project inventory FAILED" cat "$WIPEWORK/partial.out"
+check "wipe: a failed inventory cannot produce the clean verdict" 1 "" \
+  grep -q "clean — no trace" "$WIPEWORK/partial.out"
+
+WIPE_PROJECT_LIST_PARTIAL_AT=2 WIPE_LOG="$WIPEWORK/partial-verdict.log" \
+  PATH="$WIPEWORK:/usr/bin:/bin" \
+  bash "$ROOT/drill/wipe.sh" --yes >"$WIPEWORK/verdict.out" 2>&1 || verdict_status=$?
+check "wipe: a partial verification inventory makes the run fail closed" 1 "" \
+  test "${verdict_status:-0}" -eq 0
+check "wipe: a failed verification cannot produce the clean verdict" 1 "" \
+  grep -q "clean — no trace" "$WIPEWORK/verdict.out"
 
 # Same other-direction pin for the non-ufw writer the sweep now names: the
 # --purge leftover assert must match a captured trust store, so the sweep
