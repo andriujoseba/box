@@ -112,6 +112,7 @@ check "help new: publishes the large size row (#159)" 0 "large       8    16GiB 
 # report; this path enters one named guest as root and only reads state.
 # ---------------------------------------------------------------------------
 check "help checkup: asks whether one guest is fit" 0 "guest is fit" "$BOX" help checkup
+check "help checkup: documents its finding exit status" 0 "exits 0" "$BOX" help checkup
 checkup_row() {
   local row; row="$(grep -F '"checkup^' "$BOX")"
   case "$row" in *"fn:cmd_checkup"*) printf checkup ;; *) return 1 ;; esac
@@ -139,17 +140,20 @@ CKWORK="$(mktemp -d)"
 CKSHIM="$CKWORK/shim"; mkdir -p "$CKSHIM"
 cat > "$CKSHIM/free" <<'SHIM'
 #!/usr/bin/env bash
+[ "${FAKE_FREE_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_FREE_ERROR:-free failed}" >&2; exit "${FAKE_FREE_RC}"; }
 printf 'Mem: %s 0 0 0 0 %s\nSwap: %s 0 %s\n' \
   "${FAKE_MEM_TOTAL:?}" "${FAKE_MEM_AVAILABLE:?}" \
   "${FAKE_SWAP_TOTAL:-0}" "${FAKE_SWAP_TOTAL:-0}"
 SHIM
 cat > "$CKSHIM/df" <<'SHIM'
 #!/usr/bin/env bash
+[ "${FAKE_DF_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_DF_ERROR:-df failed}" >&2; exit "${FAKE_DF_RC}"; }
 printf '1B-blocks Avail Use%%\n%s %s %s\n' \
   "${FAKE_DISK_TOTAL:?}" "${FAKE_DISK_AVAILABLE:?}" "${FAKE_DISK_USED:?}"
 SHIM
 cat > "$CKSHIM/findmnt" <<'SHIM'
 #!/usr/bin/env bash
+[ "${FAKE_FINDMNT_RC:-0}" -eq 0 ] || { printf '%s\n' "${FAKE_FINDMNT_ERROR:-}" >&2; exit "${FAKE_FINDMNT_RC}"; }
 printf '%s %s %s\n' "${FAKE_TMP_FSTYPE:?}" "${FAKE_TMP_SIZE:?}" "${FAKE_TMP_OPTIONS:-rw}"
 SHIM
 cat > "$CKSHIM/journalctl" <<'SHIM'
@@ -181,12 +185,15 @@ run_checkup() { # run_checkup <vm|container> <seed> [swap-policy]
     FAKE_MEM_TOTAL="${FAKE_MEM_TOTAL:-4294967296}" \
     FAKE_MEM_AVAILABLE="${FAKE_MEM_AVAILABLE:-2147483648}" \
     FAKE_SWAP_TOTAL="${FAKE_SWAP_TOTAL:-0}" \
+    FAKE_FREE_RC="${FAKE_FREE_RC:-0}" \
     FAKE_DISK_TOTAL="${FAKE_DISK_TOTAL:-42949672960}" \
     FAKE_DISK_AVAILABLE="${FAKE_DISK_AVAILABLE:-8589934592}" \
     FAKE_DISK_USED="${FAKE_DISK_USED:-80%}" \
+    FAKE_DF_RC="${FAKE_DF_RC:-0}" \
     FAKE_TMP_FSTYPE="${FAKE_TMP_FSTYPE:-tmpfs}" \
     FAKE_TMP_SIZE="${FAKE_TMP_SIZE:-2147483648}" \
     FAKE_TMP_OPTIONS="${FAKE_TMP_OPTIONS:-rw,nosuid,nodev}" \
+    FAKE_FINDMNT_RC="${FAKE_FINDMNT_RC:-0}" \
     FAKE_JOURNAL_RC="${FAKE_JOURNAL_RC:-0}" \
     FAKE_JOURNAL_OUTPUT="${FAKE_JOURNAL_OUTPUT:-}" \
     FAKE_JOURNAL_ERROR="${FAKE_JOURNAL_ERROR:-}" \
@@ -237,6 +244,31 @@ check "checkup: container with no swap has no VM swap finding" 0 "" \
 check "checkup: legacy container branches the /tmp finding at its own mode" 1 \
   "50% of the container's reported memory" run_checkup container unknown allowed
 
+checkup_unmounted_tmp_continues() {
+  local out rc=0
+  out="$(FAKE_FINDMNT_RC=1 FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 \
+    run_checkup vm tenant/2)" || rc=$?
+  [ "$rc" -eq 1 ] \
+    && grep -q "TMP.*could not determine /tmp's mount" <<<"$out" \
+    && grep -q '^SWAP.*4.0 GiB total' <<<"$out" \
+    && grep -q '^OOM.*no OOM kill logged' <<<"$out"
+}
+check "checkup: an unmounted /tmp is explicit and later checks still run" 0 "" \
+  checkup_unmounted_tmp_continues
+
+checkup_unreadable_metrics_continue() {
+  local out rc=0
+  out="$(FAKE_DF_RC=1 FAKE_FREE_RC=1 FAKE_TMP_SIZE=1073741824 \
+    run_checkup container tenant/2 allowed)" || rc=$?
+  [ "$rc" -eq 1 ] \
+    && grep -q '^DISK.*could not determine disk headroom' <<<"$out" \
+    && grep -q '^MEMORY.*could not determine memory headroom' <<<"$out" \
+    && grep -q '^SWAP.*host-managed' <<<"$out" \
+    && grep -q '^OOM.*no OOM kill logged' <<<"$out"
+}
+check "checkup: unreadable headroom is explicit and later checks still run" 0 "" \
+  checkup_unreadable_metrics_continue
+
 checkup_unreadable_journal() {
   FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 \
     FAKE_JOURNAL_RC=1 FAKE_JOURNAL_ERROR="permission denied" run_checkup vm tenant/2
@@ -249,6 +281,13 @@ checkup_unreadable_not_clean() {
 }
 check "checkup: unreadable OOM history does not claim none" 0 "" \
   checkup_unreadable_not_clean
+
+checkup_permission_words_are_data() {
+  FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 \
+    FAKE_JOURNAL_OUTPUT="kernel audit: permission denied to pid 7" run_checkup vm tenant/2
+}
+check "checkup: readable journal content does not impersonate a read failure" 0 \
+  "no OOM kill logged" checkup_permission_words_are_data
 
 rm -rf "$CKWORK"
 

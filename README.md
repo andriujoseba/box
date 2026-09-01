@@ -631,7 +631,7 @@ box rm <box> [--force]       # delete the box + its snapshots (asks first)
 box expose <box> <port> [<host-port>] | --list | --remove <port>
                              # forward a box port to host loopback — see a dev server
 box incus <box> -- <args...> # escape hatch: any incus command, box resolved
-box checkup <box>             # is this guest fit for work? read-only fitness report
+box checkup <box>            # is this guest fit for work? read-only fitness report
 box doctor [--fix|--pin-dns] # is this host fit to mint boxes? diagnose from ground truth
 box setup-host               # one-time host setup: Incus, the boxnet stack, the firewall
 box teardown-host [--purge-incus]   # remove the host stack (both name generations)
@@ -907,6 +907,9 @@ logged”; an unreadable journal is reported as unknown, never clean. A legacy
 ordinary VM with no swap or a 50%-of-memory `/tmp` points to the current #178
 seed and reminting, not to a `--fix`: those findings can have different owners,
 and `checkup` does not guess which state it may change.
+
+`checkup` exits `0` when every check is clean and `1` when it reports a
+finding or could not run a check, so scripts can distinguish a clean guest.
 
 ## Recipes: the `.box/` convention
 

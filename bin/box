@@ -559,7 +559,8 @@ clean; one that cannot be read is reported as unknown, never as clean.
 
 Legacy ordinary VMs with no swap or a 50%-of-memory /tmp name seed #178 as the
 fix: remint from a current seed. checkup never provisions, deletes, remounts,
-or changes configuration; each finding can have a different owner.
+or changes configuration; each finding can have a different owner. It exits 0
+when every check is clean and 1 when it reports a finding or an unknown check.
 EOF
 ;;
     shell) cat <<'EOF'
@@ -2170,6 +2171,8 @@ cmd_new() {
     # (a VM's is the root device size, and a container's does not exist — its
     # root rides the pool, so a stamped value would be fiction); and tier,
     # which box_tier() derives from whoever is ASKING, not from the box.
+    # tenant/2 is the generation that introduced #178's bounded /tmp and VM
+    # swapfile; older boxes have no marker and checkup reports that honestly.
     local seed_generation="$t/1"
     [ "$t" != tenant ] || seed_generation=tenant/2
     local stamp=(
@@ -2579,12 +2582,11 @@ cmd_info() {
 # answer indistinguishable from "no OOM". The probe still treats an explicit
 # read failure as unknown, never clean.
 cmd_checkup() {
-  local script="$root/guest/checkup.sh" type types seed swap_policy
+  local script="$root/guest/checkup.sh" type seed swap_policy
   [ -f "$script" ] || die "guest checkup script not found at $script — re-run install.sh"
 
-  types="$(incus list "$inst" --format csv --columns t 2>/dev/null)"
-  type="$(awk 'NR == 1 { print; exit }' <<<"$types")"
-  case "$(printf '%s' "$type" | tr '[:upper:]' '[:lower:]')" in
+  type="$(inst_type_of "$inst")"
+  case "$type" in
     virtual-machine|virtualmachine) type=vm ;;
     container) type=container ;;
     *) die "could not determine whether ${args[0]} is a VM or container" ;;
