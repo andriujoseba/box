@@ -16,7 +16,10 @@ gib() {
 problems=0
 printf '%-9s%s\n' TYPE "$( [ "$kind" = vm ] && echo VM || echo CONTAINER )"
 case "$seed" in
-  unknown) printf '%-9s%s\n' SEED "unknown — this box carries no seed-generation marker" ;;
+  unknown)
+    printf '%-9s%s\n' SEED "unknown — this box carries no seed-generation marker"
+    problems=$((problems + 1))
+    ;;
   *)       printf '%-9s%s\n' SEED "$seed" ;;
 esac
 
@@ -61,12 +64,14 @@ if [ "$tmp_rc" -ne 0 ] \
 else
   printf '%-9s%s at %s (%s)\n' TMP "$tmp_fstype" "$(gib "$tmp_size")" "$tmp_options"
 fi
-# The measured legacy shape was systemd's stock 50%-of-RAM tmpfs. Allow a
-# small accounting margin rather than demanding byte equality.
+# The measured legacy shape was systemd's stock 50%-of-RAM tmpfs. The current
+# #178 seed uses a fixed 1 GiB cap, which is itself 50% on a 2 GiB box. Require
+# both the incident-backed ratio floor and a size above that cap; no upper
+# ratio bound lets a larger legacy tmpfs hide by being worse than the incident.
 if [ "$tmp_fstype" = tmpfs ] \
   && [ -n "$mem_total" ] \
-  && [ "$tmp_size" -gt $((mem_total * 45 / 100)) ] \
-  && [ "$tmp_size" -lt $((mem_total * 55 / 100)) ]; then
+  && [ "$tmp_size" -gt 1073741824 ] \
+  && [ "$tmp_size" -gt $((mem_total * 45 / 100)) ]; then
   if [ "$kind" = container ]; then
     echo "FIX       /tmp is about 50% of the container's reported memory; remint with tenant seed #178 for the fixed 1.0 GiB cap."
   else

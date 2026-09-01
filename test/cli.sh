@@ -223,6 +223,17 @@ check "checkup: reports memory headroom as numbers" 1 "2.0 GiB available of 4.0 
 check "checkup: an empty readable kernel journal is explicitly clean" 1 "no OOM kill logged" \
   run_checkup vm unknown
 
+checkup_unknown_seed_finds_only_seed() {
+  local out rc=0
+  out="$(FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 \
+    run_checkup vm unknown)" || rc=$?
+  [ "$rc" -eq 1 ] \
+    && grep -q '^SEED.*unknown' <<<"$out" \
+    && ! grep -q '^FIX' <<<"$out"
+}
+check "checkup: an otherwise-clean unknown seed is a finding" 0 "" \
+  checkup_unknown_seed_finds_only_seed
+
 checkup_current_vm() {
   FAKE_TMP_SIZE=1073741824 FAKE_SWAP_TOTAL=4294967296 run_checkup vm tenant/2
 }
@@ -231,6 +242,20 @@ checkup_current_vm_quiet() {
   ! grep -q "FIX" <<<"$out" && grep -q "4.0 GiB" <<<"$out" && grep -q "1.0 GiB" <<<"$out"
 }
 check "checkup: current VM seed is quiet on swap and /tmp" 0 "" checkup_current_vm_quiet
+checkup_current_small_vm_quiet() {
+  local out
+  out="$(FAKE_MEM_TOTAL=2147483648 FAKE_MEM_AVAILABLE=1073741824 \
+    checkup_current_vm)"
+  ! grep -q '^FIX' <<<"$out" && grep -q '^TMP.*1.0 GiB' <<<"$out"
+}
+check "checkup: current 2 GiB VM keeps the fixed 1 GiB /tmp quiet" 0 "" \
+  checkup_current_small_vm_quiet
+
+checkup_larger_legacy_tmp() {
+  FAKE_TMP_SIZE=2576980378 FAKE_SWAP_TOTAL=4294967296 run_checkup vm unknown
+}
+check "checkup: a larger legacy /tmp cannot escape the finding window" 1 \
+  "50% of VM memory" checkup_larger_legacy_tmp
 
 checkup_container() { FAKE_TMP_SIZE=1073741824 run_checkup container tenant/2 allowed; }
 check "checkup: container swap is host-managed, never a missing-swap fault" 0 "host-managed" \
