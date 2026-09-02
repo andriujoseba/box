@@ -3986,9 +3986,13 @@ check "forensics: a console that DID answer is tailed (#266)" \
   0 "console, last non-blank lines" forensics "$F2"
 check "forensics: ...and the image triage still fires off it (#266)" \
   0 "THE KERNEL WOULD NOT DECOMPRESS" forensics "$F2"
+# Byte-counted rather than pattern-matched: 'grep -P' is a GNU extension and
+# this suite's header promises it runs anywhere. The file is clean exactly when
+# stripping it to printable ASCII, tab and newline removes nothing.
 console_is_clean() {
   forensics "$1" >/dev/null
-  ! LC_ALL=C grep -qP '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]' "/tmp/box-console-$1.log"
+  local f="/tmp/box-console-$1.log"
+  [ "$(wc -c <"$f")" -eq "$(LC_ALL=C tr -cd '\11\12\40-\176' <"$f" | wc -c)" ]
 }
 check "forensics: the kept console carries no escape bytes at all (#266)" 0 "" \
   console_is_clean "$F2"
@@ -4013,6 +4017,35 @@ check "wait_agent: an unreadable state is not a stopped instance (#266)" 0 "" ba
   fn="$(awk "/^instance_is_running\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
   printf "%s\n" "$fn" | grep -qE "STOPPED\|ERROR\) return 1" &&
   printf "%s\n" "$fn" | grep -qE "\*\)\s+return 0"'
+# The drill's half of the same rule (#266). A bundle in /tmp that no finding
+# names is evidence only for whoever is still sitting at that terminal, and the
+# finding is what the emitted drills/<version>.md keeps — so the path rides the
+# finding. Driven out of drill.sh, not asserted on it.
+drill_evidence() {   # drill_evidence <box-name> — mint_evidence, out of drill.sh
+  # shellcheck disable=SC2016  # $1..$3 expand in the child shell, by design
+  bash -c '
+    set -u
+    eval "$(awk "/^mint_evidence\(\) \{/,/^\}/" "$1")"
+    printf "log-line-one\nlog-line-two\n" > "$3/mint-evidence.log"
+    mint_evidence "$3/mint-evidence.log" "$2"
+  ' _ "$ROOT/drill/drill.sh" "$1" "$MWORK"
+}
+drill_evidence_says() { drill_evidence "$1" | grep -qF -e "$2"; }
+rm -rf /tmp/box-forensics-d266
+check "drill: a failed-clone finding still tails the log it always did (#266)" \
+  0 "log-line-two" drill_evidence d266
+check "drill: ...and invents no bundle when the mint left none (#266)" 1 "" \
+  drill_evidence_says d266 "forensics kept:"
+mkdir -p /tmp/box-forensics-d266
+check "drill: ...but NAMES the bundle in the finding when there is one (#266)" \
+  0 "forensics kept: /tmp/box-forensics-d266" drill_evidence d266
+rmdir /tmp/box-forensics-d266
+# Both clone findings carry it. The sibling peer clone failed the same way in
+# the same run, and a record naming one bundle and not the other is half a
+# record — which is the shape of #266's own evidence.
+# shellcheck disable=SC2016  # the $-string is a literal inside bash -c
+check "drill: BOTH clone findings carry the evidence line (#266)" 0 "2" bash -c '
+  grep -c "mint_evidence /tmp/mint-" "'"$ROOT"'/drill/drill.sh"'
 
 # --- the read half: 'box info' surfaces it ---------------------------------
 # A stamp nothing can read is not done. cmd_info printed NAME/STATE/TYPE/IPV4

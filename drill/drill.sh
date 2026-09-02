@@ -1237,6 +1237,20 @@ box_pings() {   # box_pings <box> <ip> → 0 if it answers ICMP
 # 5s on the drill's terminal proves the run is ALIVE — a silent multi-minute
 # mint is indistinguishable from a wedge, and that ambiguity has cost whole
 # evenings. The log line says where to watch the real progress.
+# A failed mint leaves a forensic bundle behind now (#266). The log's tail is
+# the symptom; the bundle is the evidence — and a finding that names only the
+# symptom is exactly how the 0.10.0 cut's two lost clones came to be
+# reconstructed from four lines. So the FINDING carries the path, not just the
+# terminal: findings are what the emitted drills/<version>.md record keeps, and
+# a path printed only to a terminal is gone with the terminal.
+mint_evidence() {   # mint_evidence <log> <box-name> → one line, for a finding
+  local extra=""
+  if [ -d "/tmp/box-forensics-$2" ]; then
+    extra=" — forensics kept: /tmp/box-forensics-$2"
+  fi
+  printf '%s%s' "$(tail -3 "$1" 2>/dev/null | tr '\n' ' ')" "$extra"
+}
+
 mint_box() {   # mint_box <log> <box-new args...> → box new's exit code
   local log="$1"; shift
   inf "watch it live in another terminal:  tail -f $log"
@@ -1856,7 +1870,7 @@ if mint_box /tmp/mint-clone.log --name clone --from archive/authed; then
   ok "new --from archive/authed (clone of a snapshot of a renamed box)"
   box exec clone -- true >/dev/null 2>&1 && ok "the clone is alive and enterable" || no "the clone is not enterable"
 else
-  no "clone FAILED — tail: $(tail -3 /tmp/mint-clone.log | tr '\n' ' ')"
+  no "clone FAILED — tail: $(mint_evidence /tmp/mint-clone.log clone)"
 fi
 
 # --- the escape hatch ------------------------------------------------------
@@ -1886,7 +1900,7 @@ printf '\n  cloning a peer for the sibling probes…\n'
 if mint_box /tmp/mint-peer.log --name peer --from archive/authed && wait_box peer; then
   ok "peer minted from archive/authed and answering"
 else
-  no "peer clone failed or never answered — tail: $(tail -3 /tmp/mint-peer.log | tr '\n' ' ')"
+  no "peer clone failed or never answered — tail: $(mint_evidence /tmp/mint-peer.log peer)"
 fi
 
 # C1 — public egress (#15 A1; resolving the hostname also proves A5, gateway DNS)
