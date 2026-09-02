@@ -1366,6 +1366,201 @@ template_mode_allowed() {
   [ "$no_container_fallback" != 1 ] || [ "$effective" = vm ] || [ "$requested" = container ]
 }
 
+# Strip whole escape sequences FIRST (while the ESC byte is present), then drop
+# any residual control bytes — otherwise 'tr' alone leaves the visible
+# '[1m[37m' halves behind. Result is clean, readable text.
+#
+# A shared filter, not a line inside the console capture, because #266 gave the
+# capture a second source: an instance log carries qemu's own escapes, and the
+# host side of a failure is no more printable raw than the guest side is.
+strip_ansi() {   # stdin -> stdout: printable ASCII, tab and newline. Nothing else.
+  sed -E $'s/\x1b\\[[0-9;:?]*[ -/]*[@-~]//g; s/\x1b[()#][0-9A-Za-z]//g; s/\x1b[=>PX^_].*?(\x1b\\\\|\x07)//g; s/\x1b.//g' \
+    2>/dev/null | tr -cd '\11\12\40-\176'
+}
+
+# One line of the bundle's index, and it never claims a file that holds nothing
+# (#266 round 1). $3, when given, is where that capture's stderr went — so a
+# capture that failed is reported WITH the reason it failed, rather than as a
+# path the reader will open to find empty.
+forensic_line() {   # $1 = path, $2 = what it is, $3 = its stderr file or ''
+  if [ -s "$1" ]; then
+    echo "box:   $1   $2" >&2
+  elif [ -n "$3" ] && [ -s "$3" ]; then
+    echo "box:   (not captured — $2: $(head -c 160 "$3" | tr '\n' ' '))" >&2
+  else
+    echo "box:   (not captured — $2: it produced nothing at all)" >&2
+  fi
+}
+
+# THE FORENSIC BUNDLE (#266). A timeout that prints nothing is a timeout nobody
+# can diagnose. The 0.10.0 cut drill lost two snapshot-derived clones to the
+# wait below and both tails read "(last non-blank lines: none)" — which is not
+# evidence of a silent guest, because the capture's OWN failure was thrown away
+# by '2>/dev/null || true' and arrives looking exactly the same. One symptom,
+# two unrelated causes, and the record could not say which it had witnessed.
+#
+# So every source is captured to a FILE that outlives the teardown the caller is
+# about to do, and an empty console is reported as the finding it is:
+#
+#   console   the guest's serial output — sanitized
+#   instance  'incus info --show-log', the HOST side. When the guest wrote no
+#             console output at all the answer is on incusd's side of the
+#             boundary, and until now box never looked there
+#   config    the expanded config, volatile keys included. #266's investigation
+#             asks for the copied instance's config before cleanup, and it is
+#             the one artifact a post-mortem cannot reconstruct: a copy carries
+#             its source's volatile.* verbatim, which is why cmd_import has to
+#             unset every volatile hwaddr by hand
+#   state     'incus info' — what the instance was doing when box gave up
+#
+# The bundle is a fresh 0700 directory per attempt, and both halves of that are
+# load-bearing (#266 round 1). It used to be /tmp/box-forensics-<instance>,
+# taken with 'mkdir -p' — but the restricted tier gives each tenant their own
+# user-<uid> project, so two tenants legitimately hold a box called 'work' and
+# share one sticky /tmp. 'mkdir -p' ADOPTS whatever sits at that name, and each
+# of the three ways that goes wrong defeats the bundle's whole purpose: the
+# expanded config (the tenant's user, their rendered cloud-init) becomes
+# readable to the other tenant at the umask's 0775/0664, a squatted unwritable
+# path makes every capture fail while the report still names the files, and
+# last week's directory is quoted as this failure's evidence. 'mktemp -d' only
+# ever CREATES, at 0700, so none of the three has a path back in.
+#
+# The path is therefore not predictable, and nothing may go looking for it by
+# name: box PRINTS it, and drill's finding reads it back out of that mint's own
+# log (drill/drill.sh, mint_evidence).
+agent_forensics() {   # $1 = instance, $2 = the one-line finding
+  local n="$1" what="$2" dir="" clog crc=0 origin
+  echo "box: $what" >&2
+  # Never fatal, any of it. This runs on the way to 'die' and its whole job is
+  # to leave evidence; a diagnostic that can itself kill the run replaces the
+  # failure under investigation with one of its own.
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/box-forensics-$n.XXXXXX" 2>/dev/null)" || dir=""
+  if [ -z "$dir" ]; then
+    echo "box: NO FORENSICS COULD BE KEPT — box could not create a private" >&2
+    echo "box: directory under ${TMPDIR:-/tmp}. Read the guest by hand, before" >&2
+    echo "box: the teardown this failure triggers takes it:" >&2
+    echo "box:   incus console $n --show-log" >&2
+    echo "box:   incus info $n --show-log" >&2
+    return 0
+  fi
+  clog="$dir/console.log"
+  # STORE FIRST, CAPTURE SECOND, and that order is the point (#266 round 1).
+  # Every file is opened here, before any incus runs. If the bundle cannot be
+  # written box says so and claims nothing; if it can, then every status below
+  # is incus's OWN. Folded together — a redirection inside the timed command —
+  # box's failure to open a file arrives as 'incus console exited 1', under a
+  # header naming incus: one symptom and two unrelated causes, which is the
+  # sentence this function exists to delete.
+  if ! ( : >"$dir/console.raw" && : >"$dir/console.err" && : >"$clog" \
+      && : >"$dir/instance.log" && : >"$dir/instance.err" \
+      && : >"$dir/config.yaml"  && : >"$dir/config.err" \
+      && : >"$dir/state.txt" ) 2>/dev/null; then
+    echo "box: THE BUNDLE COULD NOT BE WRITTEN — $dir would not take the" >&2
+    echo "box: capture files (no space left? read-only filesystem?), so box" >&2
+    echo "box: kept nothing. Read the guest by hand before the teardown:" >&2
+    echo "box:   incus console $n --show-log" >&2
+    echo "box:   incus info $n --show-log" >&2
+    return 0
+  fi
+  timeout -k 5 15 incus console "$n" --show-log </dev/null >"$dir/console.raw" 2>"$dir/console.err" || crc=$?
+  strip_ansi <"$dir/console.raw" >"$clog" 2>/dev/null || true
+  rm -f "$dir/console.raw"
+  timeout -k 5 15 incus info "$n" --show-log </dev/null 2>"$dir/instance.err" \
+    | strip_ansi >"$dir/instance.log" 2>/dev/null || true
+  # Timed like the two above them (#266 round 1): a wedged daemon is a
+  # thoroughly plausible state when a guest never answered its agent, and a
+  # diagnostic that hangs leaves the same nothing as a diagnostic that dies.
+  timeout -k 5 15 incus config show "$n" --expanded </dev/null >"$dir/config.yaml" 2>"$dir/config.err" || true
+  timeout -k 5 15 incus info "$n" </dev/null >"$dir/state.txt" 2>&1 || true
+
+  echo "box: forensics kept in $dir — they outlive the teardown this failure triggers:" >&2
+  # The console is always named: empty or not, the analysis below says which
+  # empty it is, and that IS the finding. The other three are named only when
+  # they hold something, because a line pointing at an empty file is the same
+  # false record — "here is your evidence", and there is none — that the
+  # adopted-directory bundle used to print (#266 round 1).
+  echo "box:   $clog   the guest's serial console, sanitized" >&2
+  forensic_line "$dir/instance.log" "'incus info --show-log' — the host side" "$dir/instance.err"
+  forensic_line "$dir/config.yaml"  "the expanded config, volatile keys and all" "$dir/config.err"
+  forensic_line "$dir/state.txt"    "'incus info'" ""
+  # Every tail below ends in '|| true', and that is not belt-and-braces (#266).
+  # 'grep -v' on a file with no matching line exits 1, pipefail makes that the
+  # pipeline's status, and 'set -e' at the top of this file then ENDS THE RUN
+  # right here. Which is precisely what the drill witnessed: the two lost clones
+  # printed "(last non-blank lines: none)" and then nothing — no image triage,
+  # no 'agent unreachable', because box had already exited inside its own
+  # diagnostic. An empty console silenced the report OF the empty console.
+  if grep -q '[^[:space:]]' "$clog" 2>/dev/null; then
+    echo "box: console, last non-blank lines:" >&2
+    grep -v '^[[:space:]]*$' "$clog" 2>/dev/null | tail -6 | sed 's/^/  /' >&2 || true
+  else
+    # An empty console is a FINDING — but only once it is known WHICH empty it
+    # is, and that is the distinction #266's two records could not draw.
+    if [ "$crc" -ne 0 ]; then
+      echo "box: THE CONSOLE COULD NOT BE READ — 'incus console --show-log' exited $crc," >&2
+      echo "box: so the empty log below is box's failure to look, not the guest's silence:" >&2
+      grep -v '^[[:space:]]*$' "$dir/console.err" 2>/dev/null | tail -3 | sed 's/^/  /' >&2 || true
+    else
+      echo "box: THE GUEST WROTE NOTHING to its serial console. That is not a slow boot;" >&2
+      echo "box: a booting guest prints. Read the host side instead:" >&2
+    fi
+    if grep -q '[^[:space:]]' "$dir/instance.log" 2>/dev/null; then
+      grep -v '^[[:space:]]*$' "$dir/instance.log" 2>/dev/null | tail -8 | sed 's/^/  /' >&2 || true
+    else
+      echo "  (the host-side instance log is empty too — $dir/state.txt is what is left)" >&2
+    fi
+  fi
+  # A box that never boots is NOT a slow box, and the console says which
+  # failure it is. Each of these cost hours to diagnose by hand once; the
+  # box that hits them next should be told the answer, not the symptom.
+  if grep -qiE 'Failed to decompress kernel|efi_stub_entry\(\) failed' "$clog" 2>/dev/null; then
+    echo "box: THE KERNEL WOULD NOT DECOMPRESS — the cached image is corrupt." >&2
+    echo "box: (a truncated/bad image download does exactly this). Re-pull it:" >&2
+    echo "box:   incus image list                 # find the fingerprint" >&2
+    echo "box:   incus image delete <fingerprint> # the next mint re-downloads" >&2
+  elif grep -qiE 'bad shim signature|prohibited by secure boot' "$clog" 2>/dev/null; then
+    echo "box: SECURE BOOT rejected the kernel — but box mints VMs with" >&2
+    echo "box: security.secureboot=false, so this box predates that fix or was" >&2
+    echo "box: created by hand. Re-mint it with a current box." >&2
+  elif grep -qiE 'GNU GRUB|Press enter to boot|UEFI Firmware Settings' "$clog" 2>/dev/null; then
+    echo "box: the VM is stuck at the GRUB/firmware menu — it never booted." >&2
+    echo "box: this is the IMAGE, not box. Re-pull it (incus image delete …)," >&2
+    echo "box: or pin a known-good build in the template's BOX_IMAGE." >&2
+  fi
+  # Name the SHAPE when it is the shape (#266). A clone of an explicit snapshot
+  # failed here twice in one drill while an ordinary clone of a running source
+  # stayed green in the same run — so the first thing a reader needs to know is
+  # which of the two paths produced the box in front of them. box stamped it at
+  # copy time: origin.from carries a '/' for a snapshot source and not for an
+  # instance one, so the config just captured answers the question.
+  origin="$(awk -F': *' '/^ *user\.box\.origin\.from:/ { print $2; exit }' "$dir/config.yaml" 2>/dev/null | tr -d '"' || true)"
+  case "$origin" in
+    */*)
+      echo "box: THIS IS A CLONE OF THE SNAPSHOT $origin — the shape #266 tracks." >&2
+      echo "box: an ordinary clone of a running source is the control; if that one" >&2
+      echo "box: works and this one does not, diff $dir/config.yaml against the" >&2
+      echo "box: source's own 'incus config show', volatile.* keys included." >&2 ;;
+  esac
+}
+
+# Positive read only: an unreadable state is NOT a stopped instance. This cuts a
+# wait short, so it fails open — a daemon that hiccups for one poll must not be
+# allowed to end a boot that was going to succeed.
+#
+# box_state does the reading (it already captures before it reads, #134's
+# class), and the ANCHOR is the only thing this adds: incus matches a bare name
+# as a substring, which is what box_state's other callers want and is wrong
+# here, where 'work2' answering for 'work' would end work's wait on a state
+# that was never work's.
+instance_is_running() {   # $1 = instance. False only on a state that says so.
+  local st
+  st="$(box_state "^$1\$" | tr -d '" ')" || st=""
+  case "$st" in
+    STOPPED|ERROR) return 1 ;;
+    *)             return 0 ;;   # RUNNING, STARTING, or nothing was read
+  esac
+}
+
 # Five minutes, not three: the first VM launch on a fresh pool unpacks the
 # image into a pool volume and takes the coldest possible boot — measured
 # live, an agent can need past the 3-minute mark exactly once per pool while
@@ -1373,48 +1568,26 @@ template_mode_allowed() {
 # forensics: the VM's console says why, and the box is torn down by whoever
 # called us before anyone can read it.
 wait_agent() {
-  local n="$1" i clog
+  local n="$1" i
   echo "box: waiting for instance agent..."
   for i in $(seq 1 150); do
     if incus exec "$n" -- true </dev/null >/dev/null 2>&1; then return; fi
-    if [ "$i" -eq 150 ]; then
-      # The console log is FULL of terminal escape sequences (boot messages,
-      # a firmware menu). Dumping it raw scrambles the operator's terminal —
-      # and doubly so when it lands in a log someone is tail -f'ing. Capture
-      # it to a file, STRIP everything but printable ASCII + tab/newline, and
-      # print only a short sanitized tail. Nothing raw ever reaches a terminal.
-      clog="/tmp/box-console-$n.log"
-      timeout -k 5 15 incus console "$n" --show-log </dev/null >"$clog.raw" 2>/dev/null || true
-      # Strip whole escape sequences FIRST (while the ESC byte is present), then
-      # drop any residual control bytes — otherwise 'tr' alone leaves the visible
-      # '[1m[37m' halves behind. Result is clean, readable text.
-      sed -E $'s/\x1b\\[[0-9;:?]*[ -/]*[@-~]//g; s/\x1b[()#][0-9A-Za-z]//g; s/\x1b[=>PX^_].*?(\x1b\\\\|\x07)//g; s/\x1b.//g' \
-        "$clog.raw" 2>/dev/null | tr -cd '\11\12\40-\176' >"$clog"
-      rm -f "$clog.raw"
-      echo "box: instance agent never came up after 5 minutes." >&2
-      echo "box: sanitized console log → $clog   (last non-blank lines:)" >&2
-      grep -v '^[[:space:]]*$' "$clog" 2>/dev/null | tail -6 | sed 's/^/  /' >&2
-      # A box that never boots is NOT a slow box, and the console says which
-      # failure it is. Each of these cost hours to diagnose by hand once; the
-      # box that hits them next should be told the answer, not the symptom.
-      if grep -qiE 'Failed to decompress kernel|efi_stub_entry\(\) failed' "$clog" 2>/dev/null; then
-        echo "box: THE KERNEL WOULD NOT DECOMPRESS — the cached image is corrupt." >&2
-        echo "box: (a truncated/bad image download does exactly this). Re-pull it:" >&2
-        echo "box:   incus image list                 # find the fingerprint" >&2
-        echo "box:   incus image delete <fingerprint> # the next mint re-downloads" >&2
-      elif grep -qiE 'bad shim signature|prohibited by secure boot' "$clog" 2>/dev/null; then
-        echo "box: SECURE BOOT rejected the kernel — but box mints VMs with" >&2
-        echo "box: security.secureboot=false, so this box predates that fix or was" >&2
-        echo "box: created by hand. Re-mint it with a current box." >&2
-      elif grep -qiE 'GNU GRUB|Press enter to boot|UEFI Firmware Settings' "$clog" 2>/dev/null; then
-        echo "box: the VM is stuck at the GRUB/firmware menu — it never booted." >&2
-        echo "box: this is the IMAGE, not box. Re-pull it (incus image delete …)," >&2
-        echo "box: or pin a known-good build in the template's BOX_IMAGE." >&2
-      fi
-      die "agent unreachable (inspect live: incus console $n)"
+    # An instance that is no longer running will never answer, and sitting out
+    # the remaining minutes buys nothing but a worse record: #266's two clones
+    # each burned the full five before saying anything at all, and criterion 1
+    # asks for an early, actionable failure rather than a late, empty one.
+    #
+    # Polled every 30 seconds and not every 2, deliberately. The first seconds
+    # of a start are legitimately not RUNNING yet, and 150 extra list calls to
+    # catch a case this rare is the worse trade.
+    if [ $((i % 15)) -eq 0 ] && ! instance_is_running "$n"; then
+      agent_forensics "$n" "$n stopped while box waited for its agent — it was never going to answer."
+      die "instance not running (inspect live: incus info $n --show-log)"
     fi
     sleep 2
   done
+  agent_forensics "$n" "instance agent never came up after 5 minutes."
+  die "agent unreachable (inspect live: incus console $n)"
 }
 
 # A clone must not BE its source. Incus regenerates the MAC, but /etc/machine-id
