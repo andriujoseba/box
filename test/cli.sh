@@ -2991,6 +2991,10 @@ cat > "$MSHIM/incus" <<'SHIM'
 #                    must not believe (#171 D2, review round 1)
 #   FAKE_ROOT_SIZE   what 'config device get <i> root size' returns; empty =
 #                    no per-instance root override (the container answer)
+#   FAKE_SNAPS       the csv 'snapshot list <i>' returns for the COPIED
+#                    instance — the two clone paths' one observable difference
+#                    in what incus hands back (#266): copying an instance
+#                    carries its snapshots, copying a snapshot carries none
 # The launch carries a whole cloud-init seed, so the call is logged with its
 # newlines flattened — an assertion about "the launch line" must see one line.
 printf 'incus %s\n' "$*" | tr '\n' ' ' >> "$FAKE_INCUS_LOG"
@@ -3009,6 +3013,7 @@ case "$*" in
     [ -n "${FAKE_CFG:-}" ] || exit 0
     key="$*"; key="${key##* }"
     awk -v k="$key" '$1 == k { $1 = ""; sub(/^ /, ""); print }' "$FAKE_CFG" ;;
+  "snapshot list "*)     printf '%s' "${FAKE_SNAPS-}" ;;
   "config device get "*) printf '%s\n' "${FAKE_ROOT_SIZE-}" ;;
   "config show "*)       printf '%s\n' "${FAKE_SHOW-}"; exit "${FAKE_SHOW_RC:-0}" ;;
   *"--columns nstS") printf '%s\n' "${FAKE_ROW-}" ;;
@@ -3804,6 +3809,210 @@ unset FAKE_CFG
 run_printed_hints "$MWORK/hint-clone.log.out" "$NARRHINT"
 check "clone: the narration's own handle RUNS, instance first (#171 D5)" 0 "" \
   grep -qE '^incus config set w16 limits\.cpu <n> *$' "$NARRHINT"
+
+# ---------------------------------------------------------------------------
+# THE TWO CLONE PATHS, TOLD APART (#266)
+#
+# The 0.10.0 cut drill cloned a stopped, renamed box's explicit 'authed'
+# snapshot twice and lost both to the agent wait, while an ordinary clone of a
+# running blank box stayed green in the same run. Nothing in this suite reaches
+# a KVM guest, so what is provable here is not the guest's behaviour: it is
+# that the two paths ARE two paths in box's own argv, stamp and narration. That
+# matters twice over — a later change cannot quietly merge them, and a failure
+# record can name WHICH of the two produced the box it is describing, which is
+# the thing #266's records could not do.
+# ---------------------------------------------------------------------------
+SNAPCLONE="$MWORK/snap-clone.log"
+INSTCLONE="$MWORK/inst-clone.log"
+check "clone paths: a snapshot-derived clone runs to completion (#266)" 0 "cloned" \
+  mintbox "$SNAPCLONE" new --name s1 --from work/authed
+check "clone paths: a running-source clone runs to completion (#266)" 0 "cloned" \
+  mintbox "$INSTCLONE" new --name s2 --from work
+# The copy argv is the fork itself. One ref names the snapshot; the other must
+# name the bare instance, and must never reach for a snapshot nobody asked for.
+check "clone paths: the snapshot path copies <instance>/<snapshot> (#266)" \
+  0 "incus copy work/authed s1" copyline "$SNAPCLONE"
+check "clone paths: the instance path copies the bare instance (#266)" \
+  0 "incus copy work s2" copyline "$INSTCLONE"
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone paths: ...and names no snapshot the caller never gave it (#266)" 1 "" \
+  bash -c 'grep -m1 "^incus copy " "$1" | grep -q "work/"' _ "$INSTCLONE"
+# The stamp is the fork made durable, and it is what agent_forensics reads back
+# off a failed clone: origin.from carries a '/' for a snapshot source and none
+# for an instance one, so a bundle can name the shape without asking anything.
+check "clone paths: the snapshot path stamps the snapshot it used (#266)" 0 "" \
+  restamp_has "$SNAPCLONE" 'user\.box\.origin\.from=work/authed'
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone paths: the instance path stamps the instance, with no '/' (#266)" 0 "" \
+  bash -c 'grep -F "config set" "$1" | grep -qE "user\.box\.origin\.from=work([[:space:]]|$)"' _ "$INSTCLONE"
+# Both paths reach the same 'incus start' and the same wait — the boundary the
+# drill lost both clones at. If one path ever stops passing through it, the
+# forensics this issue bought stop covering half the surface they were built for.
+# shellcheck disable=SC2016  # $1 expands in the child shell, by design
+check "clone paths: both reach the start that precedes the agent wait (#266)" 0 "" \
+  bash -c 'grep -q "^incus start s1 " "$1" && grep -q "^incus start s2 " "$2"' _ "$SNAPCLONE" "$INSTCLONE"
+# The narration is the fork an operator actually reads, and the shim answers
+# 'snapshot list' with what incus really hands back in each case: copying an
+# INSTANCE carries the source's snapshots, copying a SNAPSHOT carries none.
+# Both are honest, they are different, and each path has to say its own (#104).
+export FAKE_SNAPS='pristine,2026-08-30 11:02 UTC,NO,NO
+'
+check "clone paths: a running-source clone inherits the snapshots, and says so (#266)" \
+  0 "it inherited the source's snapshots, 'pristine' among them" \
+  mintbox "$INSTCLONE" new --name s2 --from work
+export FAKE_SNAPS=''
+check "clone paths: a snapshot-derived clone has none, and says THAT instead (#266)" \
+  0 "no 'pristine' mark here" \
+  mintbox "$SNAPCLONE" new --name s1 --from work/authed
+unset FAKE_SNAPS
+
+# ---------------------------------------------------------------------------
+# THE FORENSIC BUNDLE (#266)
+#
+# Driven, not asserted on the source. The whole defect was a failure that
+# printed something true-looking and useless — "(last non-blank lines: none)"
+# for two clones whose consoles nobody could prove were ever read — so the only
+# proof that matters is the text box actually emits. wait_agent's five minutes
+# cannot be driven, but the function that writes the record can: lifted out of
+# bin/box the way the line-order checks lift cmd_import, and run against a stub
+# incus that answers exactly as the drill's host did.
+# ---------------------------------------------------------------------------
+FSHIM="$(mktemp -d)"
+cat > "$FSHIM/incus" <<'SHIM'
+#!/usr/bin/env bash
+# Fake incus for the forensics drive. Knobs, all optional:
+#   FAKE_CONSOLE_RC   the status 'console --show-log' exits with (default 0)
+#   FAKE_CONSOLE      what it writes to stdout — default empty, which is the
+#                     drill's own observation and the case under test
+#   FAKE_CONSOLE_ERR  what it writes to stderr, i.e. incus's own refusal
+#   FAKE_INSTLOG      what 'info --show-log' returns (the host side)
+#   FAKE_CONFIG       what 'config show --expanded' returns
+case "$*" in
+  console\ *--show-log*)
+    printf '%s' "${FAKE_CONSOLE-}"
+    printf '%s' "${FAKE_CONSOLE_ERR-}" >&2
+    exit "${FAKE_CONSOLE_RC:-0}" ;;
+  info\ *--show-log*) printf '%s' "${FAKE_INSTLOG-}" ;;
+  config\ show\ *)    printf '%s' "${FAKE_CONFIG-}" ;;
+  info\ *)            printf 'Name: %s\nStatus: STOPPED\n' "${2-}" ;;
+esac
+exit 0
+SHIM
+chmod +x "$FSHIM/incus"
+# The real function, evaluated out of the real file — so a rewrite of either
+# helper is driven here rather than described. 'set -euo pipefail' is bin/box's
+# own header and is load-bearing to one of the cases below: the empty-console
+# tail used to end the run inside the diagnostic, and a drive under laxer
+# options could not have caught it.
+forensics() {   # forensics <instance> — agent_forensics, lifted out of bin/box
+  rm -rf "/tmp/box-forensics-$1" "/tmp/box-console-$1.log"
+  # shellcheck disable=SC2016  # $1/$2 expand in the child shell, by design
+  env PATH="$FSHIM:$PATH" bash -c '
+    set -euo pipefail
+    die() { echo "box: $*" >&2; exit 1; }
+    eval "$(awk "/^strip_ansi\(\) \{/,/^\}/" "$1")"
+    eval "$(awk "/^agent_forensics\(\) \{/,/^\}/" "$1")"
+    agent_forensics "$2" "the finding this bundle was opened for."
+  ' _ "$BOX" "$1" 2>&1
+}
+F1=f266empty F2=f266read F3=f266guest F4=f266inst
+# THE DEFECT ITSELF. An empty console must not silence the report of the empty
+# console: before #266 the 'grep -v | tail | sed' exited 1 on a blank file,
+# pipefail made that the pipeline's status, and set -e ended the run there —
+# after the "(last non-blank lines:)" header and before every conclusion box
+# had to offer. The exit status is the assertion.
+export FAKE_CONSOLE='' FAKE_CONSOLE_RC=0 FAKE_CONSOLE_ERR='' FAKE_INSTLOG='' FAKE_CONFIG=''
+check "forensics: an empty console does not kill the run reporting it (#266)" \
+  0 "the finding this bundle was opened for." forensics "$F1"
+check "forensics: ...and it reaches the state file, which is what is left (#266)" \
+  0 "state.txt is what is left" forensics "$F1"
+# WHICH empty it is — the distinction the drill's two records could not draw.
+# Half one: incus refused, so the blank file is box's failure to look.
+export FAKE_CONSOLE_RC=1 FAKE_CONSOLE_ERR='Error: Instance is not running'
+check "forensics: a console that could not be READ says so (#266)" \
+  0 "THE CONSOLE COULD NOT BE READ" forensics "$F2"
+check "forensics: ...quoting incus's own refusal rather than a blank tail (#266)" \
+  0 "Instance is not running" forensics "$F2"
+# And when it fails SILENTLY — 'timeout' killing it leaves status 124 and no
+# stderr at all — the report still runs to its end. This is the exact shape
+# that used to die inside the diagnostic: a tail over a file with no lines in
+# it, exiting 1 under pipefail with set -e watching. Drop the guard on that
+# tail and this pair reds while every other case here stays green.
+export FAKE_CONSOLE_RC=124 FAKE_CONSOLE_ERR=''
+check "forensics: a console capture that fails SILENTLY still reports (#266)" \
+  0 "exited 124" forensics "$F2"
+check "forensics: ...reaching its conclusion rather than dying in the tail (#266)" \
+  0 "state.txt is what is left" forensics "$F2"
+# Half two: incus answered, and the answer was nothing. A different finding,
+# with a different next step, and it must never be worded like the first.
+export FAKE_CONSOLE_RC=0 FAKE_CONSOLE_ERR='' \
+  FAKE_INSTLOG='Error: Failed to start device "vsock": address already in use'
+check "forensics: a guest that wrote nothing is a finding of its own (#266)" \
+  0 "THE GUEST WROTE NOTHING" forensics "$F3"
+check "forensics: ...and the host-side log is where it sends the reader (#266)" \
+  0 'Failed to start device "vsock"' forensics "$F3"
+forensics_says() { forensics "$1" | grep -qF -e "$2"; }
+check "forensics: ...never calling incus's silence a read failure (#266)" 1 "" \
+  forensics_says "$F3" "COULD NOT BE READ"
+# The bundle is FILES, because the caller tears the box down: a tail on a
+# terminal nobody kept is how #266 came to be reconstructed from four lines.
+bundle_has() { forensics "$1" >/dev/null; [ -s "/tmp/box-forensics-$1/$2" ]; }
+check "forensics: the host-side log is kept on disk (#266)" 0 "" bundle_has "$F3" instance.log
+export FAKE_CONFIG='config:
+  user.box.origin.from: work/authed
+'
+check "forensics: the expanded config is kept — volatile keys and all (#266)" 0 "" \
+  bundle_has "$F3" config.yaml
+check "forensics: 'incus info' is kept beside it (#266)" 0 "" bundle_has "$F3" state.txt
+# Naming the SHAPE. This is the same discriminator the clone-path checks above
+# pin from the writing end, read back here from a failed box's own config.
+check "forensics: a snapshot-derived clone is named as one (#266)" \
+  0 "THIS IS A CLONE OF THE SNAPSHOT work/authed" forensics "$F3"
+check "forensics: ...and the running-source control is named as the control (#266)" \
+  0 "an ordinary clone of a running source is the control" forensics "$F3"
+export FAKE_CONFIG='config:
+  user.box.origin.from: work
+'
+check "forensics: an instance-source clone is NOT called a snapshot clone (#266)" 1 "" \
+  forensics_says "$F4" "CLONE OF THE SNAPSHOT"
+export FAKE_CONFIG=''
+check "forensics: and a fresh mint, which has no origin.from, claims neither (#266)" 1 "" \
+  forensics_says "$F4" "CLONE OF THE SNAPSHOT"
+# The console still gets read and still gets triaged — the pre-existing image
+# diagnoses ride the same bundle rather than being replaced by it. And nothing
+# raw ever reaches a terminal: the escapes are stripped on the way to the file.
+export FAKE_CONSOLE=$'\x1b[1m\x1b[37mLoading\x1b[0m\nFailed to decompress kernel\n'
+check "forensics: a console that DID answer is tailed (#266)" \
+  0 "console, last non-blank lines" forensics "$F2"
+check "forensics: ...and the image triage still fires off it (#266)" \
+  0 "THE KERNEL WOULD NOT DECOMPRESS" forensics "$F2"
+console_is_clean() {
+  forensics "$1" >/dev/null
+  ! LC_ALL=C grep -qP '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]' "/tmp/box-console-$1.log"
+}
+check "forensics: the kept console carries no escape bytes at all (#266)" 0 "" \
+  console_is_clean "$F2"
+unset FAKE_CONSOLE FAKE_CONSOLE_RC FAKE_CONSOLE_ERR FAKE_INSTLOG FAKE_CONFIG
+rm -rf "/tmp/box-forensics-$F1" "/tmp/box-forensics-$F2" "/tmp/box-forensics-$F3" \
+       "/tmp/box-forensics-$F4" "/tmp/box-console-$F1.log" "/tmp/box-console-$F2.log" \
+       "/tmp/box-console-$F3.log" "/tmp/box-console-$F4.log" "$FSHIM"
+# Both exits from the wait produce a bundle, and the early one exists at all.
+# Line-order and call-site assertions, fail-closed: the timeout path is five
+# minutes of sleeps and cannot be driven, so its wiring is pinned on the source.
+# shellcheck disable=SC2016  # the $-strings are literals inside bash -c
+check "wait_agent: BOTH ways out leave a bundle (#266)" 0 "2" bash -c '
+  awk "/^wait_agent\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -c "agent_forensics "'
+# shellcheck disable=SC2016  # the $-strings are literals inside bash -c
+check "wait_agent: a stopped instance ends the wait early (#266)" 0 "" bash -c '
+  awk "/^wait_agent\(\) \{/,/^\}/" "'"$ROOT"'/bin/box" | grep -q "! instance_is_running"'
+# Fails OPEN, and that is the load-bearing half: this check can cut a wait
+# short, so a daemon that hiccups for one poll must never end a boot that was
+# going to succeed. Only a state incus actually named ends it.
+# shellcheck disable=SC2016  # the $-strings are literals inside bash -c
+check "wait_agent: an unreadable state is not a stopped instance (#266)" 0 "" bash -c '
+  fn="$(awk "/^instance_is_running\(\) \{/,/^\}/" "'"$ROOT"'/bin/box")"
+  printf "%s\n" "$fn" | grep -qE "STOPPED\|ERROR\) return 1" &&
+  printf "%s\n" "$fn" | grep -qE "\*\)\s+return 0"'
 
 # --- the read half: 'box info' surfaces it ---------------------------------
 # A stamp nothing can read is not done. cmd_info printed NAME/STATE/TYPE/IPV4
