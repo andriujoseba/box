@@ -1421,22 +1421,29 @@ agent_forensics() {   # $1 = instance, $2 = the one-line finding
   echo "box:   $dir/instance.log   'incus info --show-log' — the host side" >&2
   echo "box:   $dir/config.yaml    the expanded config, volatile keys and all" >&2
   echo "box:   $dir/state.txt      'incus info'" >&2
+  # Every tail below ends in '|| true', and that is not belt-and-braces (#266).
+  # 'grep -v' on a file with no matching line exits 1, pipefail makes that the
+  # pipeline's status, and 'set -e' at the top of this file then ENDS THE RUN
+  # right here. Which is precisely what the drill witnessed: the two lost clones
+  # printed "(last non-blank lines: none)" and then nothing — no image triage,
+  # no 'agent unreachable', because box had already exited inside its own
+  # diagnostic. An empty console silenced the report OF the empty console.
   if grep -q '[^[:space:]]' "$clog" 2>/dev/null; then
     echo "box: console, last non-blank lines:" >&2
-    grep -v '^[[:space:]]*$' "$clog" 2>/dev/null | tail -6 | sed 's/^/  /' >&2
+    grep -v '^[[:space:]]*$' "$clog" 2>/dev/null | tail -6 | sed 's/^/  /' >&2 || true
   else
     # An empty console is a FINDING — but only once it is known WHICH empty it
     # is, and that is the distinction #266's two records could not draw.
     if [ "$crc" -ne 0 ]; then
       echo "box: THE CONSOLE COULD NOT BE READ — 'incus console --show-log' exited $crc," >&2
       echo "box: so the empty log below is box's failure to look, not the guest's silence:" >&2
-      grep -v '^[[:space:]]*$' "$dir/console.err" 2>/dev/null | tail -3 | sed 's/^/  /' >&2
+      grep -v '^[[:space:]]*$' "$dir/console.err" 2>/dev/null | tail -3 | sed 's/^/  /' >&2 || true
     else
       echo "box: THE GUEST WROTE NOTHING to its serial console. That is not a slow boot;" >&2
       echo "box: a booting guest prints. Read the host side instead:" >&2
     fi
     if grep -q '[^[:space:]]' "$dir/instance.log" 2>/dev/null; then
-      grep -v '^[[:space:]]*$' "$dir/instance.log" 2>/dev/null | tail -8 | sed 's/^/  /' >&2
+      grep -v '^[[:space:]]*$' "$dir/instance.log" 2>/dev/null | tail -8 | sed 's/^/  /' >&2 || true
     else
       echo "  (the host-side instance log is empty too — $dir/state.txt is what is left)" >&2
     fi
@@ -1478,8 +1485,10 @@ agent_forensics() {   # $1 = instance, $2 = the one-line finding
 # wait short, so it fails open — a daemon that hiccups for one poll must not be
 # allowed to end a boot that was going to succeed.
 instance_is_running() {   # $1 = instance. False only on a state that says so.
-  local st=""
-  st="$(incus list "^$1\$" --format csv --columns s 2>/dev/null | head -1 | tr -d '" ')" || st=""
+  # Captured first, THEN read (#134's class): never 'incus … | head -1'.
+  local rows="" st
+  rows="$(incus list "^$1\$" --format csv --columns s 2>/dev/null)" || rows=""
+  st="$(printf '%s\n' "$rows" | head -1 | tr -d '" ')"
   case "$st" in
     STOPPED|ERROR) return 1 ;;
     *)             return 0 ;;   # RUNNING, STARTING, or nothing was read
