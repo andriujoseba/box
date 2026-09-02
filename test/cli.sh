@@ -3887,13 +3887,17 @@ cat > "$FSHIM/incus" <<'SHIM'
 #   FAKE_CONSOLE_ERR  what it writes to stderr, i.e. incus's own refusal
 #   FAKE_INSTLOG      what 'info --show-log' returns (the host side)
 #   FAKE_CONFIG       what 'config show --expanded' returns
+#   FAKE_CONFIG_ERR   what it writes to stderr, with FAKE_CONFIG_RC its status
 case "$*" in
   console\ *--show-log*)
     printf '%s' "${FAKE_CONSOLE-}"
     printf '%s' "${FAKE_CONSOLE_ERR-}" >&2
     exit "${FAKE_CONSOLE_RC:-0}" ;;
   info\ *--show-log*) printf '%s' "${FAKE_INSTLOG-}" ;;
-  config\ show\ *)    printf '%s' "${FAKE_CONFIG-}" ;;
+  config\ show\ *)
+    printf '%s' "${FAKE_CONFIG-}"
+    printf '%s' "${FAKE_CONFIG_ERR-}" >&2
+    exit "${FAKE_CONFIG_RC:-0}" ;;
   info\ *)            printf 'Name: %s\nStatus: STOPPED\n' "${2-}" ;;
 esac
 exit 0
@@ -3904,16 +3908,26 @@ chmod +x "$FSHIM/incus"
 # own header and is load-bearing to one of the cases below: the empty-console
 # tail used to end the run inside the diagnostic, and a drive under laxer
 # options could not have caught it.
-forensics() {   # forensics <instance> — agent_forensics, lifted out of bin/box
-  rm -rf "/tmp/box-forensics-$1" "/tmp/box-console-$1.log"
+#
+# The bundle's root is TMPDIR, so the drive gets its own and the tests can hand
+# the function a root it cannot use. Nothing here knows the bundle's NAME: it is
+# mktemp-fresh per attempt (#266 round 1), so every assertion about its contents
+# goes through bundle_of, which reads the path back out of box's own report —
+# exactly as drill's finding does.
+FTMP="$(mktemp -d)"
+forensics() {   # forensics <instance> [bundle-root] — agent_forensics, out of bin/box
   # shellcheck disable=SC2016  # $1/$2 expand in the child shell, by design
-  env PATH="$FSHIM:$PATH" bash -c '
+  env PATH="$FSHIM:$PATH" TMPDIR="${2:-$FTMP}" bash -c '
     set -euo pipefail
     die() { echo "box: $*" >&2; exit 1; }
     eval "$(awk "/^strip_ansi\(\) \{/,/^\}/" "$1")"
+    eval "$(awk "/^forensic_line\(\) \{/,/^\}/" "$1")"
     eval "$(awk "/^agent_forensics\(\) \{/,/^\}/" "$1")"
     agent_forensics "$2" "the finding this bundle was opened for."
   ' _ "$BOX" "$1" 2>&1
+}
+bundle_of() {   # bundle_of <instance> — drive it, and echo the bundle it reports
+  forensics "$1" | sed -n 's/^box: forensics kept in \([^ ]*\) .*/\1/p' | tail -1
 }
 F1=f266empty F2=f266read F3=f266guest F4=f266inst
 # THE DEFECT ITSELF. An empty console must not silence the report of the empty
@@ -3956,7 +3970,7 @@ check "forensics: ...never calling incus's silence a read failure (#266)" 1 "" \
   forensics_says "$F3" "COULD NOT BE READ"
 # The bundle is FILES, because the caller tears the box down: a tail on a
 # terminal nobody kept is how #266 came to be reconstructed from four lines.
-bundle_has() { forensics "$1" >/dev/null; [ -s "/tmp/box-forensics-$1/$2" ]; }
+bundle_has() { local d; d="$(bundle_of "$1")"; [ -n "$d" ] && [ -s "$d/$2" ]; }
 check "forensics: the host-side log is kept on disk (#266)" 0 "" bundle_has "$F3" instance.log
 export FAKE_CONFIG='config:
   user.box.origin.from: work/authed
@@ -3990,16 +4004,91 @@ check "forensics: ...and the image triage still fires off it (#266)" \
 # this suite's header promises it runs anywhere. The file is clean exactly when
 # stripping it to printable ASCII, tab and newline removes nothing.
 console_is_clean() {
-  forensics "$1" >/dev/null
-  local f="/tmp/box-console-$1.log"
+  local d f; d="$(bundle_of "$1")" || return 1
+  [ -n "$d" ] || return 1
+  f="$d/console.log"
   [ "$(wc -c <"$f")" -eq "$(LC_ALL=C tr -cd '\11\12\40-\176' <"$f" | wc -c)" ]
 }
 check "forensics: the kept console carries no escape bytes at all (#266)" 0 "" \
   console_is_clean "$F2"
+# ---------------------------------------------------------------------------
+# The bundle's OWNERSHIP (#266 round 1). It used to be /tmp/box-forensics-<box>
+# taken with 'mkdir -p', and box's restricted tier puts each tenant in their own
+# user-<uid> project — so two tenants legitimately hold a box called 'work' and
+# share one sticky /tmp. Everything below is that fixed name's three failures,
+# and none of them could red while the fixtures started from 'rm -rf'.
+# ---------------------------------------------------------------------------
+export FAKE_CONSOLE='' FAKE_CONSOLE_RC=0 FAKE_CONSOLE_ERR='' FAKE_INSTLOG='' FAKE_CONFIG=''
+# Fresh per attempt, and never at a name anyone could have prepared. Two drives
+# of the same box must not land in one directory: a bundle shared between
+# attempts is how an EARLIER failure's evidence gets read as this one's.
+bundle_is_fresh() {
+  local a b; a="$(bundle_of "$1")"; b="$(bundle_of "$1")"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ] &&
+  [ "$a" != "$FTMP/box-forensics-$1" ] && [ "$b" != "$FTMP/box-forensics-$1" ]
+}
+check "forensics: every attempt gets its own bundle, at no guessable name (#266)" \
+  0 "" bundle_is_fresh "$F1"
+# ADOPTION, which is what 'mkdir -p' did. A directory already sitting at the old
+# fixed name is not taken over, not written into, and not reported: a squatter
+# on a multi-tenant /tmp cannot make box quote their file as this box's evidence.
+squat_survives() {
+  local d
+  rm -rf "$FTMP/box-forensics-$1"
+  mkdir -p "$FTMP/box-forensics-$1"
+  printf 'SOMEONE ELSE RAN HERE\n' > "$FTMP/box-forensics-$1/console.err"
+  d="$(bundle_of "$1")"
+  [ -n "$d" ] && [ "$d" != "$FTMP/box-forensics-$1" ] &&
+  [ "$(cat "$FTMP/box-forensics-$1/console.err")" = "SOMEONE ELSE RAN HERE" ] &&
+  [ ! -e "$FTMP/box-forensics-$1/state.txt" ]
+}
+check "forensics: a directory at the old fixed name is never adopted (#266)" \
+  0 "" squat_survives "$F1"
+rm -rf "$FTMP/box-forensics-$F1"
+# PRIVATE TO ITS OWNER. The expanded config carries the tenant's user.box.user
+# and their rendered cloud-init.user-data; under the ordinary umask 0002 the old
+# bundle was 0775/0664, readable across exactly the boundary the restricted tier
+# exists to enforce. Read with ls -ld, not stat: 'stat -c' is a GNU flag and
+# this suite's header promises it runs anywhere.
+bundle_is_private() {   # under the umask that measured 0775/0664 on the old one
+  ( umask 0002
+    local d; d="$(bundle_of "$1")" || return 1
+    # shellcheck disable=SC2012  # 'stat -c' is a GNU flag; the mode column of
+    # 'ls -ld' is the portable read, and the path is a mktemp name, not a glob.
+    [ -n "$d" ] && [ "$(ls -ld "$d" | cut -c1-10)" = "drwx------" ] )
+}
+check "forensics: the bundle is readable by its owner and nobody else (#266)" \
+  0 "" bundle_is_private "$F1"
+# NEVER FATAL, on the one path that used to be. With the bundle unreachable the
+# old code's fallback ': >$clog' could not open it either, and set -e ended the
+# run inside the diagnostic — the same four-line record #266 opened on, from a
+# different cause. The exit status is the assertion; a file where the root
+# should be fails identically for root and non-root, so the case is the same
+# case on every runner.
+: > "$FTMP/not-a-dir"
+check "forensics: an unusable bundle root does not kill the run (#266)" \
+  0 "NO FORENSICS COULD BE KEPT" forensics "$F1" "$FTMP/not-a-dir"
+check "forensics: ...and it sends the reader to the live guest instead (#266)" \
+  0 "incus console $F1 --show-log" forensics "$F1" "$FTMP/not-a-dir"
+forensics_says_in() { forensics "$1" "$2" | grep -qF -e "$3"; }
+check "forensics: ...and claims no bundle it could not write (#266)" 1 "" \
+  forensics_says_in "$F1" "$FTMP/not-a-dir" "forensics kept in"
+# CLAIM ONLY WHAT WAS CAPTURED. A line naming a file that holds nothing is the
+# same false record as the bundle that reported four captures into a directory
+# it could not write. An empty capture is reported as empty, with the reason
+# where there is one.
+check "forensics: a capture that produced nothing is reported as missing (#266)" \
+  0 "not captured — 'incus info --show-log'" forensics "$F1"
+export FAKE_CONFIG_RC=1 FAKE_CONFIG_ERR='Error: Instance not found'
+check "forensics: ...and a capture that FAILED is reported with its reason (#266)" \
+  0 "not captured — the expanded config, volatile keys and all: Error: Instance not found" \
+  forensics "$F1"
+unset FAKE_CONFIG_RC FAKE_CONFIG_ERR
+export FAKE_INSTLOG='qemu: the host side said this'
+check "forensics: ...while a capture that succeeded is named by its path (#266)" \
+  0 "instance.log   'incus info --show-log'" forensics "$F1"
 unset FAKE_CONSOLE FAKE_CONSOLE_RC FAKE_CONSOLE_ERR FAKE_INSTLOG FAKE_CONFIG
-rm -rf "/tmp/box-forensics-$F1" "/tmp/box-forensics-$F2" "/tmp/box-forensics-$F3" \
-       "/tmp/box-forensics-$F4" "/tmp/box-console-$F1.log" "/tmp/box-console-$F2.log" \
-       "/tmp/box-console-$F3.log" "/tmp/box-console-$F4.log" "$FSHIM"
+rm -rf "$FTMP" "$FSHIM"
 # Both exits from the wait produce a bundle, and the early one exists at all.
 # Line-order and call-site assertions, fail-closed: the timeout path is five
 # minutes of sleeps and cannot be driven, so its wiring is pinned on the source.
@@ -4021,25 +4110,46 @@ check "wait_agent: an unreadable state is not a stopped instance (#266)" 0 "" ba
 # names is evidence only for whoever is still sitting at that terminal, and the
 # finding is what the emitted drills/<version>.md keeps — so the path rides the
 # finding. Driven out of drill.sh, not asserted on it.
-drill_evidence() {   # drill_evidence <box-name> — mint_evidence, out of drill.sh
+#
+# And it reads the path out of THIS mint's log rather than testing a fixed name
+# (#266 round 1): a name-existence test hands a leftover bundle to whichever
+# failure comes next, including one that died before box ever wrote forensics.
+drill_evidence() {   # drill_evidence <log-body> — mint_evidence, out of drill.sh
   # shellcheck disable=SC2016  # $1..$3 expand in the child shell, by design
   bash -c '
     set -u
     eval "$(awk "/^mint_evidence\(\) \{/,/^\}/" "$1")"
-    printf "log-line-one\nlog-line-two\n" > "$3/mint-evidence.log"
-    mint_evidence "$3/mint-evidence.log" "$2"
+    printf "log-line-one\n%s\nlog-line-two\n" "$2" > "$3/mint-evidence.log"
+    mint_evidence "$3/mint-evidence.log"
   ' _ "$ROOT/drill/drill.sh" "$1" "$MWORK"
 }
 drill_evidence_says() { drill_evidence "$1" | grep -qF -e "$2"; }
-rm -rf /tmp/box-forensics-d266
+DBUNDLE="$MWORK/box-forensics-d266.aBcDeF"
+rm -rf "$DBUNDLE" /tmp/box-forensics-d266
 check "drill: a failed-clone finding still tails the log it always did (#266)" \
-  0 "log-line-two" drill_evidence d266
+  0 "log-line-two" drill_evidence ""
 check "drill: ...and invents no bundle when the mint left none (#266)" 1 "" \
-  drill_evidence_says d266 "forensics kept:"
-mkdir -p /tmp/box-forensics-d266
+  drill_evidence_says "" "forensics kept:"
+mkdir -p "$DBUNDLE"
 check "drill: ...but NAMES the bundle in the finding when there is one (#266)" \
-  0 "forensics kept: /tmp/box-forensics-d266" drill_evidence d266
+  0 "forensics kept: $DBUNDLE" \
+  drill_evidence "box: forensics kept in $DBUNDLE — they outlive the teardown this failure triggers:"
+# A mint that died BEFORE the forensics ran — a copy or start failure — names
+# none, and a directory sitting at the old fixed name does not change that. This
+# is the stale-attribution case: the finding is what drills/<version>.md keeps,
+# so a bundle nobody in this run produced would land in the release record as
+# evidence of a failure it never saw.
+mkdir -p /tmp/box-forensics-d266
+check "drill: a mint that died before the forensics names no bundle (#266)" 1 "" \
+  drill_evidence_says "" "forensics kept:"
 rmdir /tmp/box-forensics-d266
+# And a path that has since been cleaned away is not offered either: the log
+# said it, the disk disagrees, and the disk wins.
+check "drill: a bundle named by the log but gone from disk is not offered (#266)" 1 "" \
+  drill_evidence_says \
+  "box: forensics kept in $MWORK/box-forensics-d266.deleted — they outlive the teardown this failure triggers:" \
+  "forensics kept:"
+rm -rf "$DBUNDLE"
 # Both clone findings carry it. The sibling peer clone failed the same way in
 # the same run, and a record naming one bundle and not the other is half a
 # record — which is the shape of #266's own evidence.

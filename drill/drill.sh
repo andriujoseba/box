@@ -1243,10 +1243,19 @@ box_pings() {   # box_pings <box> <ip> → 0 if it answers ICMP
 # reconstructed from four lines. So the FINDING carries the path, not just the
 # terminal: findings are what the emitted drills/<version>.md record keeps, and
 # a path printed only to a terminal is gone with the terminal.
-mint_evidence() {   # mint_evidence <log> <box-name> → one line, for a finding
-  local extra=""
-  if [ -d "/tmp/box-forensics-$2" ]; then
-    extra=" — forensics kept: /tmp/box-forensics-$2"
+#
+# THE BUNDLE THIS MINT MADE, and no other (#266 round 1). This used to test
+# whether /tmp/box-forensics-<box> existed — a fixed name, so an earlier
+# attempt's leftovers were attributed to this failure, and a mint that died
+# BEFORE the forensics ran (a copy or start failure) got a bundle it never
+# produced. In drills/<version>.md, which is the release certification record.
+# box now mints the bundle with mktemp and prints where it went, so the path
+# comes out of this mint's own log or the finding names none.
+mint_evidence() {   # mint_evidence <log> → one line, for a finding
+  local extra="" dir=""
+  dir="$(sed -n 's/^box: forensics kept in \([^ ]*\) .*/\1/p' "$1" 2>/dev/null | tail -1)" || dir=""
+  if [ -n "$dir" ] && [ -d "$dir" ]; then
+    extra=" — forensics kept: $dir"
   fi
   printf '%s%s' "$(tail -3 "$1" 2>/dev/null | tr '\n' ' ')" "$extra"
 }
@@ -1870,7 +1879,7 @@ if mint_box /tmp/mint-clone.log --name clone --from archive/authed; then
   ok "new --from archive/authed (clone of a snapshot of a renamed box)"
   box exec clone -- true >/dev/null 2>&1 && ok "the clone is alive and enterable" || no "the clone is not enterable"
 else
-  no "clone FAILED — tail: $(mint_evidence /tmp/mint-clone.log clone)"
+  no "clone FAILED — tail: $(mint_evidence /tmp/mint-clone.log)"
 fi
 
 # --- the escape hatch ------------------------------------------------------
@@ -1900,7 +1909,7 @@ printf '\n  cloning a peer for the sibling probes…\n'
 if mint_box /tmp/mint-peer.log --name peer --from archive/authed && wait_box peer; then
   ok "peer minted from archive/authed and answering"
 else
-  no "peer clone failed or never answered — tail: $(mint_evidence /tmp/mint-peer.log peer)"
+  no "peer clone failed or never answered — tail: $(mint_evidence /tmp/mint-peer.log)"
 fi
 
 # C1 — public egress (#15 A1; resolving the hostname also proves A5, gateway DNS)

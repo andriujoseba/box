@@ -1378,6 +1378,20 @@ strip_ansi() {   # stdin -> stdout: printable ASCII, tab and newline. Nothing el
     2>/dev/null | tr -cd '\11\12\40-\176'
 }
 
+# One line of the bundle's index, and it never claims a file that holds nothing
+# (#266 round 1). $3, when given, is where that capture's stderr went — so a
+# capture that failed is reported WITH the reason it failed, rather than as a
+# path the reader will open to find empty.
+forensic_line() {   # $1 = path, $2 = what it is, $3 = its stderr file or ''
+  if [ -s "$1" ]; then
+    echo "box:   $1   $2" >&2
+  elif [ -n "$3" ] && [ -s "$3" ]; then
+    echo "box:   (not captured — $2: $(head -c 160 "$3" | tr '\n' ' '))" >&2
+  else
+    echo "box:   (not captured — $2: it produced nothing at all)" >&2
+  fi
+}
+
 # THE FORENSIC BUNDLE (#266). A timeout that prints nothing is a timeout nobody
 # can diagnose. The 0.10.0 cut drill lost two snapshot-derived clones to the
 # wait below and both tails read "(last non-blank lines: none)" — which is not
@@ -1388,8 +1402,7 @@ strip_ansi() {   # stdin -> stdout: printable ASCII, tab and newline. Nothing el
 # So every source is captured to a FILE that outlives the teardown the caller is
 # about to do, and an empty console is reported as the finding it is:
 #
-#   console   the guest's serial output — sanitized; the path is unchanged
-#             (/tmp/box-console-<n>.log) because drill records quote it
+#   console   the guest's serial output — sanitized
 #   instance  'incus info --show-log', the HOST side. When the guest wrote no
 #             console output at all the answer is on incusd's side of the
 #             boundary, and until now box never looked there
@@ -1399,28 +1412,77 @@ strip_ansi() {   # stdin -> stdout: printable ASCII, tab and newline. Nothing el
 #             its source's volatile.* verbatim, which is why cmd_import has to
 #             unset every volatile hwaddr by hand
 #   state     'incus info' — what the instance was doing when box gave up
+#
+# The bundle is a fresh 0700 directory per attempt, and both halves of that are
+# load-bearing (#266 round 1). It used to be /tmp/box-forensics-<instance>,
+# taken with 'mkdir -p' — but the restricted tier gives each tenant their own
+# user-<uid> project, so two tenants legitimately hold a box called 'work' and
+# share one sticky /tmp. 'mkdir -p' ADOPTS whatever sits at that name, and each
+# of the three ways that goes wrong defeats the bundle's whole purpose: the
+# expanded config (the tenant's user, their rendered cloud-init) becomes
+# readable to the other tenant at the umask's 0775/0664, a squatted unwritable
+# path makes every capture fail while the report still names the files, and
+# last week's directory is quoted as this failure's evidence. 'mktemp -d' only
+# ever CREATES, at 0700, so none of the three has a path back in.
+#
+# The path is therefore not predictable, and nothing may go looking for it by
+# name: box PRINTS it, and drill's finding reads it back out of that mint's own
+# log (drill/drill.sh, mint_evidence).
 agent_forensics() {   # $1 = instance, $2 = the one-line finding
-  local n="$1" what="$2" dir clog crc=0 origin
-  clog="/tmp/box-console-$n.log"
-  dir="/tmp/box-forensics-$n"
+  local n="$1" what="$2" dir="" clog crc=0 origin
+  echo "box: $what" >&2
   # Never fatal, any of it. This runs on the way to 'die' and its whole job is
   # to leave evidence; a diagnostic that can itself kill the run replaces the
   # failure under investigation with one of its own.
-  mkdir -p "$dir" 2>/dev/null || true
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/box-forensics-$n.XXXXXX" 2>/dev/null)" || dir=""
+  if [ -z "$dir" ]; then
+    echo "box: NO FORENSICS COULD BE KEPT — box could not create a private" >&2
+    echo "box: directory under ${TMPDIR:-/tmp}. Read the guest by hand, before" >&2
+    echo "box: the teardown this failure triggers takes it:" >&2
+    echo "box:   incus console $n --show-log" >&2
+    echo "box:   incus info $n --show-log" >&2
+    return 0
+  fi
+  clog="$dir/console.log"
+  # STORE FIRST, CAPTURE SECOND, and that order is the point (#266 round 1).
+  # Every file is opened here, before any incus runs. If the bundle cannot be
+  # written box says so and claims nothing; if it can, then every status below
+  # is incus's OWN. Folded together — a redirection inside the timed command —
+  # box's failure to open a file arrives as 'incus console exited 1', under a
+  # header naming incus: one symptom and two unrelated causes, which is the
+  # sentence this function exists to delete.
+  if ! ( : >"$dir/console.raw" && : >"$dir/console.err" && : >"$clog" \
+      && : >"$dir/instance.log" && : >"$dir/instance.err" \
+      && : >"$dir/config.yaml"  && : >"$dir/config.err" \
+      && : >"$dir/state.txt" ) 2>/dev/null; then
+    echo "box: THE BUNDLE COULD NOT BE WRITTEN — $dir would not take the" >&2
+    echo "box: capture files (no space left? read-only filesystem?), so box" >&2
+    echo "box: kept nothing. Read the guest by hand before the teardown:" >&2
+    echo "box:   incus console $n --show-log" >&2
+    echo "box:   incus info $n --show-log" >&2
+    return 0
+  fi
   timeout -k 5 15 incus console "$n" --show-log </dev/null >"$dir/console.raw" 2>"$dir/console.err" || crc=$?
-  strip_ansi <"$dir/console.raw" >"$clog" 2>/dev/null || : >"$clog"
+  strip_ansi <"$dir/console.raw" >"$clog" 2>/dev/null || true
   rm -f "$dir/console.raw"
   timeout -k 5 15 incus info "$n" --show-log </dev/null 2>"$dir/instance.err" \
     | strip_ansi >"$dir/instance.log" 2>/dev/null || true
-  incus config show "$n" --expanded </dev/null >"$dir/config.yaml" 2>"$dir/config.err" || true
-  incus info "$n" </dev/null >"$dir/state.txt" 2>&1 || true
+  # Timed like the two above them (#266 round 1): a wedged daemon is a
+  # thoroughly plausible state when a guest never answered its agent, and a
+  # diagnostic that hangs leaves the same nothing as a diagnostic that dies.
+  timeout -k 5 15 incus config show "$n" --expanded </dev/null >"$dir/config.yaml" 2>"$dir/config.err" || true
+  timeout -k 5 15 incus info "$n" </dev/null >"$dir/state.txt" 2>&1 || true
 
-  echo "box: $what" >&2
   echo "box: forensics kept in $dir — they outlive the teardown this failure triggers:" >&2
-  echo "box:   $clog" >&2
-  echo "box:   $dir/instance.log   'incus info --show-log' — the host side" >&2
-  echo "box:   $dir/config.yaml    the expanded config, volatile keys and all" >&2
-  echo "box:   $dir/state.txt      'incus info'" >&2
+  # The console is always named: empty or not, the analysis below says which
+  # empty it is, and that IS the finding. The other three are named only when
+  # they hold something, because a line pointing at an empty file is the same
+  # false record — "here is your evidence", and there is none — that the
+  # adopted-directory bundle used to print (#266 round 1).
+  echo "box:   $clog   the guest's serial console, sanitized" >&2
+  forensic_line "$dir/instance.log" "'incus info --show-log' — the host side" "$dir/instance.err"
+  forensic_line "$dir/config.yaml"  "the expanded config, volatile keys and all" "$dir/config.err"
+  forensic_line "$dir/state.txt"    "'incus info'" ""
   # Every tail below ends in '|| true', and that is not belt-and-braces (#266).
   # 'grep -v' on a file with no matching line exits 1, pipefail makes that the
   # pipeline's status, and 'set -e' at the top of this file then ENDS THE RUN
@@ -1484,11 +1546,15 @@ agent_forensics() {   # $1 = instance, $2 = the one-line finding
 # Positive read only: an unreadable state is NOT a stopped instance. This cuts a
 # wait short, so it fails open — a daemon that hiccups for one poll must not be
 # allowed to end a boot that was going to succeed.
+#
+# box_state does the reading (it already captures before it reads, #134's
+# class), and the ANCHOR is the only thing this adds: incus matches a bare name
+# as a substring, which is what box_state's other callers want and is wrong
+# here, where 'work2' answering for 'work' would end work's wait on a state
+# that was never work's.
 instance_is_running() {   # $1 = instance. False only on a state that says so.
-  # Captured first, THEN read (#134's class): never 'incus … | head -1'.
-  local rows="" st
-  rows="$(incus list "^$1\$" --format csv --columns s 2>/dev/null)" || rows=""
-  st="$(printf '%s\n' "$rows" | head -1 | tr -d '" ')"
+  local st
+  st="$(box_state "^$1\$" | tr -d '" ')" || st=""
   case "$st" in
     STOPPED|ERROR) return 1 ;;
     *)             return 0 ;;   # RUNNING, STARTING, or nothing was read
