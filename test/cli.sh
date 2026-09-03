@@ -10752,7 +10752,7 @@ mkpintree() {   # mkpintree <name> — a copy of every pin-carrying file
   printf '%s\n' "$d"
 }
 
-previous_pin=0.7.6
+previous_pin=0.7.7
 
 # only_line <file> <fixed-string> — the single line number it sits on, for the
 # two checks below that assert the message names a file AND a line. The number
@@ -10775,7 +10775,7 @@ only_line() {
 }
 
 MIXED="$(mkpintree mixed)"
-sed -i "s|actions/sha-pinned@0\\.7\\.7|actions/sha-pinned@$previous_pin|" "$MIXED/.github/workflows/ci.yml"
+sed -i "s|actions/sha-pinned@0\\.7\\.8|actions/sha-pinned@$previous_pin|" "$MIXED/.github/workflows/ci.yml"
 check "pin: one caller left at the old ref reds" 1 "reads $previous_pin" ceremony_pin_is_one_pin "$MIXED"
 check "pin: ...naming the file and line it is on" 1 \
   "ci.yml:$(only_line "$MIXED/.github/workflows/ci.yml" "actions/sha-pinned@$previous_pin")" \
@@ -10786,7 +10786,7 @@ check "pin: ...naming the file and line it is on" 1 \
 # the file explaining the owner exemption would go on citing the ref the
 # exemption no longer applies to.
 STALECOMMENT="$(mkpintree stalecomment)"
-sed -i "s|# heavy-duty/ceremony@0\\.7\\.7|# heavy-duty/ceremony@$previous_pin|" "$STALECOMMENT/.github/workflows/ci.yml"
+sed -i "s|# heavy-duty/ceremony@0\\.7\\.8|# heavy-duty/ceremony@$previous_pin|" "$STALECOMMENT/.github/workflows/ci.yml"
 check "pin: the prose comment left behind reds" 1 \
   "ci.yml:$(only_line "$STALECOMMENT/.github/workflows/ci.yml" "# heavy-duty/ceremony@$previous_pin")" \
   ceremony_pin_is_one_pin "$STALECOMMENT"
@@ -10794,25 +10794,25 @@ check "pin: the prose comment left behind reds" 1 \
 # The sentence a contributor reads to learn what this repo is governed by.
 STALEDOC="$(mkpintree staledoc)"
 # shellcheck disable=SC2016  # the backticks are markdown in the file being edited
-sed -i 's|doctrine at `0\.7\.7`|doctrine at `0.7.6`|' "$STALEDOC/CONTRIBUTING.md"
+sed -i 's|doctrine at `0\.7\.8`|doctrine at `0.7.7`|' "$STALEDOC/CONTRIBUTING.md"
 check "pin: CONTRIBUTING.md's stated pin left behind reds" 1 "CONTRIBUTING.md" \
   ceremony_pin_is_one_pin "$STALEDOC"
 
 # A URL into the old tree still resolves, so this is the failure with no
 # symptom at all: the link works and shows the reader the wrong file.
 STALELINK="$(mkpintree stalelink)"
-sed -i 's|ceremony/tree/0\.7\.7/actions|ceremony/tree/0.7.6/actions|' "$STALELINK/drills/README.md"
+sed -i 's|ceremony/tree/0\.7\.8/actions|ceremony/tree/0.7.7/actions|' "$STALELINK/drills/README.md"
 check "pin: a /tree/ link into the old ref reds" 1 "drills/README.md" \
   ceremony_pin_is_one_pin "$STALELINK"
 STALEBLOB="$(mkpintree staleblob)"
-sed -i 's|ceremony/blob/0\.7\.7/README|ceremony/blob/0.7.6/README|' "$STALEBLOB/CONTRIBUTING.md"
-check "pin: a /blob/ link into the old ref reds — the other URL shape" 1 "reads 0.7.6" \
+sed -i 's|ceremony/blob/0\.7\.8/README|ceremony/blob/0.7.7/README|' "$STALEBLOB/CONTRIBUTING.md"
+check "pin: a /blob/ link into the old ref reds — the other URL shape" 1 "reads 0.7.7" \
   ceremony_pin_is_one_pin "$STALEBLOB"
 
 # A thirteenth caller, at the right ref. Every site agrees, so only the count
 # catches it — which is what the count is for.
 THIRTEEN="$(mkpintree thirteen)"
-sed -i 's|\(^ *\)uses: heavy-duty/ceremony/actions/sha-pinned@0\.7\.7|&\n\1uses: heavy-duty/ceremony/actions/nonesuch@0.7.7|' \
+sed -i 's|\(^ *\)uses: heavy-duty/ceremony/actions/sha-pinned@0\.7\.8|&\n\1uses: heavy-duty/ceremony/actions/nonesuch@0.7.8|' \
   "$THIRTEEN/.github/workflows/ci.yml"
 check "pin: a thirteenth caller at the right ref still reds" 1 "found 13" \
   ceremony_pin_is_one_pin "$THIRTEEN"

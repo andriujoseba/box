@@ -49,7 +49,20 @@ one **without asking anything**. One accountable role keeps builders from guessi
    Past 24 hours from the current episode's `labeled` event, if the ruling
    still stands and doubt remains, it is triage's duty to pick the option the
    builder proceeds on, record that pick as a decision, and stay accountable
-   for it; the operator may overturn it at merge (#50 D13–D14). You set the
+   for it; the operator may overturn it at merge (#50 D13–D14). **That duty
+   does not reach a flag borne by an issue whose escalation reads `Default:
+   none — hard block`**: there the 24h and past-24h rungs do not fire at all,
+   the flag waits for the human, and what is owed at each of them is a
+   published re-read of the default against what has landed — never a pick
+   (#526). The reason is the one the rung itself gives, *"the operator may
+   overturn it at merge"*: a pick made on a pull request gets a second look
+   before anything lands, an issue has no second look, and where the pick
+   would tick an acceptance criterion the tick is the terminal act. A flag
+   borne by a **pull request** runs the full ladder unchanged, and an
+   issue-borne flag carrying a **timed, reversible** default still expires
+   under the 0–12h rung — the carve-out is keyed on the hard block, not on
+   the surface alone ([BUILDER.md](BUILDER.md#the-ruling-ask),
+   [LABELS.md](LABELS.md)). You set the
    flag, so you also close it out ([LABELS.md](LABELS.md)): judge when
    agreement is reached, record the ruling as a decision in one comment,
    remove the label, and return the issue to its flow in that same comment;
@@ -91,15 +104,18 @@ Every issue you mint carries, in this order:
 - **Tasks**: the steps, checkboxed, in order.
 - **Acceptance criteria**: checkboxed, verifiable, and honest — these become
   the builder's definition of done and the reviewer's review spec, verbatim.
-  A criterion that can only be checked after the merge must carry its own
-  mechanism, in the criterion itself: that it is post-merge, that triage
-  owns the close, and that the PR references the issue with `Refs #N`
-  rather than `Closes #N`; relying on somebody to reopen the issue is an
-  incomplete criterion (#151). The merge moves the issue to `post-merge` and
-  releases the claim. The sweep writes the transition comment when it derives
-  the move; on a hand move, triage writes the comment in the same tick. In
-  either case triage follows up with the remaining criteria, their owner, and
-  the wake condition for completion.
+  **The split is decided at the mint.** Ask of each criterion whether its
+  evidence can exist before the PR merges; a criterion whose evidence cannot
+  is **not carried by this issue** — it is minted as its own issue, which
+  declares this one as its blocker. Asking at the mint rather than at the
+  merge is what keeps an issue's close one event instead of a queue (#151,
+  #536).
+
+  **That successor issue carries the outstanding criteria verbatim**, has one
+  owner class — builder-owned or operator-owned, never both — and names its
+  evidence surface, the command or observation that produces the evidence,
+  and the wake condition that brings someone back to tick it. It cites the
+  issue it was split from.
 
   **Classify each criterion at mint on a second axis as well: who can
   produce its evidence.** A builder's session is not assumed to reach the
@@ -116,33 +132,97 @@ Every issue you mint carries, in this order:
   session's boundary and not its convenience: slowness, inconvenience, and a
   fixture nobody has written yet are work rather than distance, and evidence
   the board's own automation produces is reachable by anyone who can read it.
+  **That boundary is not the same in every builder session**, so a
+  builder-owned criterion may require a **named session capability** — a
+  vendor CLI, an authenticated session, a profile — and where it does, the
+  criterion states three things in its own text, not in a comment and not in
+  a covering sentence: that it is **builder-owned and not operator-owned**,
+  **the capability it requires**, and **what a builder lacking it does** —
+  release the claim, never substitute documentation for the evidence. A named
+  capability is a property of the criterion and not a class of criterion: it
+  adds no third value to the two above, a session lacking it having a shorter
+  reach rather than a different one (#575).
 
   **An operator-owned criterion carries three things in its own text**, not
   in a comment and not in a covering sentence: that it is operator-owned,
   **its evidence** — the command, and the surface that command must run on —
   and **its wake condition**, the event that brings someone back to tick it.
-  A criterion saying only that it is operator-owned is as incomplete as a
-  post-merge one naming no mechanism.
+  A criterion saying only that it is operator-owned is incomplete.
 
-  **The two axes are independent, and neither is read off the other.**
-  Operator-owned does not make a criterion post-merge, post-merge does not
-  make one operator-owned, and one that is both carries both mechanisms, the
-  post-merge mechanism above holding unchanged for every criterion it
-  already governed.
+  **Reach is the axis classified at mint, and after #536 it is the only
+  one.** A criterion whose evidence cannot exist before the merge is not
+  carried by the issue at all, so there is no second classification left to
+  make: the after-close question is answered by the mint-time split above,
+  and never by a second axis read off a criterion the issue keeps (#536).
 
   **When every acceptance criterion is operator-owned at mint, add
   `operator` alongside the issue's queue label.** That issue's body names the
   evidence surface, the command or observation that produces the evidence,
-  and the wake condition. A single operator-owned criterion among
-  builder-owned criteria does not mark the issue `operator`; it keeps the
-  per-criterion mechanism above, because criterion reach and issue ownership
-  are separate axes (#491).
+  and the wake condition.
+
+  **An issue is builder-owned or operator-owned, and never both.** One that
+  would carry criteria of both classes is not minted: it is split at the
+  mint, and one found mixed later is split where it stands. This **replaces**
+  the rule that a lone operator-owned criterion among builder-owned ones left
+  the issue unmarked and kept the per-criterion mechanism. Such a criterion no
+  longer stays where it is; it relocates, by the route below (#491, #488).
+
+  **That reversal is at the issue level only.** What #491 also said — that
+  issue ownership is not read off criterion reach — is what changes, and only
+  because an issue may no longer hold both classes: with mixing forbidden, an
+  issue's class follows from its criteria's because there is nothing else left
+  for it to be. Criterion reach and issue ownership remain different
+  questions; the second now has one admissible answer (#491, #488).
+
+  **Where an issue's remaining acceptance criteria include operator-owned
+  ones, relocate them — do not route the issue around them.** The
+  operator-owned criteria move **verbatim** into their own issue; the original
+  is left with a remainder that is wholly PR-checkable; and its PR merges with
+  `Closes #N`. The evidence is neither waited on at the merge door nor
+  deferred past it. It becomes tracked work carrying its own claim and its
+  own wake condition, which is the whole of the route: an issue is not held
+  open to remember something a separate issue can hold (#488).
+
+  **The relocation precedes the merge.** Before the merge it is a route;
+  after the merge it is a repair — the same moves, but performed on an issue
+  that has already closed on criteria nothing checked. Doing it in time is
+  part of the rule and not advice about it (#488).
+
+  **A relocation enumerates the moved criteria one at a time, against the
+  original.** The new issue's body records which criteria it carries,
+  criterion by criterion; the original records which it shed, the same way. A
+  relocation that asserts its coverage in a summary sentence has stated
+  nothing anyone can check, and a summary that was false when written is what
+  this requirement comes from (#488).
+
+  **Two or more relocations may share one operator-owned issue when they name
+  the same evidence surface and the same command or observation.** This is a
+  permission, not a requirement: triage may still mint one issue per
+  relocation where that reads better. Relocations naming different evidence
+  surfaces never share an issue. The shared issue names every originating
+  issue, enumerates the criteria it carries per originating issue, and gates
+  them all; each originating issue still records which criteria it shed. The
+  shared issue remains all-operator-owned and takes `ready` + `operator`
+  unchanged (#532).
+
+  **The same command means one invocation on the same surface produces every
+  piece of evidence.** Two different commands run in one sitting on the same
+  host do not qualify: sharing a schedule is not sharing a command (#532).
+
+  **The relocated issue is all-operator-owned at its own mint**, so it takes
+  `ready` + `operator` under the rule above, and its body names the evidence
+  surface, the command or observation, and the wake condition. This
+  commissions no new mechanism: route D's output is exactly the artifact that
+  rule already mandates (#488).
 
   **A criterion whose evidence turns out at claim time to be beyond a
   builder's reach is a defect in the issue, and the body is yours.**
   Reclassify it where it stands, in the same tick — a comment that answers
   the builder while the body still asks for proof no builder can produce
-  leaves the next reader the same issue (#149).
+  leaves the next reader the same issue (#149). Reclassifying it
+  operator-owned is what makes the issue mixed, so the relocation above is
+  the rest of the same repair and not a later one; the builder's claim waits
+  on it and on nothing else (#488).
 - **Test plan**: what proves it, including the cases that must fail.
 - **Dependencies**: `Blocked by #N` / `Blocks #N`, and `Part of #E` when an
   epic organizes it. Name a cross-repo dependency the same way with its
@@ -173,6 +253,16 @@ Every issue you mint carries, in this order:
   already reaches X through A. Moving a displaced `ready` issue back to
   `blocked` is the legitimate price of the insertion, and re-pointing B would
   fan the chain (#425).
+
+  **Owner classes gate through the same edges.** Where a fix needs
+  builder-owned work and then operator evidence, the shape is
+  `builder-owned issue → operator-owned issue → the gated issue`, and the
+  gated issue declares **the operator-owned issue alone**: it reaches the
+  builder-owned one through it, by the transitivity the front-row insertion
+  already relies on. A shared operator-owned middle node is legitimate: each
+  gated issue declares that shared node alone and reaches its own builder-owned
+  predecessor through it. Declaring both is not wrong, but the single edge is
+  the house form, and fanning the chain is the thing to avoid (#488, #532).
 
   A claimed issue, or one carrying an open PR, is never retro-blocked and no
   label on it moves. The front-row issue still lands first, but the collision
@@ -216,7 +306,12 @@ Every issue you mint carries, in this order:
   it, and the builder's cut comment on the issue is your trigger to append the
   successor. An issue whose work fitted one PR grows no such section.
 - **Labels**: type (`bug`/`enhancement`/`documentation`), `scope:*`, and
-  exactly one of `ready` / `blocked` (see [LABELS.md](LABELS.md)).
+  exactly one of `ready` / `blocked` (see [LABELS.md](LABELS.md)). Repairing
+  any governed board's own missing label taxonomy is the exception: it is
+  operator-owned and passes no mint door, because GitHub's `triage` role can
+  neither create labels nor dispatch workflows. Name the missing rows and the
+  verified `workflow_dispatch` press with `bootstrap=yes` to the operator,
+  then stop and mint nothing (#524).
 
 The bar, stated once: **a competent builder who has read only this issue and
 the repo can succeed.** The release-ceremony epic and its children
@@ -275,11 +370,11 @@ Repositories that adopt version epics follow [RELEASES.md](RELEASES.md).
   lands, and flags a blocked issue whose dependency declaration is unreadable.
 - The sweep reclaims abandoned claims after 48 hours: `claimed` + no open PR
   + no activity → comment, unassign, restore `ready`.
-- `post-merge` is triage's completion queue, not a parked claim. Tick verified
-  criteria and close under the criterion's existing contract. If corrective
-  build work becomes necessary, move it to `ready` or mint a fresh `ready`
-  issue: any builder claims from current `main`, the original builder has no
-  special standing, and re-entry does not set `attention`.
+- In the close-out tick, clear any remaining queue label and assignee when the
+  sweep has not already done so; the claim ends with the issue (#547).
+- At mint, express the owner class by setting `operator` or leaving it absent.
+  The sweep derives the complementary `builder` row; triage never hand-writes
+  it.
 - Automation never guesses intent. Resolve the conflict comments it leaves on
   malformed queue states, and close or extend completed epics when nudged.
 - **Close obsolete issues** with the reason and a link to what obsoleted

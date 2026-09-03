@@ -53,7 +53,7 @@ every push, and when the marks cannot be read at all (#479).
 | `blocker:conflict` | `#B60205` | does not merge — the builder owes a **rebase** |
 | `blocker:ci-red` | `#B60205` | a check failed — the builder owes a **fix**, which a rebase will not provide. Not asserted at a head carrying `rerun-owed`, where the builder owes nothing (#423) |
 | `blocker:unrequested` | `#E99695` | this head has no verdict from somebody, and nobody was asked |
-| `blocker:drill-pending` | `#B60205` | a `release` PR whose version has no `drills/X.Y.Z.md` record — correct but unevidenced (maintainer-created label; the bot bootstrap 403s on it) |
+| `blocker:drill-pending` | `#B60205` | a `release` PR whose version has no `drills/X.Y.Z.md` record — correct but unevidenced (operator-created label; the bot bootstrap 403s on it — see Maintenance) |
 
 States answer *whose ball*; blockers answer *what's in the way*. They are
 separate axes because the single-label version kept lying — independent facts
@@ -69,47 +69,33 @@ strips it on sight).
 | `ready` | `#0E8A16` | Triaged, spec complete, unblocked; its owner can start now and succeed | triage |
 | `claimed` | `#1D76DB` | a builder owns it: assignee set, a draft PR expected shortly | the claiming builder |
 | `blocked` | `#6A737D` | waiting on another issue or PR (`Blocked by #N` in the body names it) | triage; anyone may correct it |
-| `post-merge` | `#006B75` | the Refs-linked PR merged; post-merge acceptance criteria remain; the claim is released — nothing here is buildable and nobody owes a draft | the sweep or triage |
 | `epic` | `#5319E7` | organizes other issues via a dependency-ordered task list; **builders never pick an epic** | triage |
 
 The work-queue sweep enforces the invariant a board scan relies on: every open issue is either
 `needs-triage`, `epic`, or carries exactly one of `ready` / `claimed` /
-`blocked` / `post-merge`. It flags conflicts rather than guessing intent. A `claimed` issue
+`blocked`; a closed issue carries none of those three queue labels. It flags
+conflicts rather than guessing intent. A `claimed` issue
 with no open PR and no activity for 48 hours is reclaimed by the sweep: it
 comments, unassigns the stale owner, and restores `ready`.
 
-When a merged PR references a `claimed` issue with `Refs #N` and unchecked
-criteria remain, the sweep moves the issue to `post-merge`, clears the
-assignee, and comments with the remaining criteria verbatim. The comment says
-that the claim is released and that triage owes a follow-up naming the owner
-and wake condition for completion. Triage writes that full transition comment
-in the same tick when it or the operator makes the move by hand. The sweep
-never reclaims `post-merge`: weeks of quiet can be the state working. It does
-make the quiet visible — after 7 days with no comment on the issue, the sweep
-posts one nudge naming the triage actor, saying the wake evidence is owed and
-linking the item. Only a comment resets that clock: label churn does not, and
-neither does an assignment, which is the claim clock's fact and on this queue
-state is the invalid composition flagged below. Which criterion starved is
-prose the machine never judges; the link is the payload. Like the ruling nudge
-it carries no idempotency marker on purpose — the comment is itself activity,
-so the rule self-rate-limits to one nudge per 7 quiet days — and it writes no
-label.
+When the sweep finds a recently updated closed issue carrying a queue label,
+it removes that label, clears every assignee and any `attention`, and comments
+once that the claim is released. It does not reopen the issue or derive a new
+queue state; `epic`, `needs-triage`, `operator`, `offsite`, `release`, and
+`scope:*` labels are outside this close-out repair (#547).
 
-`operator` has the same legitimate-quiet shape and the same clock. After 7
+`operator` has a legitimate-quiet shape and a seven-day clock. After 7
 days with no comment on an issue carrying it, the sweep posts one nudge naming
 the operator, linking the issue, and saying the body's wake condition is still
 owed. A plain `ready` issue never draws this nudge. Only a comment resets the
 clock; the nudge carries no marker and writes no label, so its own comment
 self-rate-limits it to once per 7 quiet days (#491).
 
-`post-merge` never composes with `blocked`; the transition comment carries the
-wait. It never composes with `attention`, because releasing the claim clears
-the assignee and leaves nobody parked-for. An assigned `post-merge` issue is
-flagged rather than repaired: a hand-assignment is intent. `needs-ruling`
-still composes. When the remainder becomes buildable, triage moves
-`post-merge` to `ready` or mints a fresh `ready` issue. Any builder may claim
-that work from current `main`; the original builder has no special standing,
-and re-entry does not set `attention`.
+A queue-labelled issue has exactly one owner class. Triage expresses that
+class by setting `operator` or leaving it absent; the sweep renders the
+complement as `builder`. It adds `builder` to queue-labelled issues without
+`operator` and removes it wherever `operator` is present. `epic` and
+`needs-triage` are exempt, and the derived row is never hand-set.
 
 ## Cross-cutting (PRs and issues)
 
@@ -120,6 +106,7 @@ and re-entry does not set `attention`.
 | `offsite` | `#CFD3D7` | issue deliverable is a PR in another repository; set by the builder with the draft link and cleared by the builder at handoff |
 | `needs-ruling` | `#D4C5F9` | a human-owned decision is required; use BUILDER.md's ruling template and ladder. Set by triage or the builder; a state, not a signal — it clears on agreement, not on a reply |
 | `operator` | `#A371F7` | issue-only: an operator owns the work; the body names its evidence surface, command or observation, and wake condition |
+| `builder` | `#BFDADC` | Builder-owned; the complement of `operator` — derived by the sweep, never hand-set |
 | `rerun-owed` | `#D4C5F9` | PR-only: the head is red on a rerun no agent may start, so the builder owes nothing until it is made. Set by the builder with its evidence; cleared by `ci-rerun` when it starts the attempt, and by the reconciler when the head recovers or moves (#424) |
 | `attention` | `#D93F0B` | issue-only demand parked for the assignee; hand-set, and never written by the machine |
 | `release` | `#0E8A16` | release flow, versioning, packaging work — and the ceremony PR itself |
@@ -131,6 +118,11 @@ a decision, `operator` says an operator owes the work, and
 issue queue label, and the one-of-four queue invariant ignores it. An
 operator-owned issue normally reads `ready` + `operator`: the work is
 triaged, spec-complete and unblocked, while the second label names its owner.
+An issue waiting on an external condition only the operator can resolve is
+operator-owned: it keeps `ready` and adds `operator`, and its quiet is
+legitimate under the same seven-day clock. This admits conditions the operator
+has the power to change, such as rerunning a red fork-PR head; it does not admit
+a third party's unscheduled reply, which the operator cannot resolve.
 The body's evidence surface, command or observation, and wake condition keep
 that availability actionable (#491).
 
@@ -155,7 +147,26 @@ and either a default affirmatively known to be reversible inside the PR or
 and org policy are hard blocks by construction (D13).
 
 The ruling ladder runs from the current episode's `needs-ruling` **`labeled`
-event** (D13–D14):
+event** (D13–D14). A discussion carries neither the label nor that event, so
+a discussion-borne ask carries no ladder and no rung ever falls due against
+it (#526).
+
+**On a flag borne by an issue whose escalation reads `Default: none — hard
+block`, the 24h and past-24h rungs do not fire.** The flag waits for the
+human, and no timer replaces them. What the setter owes at each of those two
+rungs instead is a **published re-read** — the default read again against
+what has landed, and what doubt stands — which is the 12h rung's own act
+extended to the two below it, so the carve-out adds a duty rather than
+removing one. The reason is that the late rungs' safety is the merge gate,
+in their own words *"the human still gates the merge"*: a pick made on a pull
+request gets a second look before anything lands, an issue has no second
+look, and where the pick would tick an acceptance criterion the tick is the
+terminal act. Three things are **not** carved out — a **PR-borne** flag runs
+the whole ladder as written, *"as a PR"* and merge gate included; an
+**issue-borne** flag carrying a **timed, reversible** `Default:` still
+expires under the 0–12h rung, the carve-out being keyed on the hard block and
+never on the surface alone; and the **0–12h and 12h rungs are unchanged on
+every surface**, being surface-agnostic already (#526). The rungs:
 
 - **0–12h:** a clear, reversible decision may proceed when its stated default
   expires, saying out loud that it did; anything with reasonable doubt waits
@@ -165,13 +176,19 @@ event** (D13–D14):
   fire; new doubt makes it a hard block.
 - **at 24h:** the builder proceeds regardless, **as a PR**, stating the option
   chosen and the doubt that remains. Nothing merges by this; the human still
-  gates the merge.
+  gates the merge. This rung does not fire on an issue-borne flag reading
+  `Default: none — hard block`: the setter publishes the re-read instead.
 - **past 24h:** triage picks the option, records it as a decision, and remains
-  accountable. The operator may overturn it at merge.
+  accountable. The operator may overturn it at merge. This rung does not fire
+  on an issue-borne flag reading `Default: none — hard block` either: the flag
+  waits for the human, and the re-read is what is owed.
 
-A re-flag starts a new ladder. The rungs apply whatever `Default:` says,
-including a hard block. Active discussion still climbs the ladder; by
-contrast, the separate 7-day nudge resets on real activity. The machine
+A re-flag starts a new ladder. On every surface the 0–12h and 12h rungs apply
+whatever its own escalation comment says, hard block included. The 24h and
+past-24h rungs do not fire when that fresh episode is issue-borne and reads
+`Default: none — hard block`; otherwise the whole ladder applies. Active
+discussion still climbs the ladder; by contrast, the separate 7-day nudge
+resets on real activity. The machine
 observes the rungs but never sets, clears, or decides `needs-ruling`.
 
 The flag stays up until agreement is *reached* — a human reply alone does not
@@ -192,7 +209,14 @@ never activity, or the sweep would reset itself — and each surface's clock
 reads what exists on it: on a pull request, comments, reviews and commits;
 on an issue, comments alone. An assignment is the claim clock's fact, not
 the ruling's — claiming a flagged issue does not answer it, and buys the
-escalation no quiet (#284).
+escalation no quiet (#284). On the same axis, a comment by the current
+episode's flag-setter is not activity on this clock, and the clock runs from
+that `labeled` event rather than from the item's creation: the setter owes a
+published re-read at the late rungs, so counting those re-reads would let the
+party owing them silence the reminder addressed to the party owing the
+decision, and dropping them without the floor would report an old item as
+quiet since before the ruling existed. Reviews and commits still count in
+full, whoever wrote them, and no other clock excludes anybody (#284, #534).
 
 `offsite` is issue-only and records that a claimed issue's deliverable lives
 in another repository, where a closing reference cannot make a local open PR
@@ -304,19 +328,16 @@ unanswered `attention` is exactly the silence the 48-hour reclaim should
 take. It is hand-set: the machine never sets `attention`, never assigns
 anyone to receive one, and never decides that one has been answered — the
 assignee's removal is the only ack. It writes the label in exactly one
-place, the derived `claimed` → `post-merge` transition below, and nowhere
-else; where it reads the flag it reads it to diagnose. The PR sweep comments
+place, the closed-issue claim-release repair, and nowhere else; where it
+reads the flag it reads it to diagnose. The PR sweep comments
 when `attention` is put on a pull request, and the issue sweep comments when
 it is put on an issue with no assignee. Both diagnoses leave the label and
 assignees alone; the machine never infers the claim issue, decides that the
 demand was answered, or repairs either malformed shape.
 An `attention` issue without an assignee is therefore a board bug, not a
-demand; anyone may assign it or remove the flag. It never composes with
-`post-merge`, whose released claim has no assignee to answer the demand. The
-one machine-clear exception is the derived `claimed` → `post-merge`
-transition: releasing the assignee clears a carried `attention` in the same
-edit. A hand-created `post-merge` + `attention` composition is flagged, not
-rewritten.
+demand; anyone may assign it or remove the flag. The one machine-clear
+exception is the closed-issue repair: releasing the assignee clears a carried
+`attention` in the same edit.
 
 The three signals are mutually distinct: `attention` means an assignee owes
 a move; `needs-ruling` means a human owes a decision under
@@ -355,7 +376,16 @@ recommended default when no other engine drives board state; relax it only as
 the transition classes with no other writer shrink. Manual dispatch both
 bootstraps this taxonomy idempotently and runs the operator's on-demand
 full-board reconcile. The sweep warns when the core taxonomy declares a label
-the repository lacks. The same workflow reconciles issue-flow labels on issue
-events and during the scheduled sweep. Default GitHub labels (`duplicate`,
-`invalid`, `question`, `wontfix`, `help wanted`, `good first issue`) are
-deleted at bootstrap — a `question` is a discussion, not an issue.
+the repository lacks; that warning is the notice for an operator-owned repair,
+not an issue-minting door. On any governed board, repairing its own label
+taxonomy passes no mint door and no issue is minted: GitHub's `triage` role
+grants neither label creation nor workflow dispatch, so no triage agent can
+perform the repair. The operator presses `workflow_dispatch` with
+`bootstrap=yes` and reads that run's conclusion, bumping the ceremony pin
+first only when a missing row is newer than the pin, as documented in
+[A bootstrap press that reports whether it ran](https://github.com/heavy-duty/ceremony/blob/main/docs/CONSUMERS.md#a-bootstrap-press-that-reports-whether-it-ran)
+(#524).
+The same workflow reconciles issue-flow labels on issue events and during the
+scheduled sweep. Default GitHub labels (`duplicate`, `invalid`, `question`,
+`wontfix`, `help wanted`, `good first issue`) are deleted at bootstrap — a
+`question` is a discussion, not an issue.

@@ -6,6 +6,19 @@ without version epics is not out of compliance. A repo-local roadmap is the
 map; each epic remains the source of truth for its own release. Where an older
 repo-local description differs from this file, this file governs.
 
+## Versioning and artifact publication
+
+A release has two halves: the repository records its progression, and it may
+publish an artifact. The first half is universal — a repository that publishes
+no artifact still releases by cutting a tag, stamping its version and
+assembling its changelog section. The artifact hook is the optional half.
+Describe repositories on the **publishes an artifact / does not publish an
+artifact** axis, never the **releases / does not release** axis.
+
+`heavy-duty/la-familia-infra` is the live worked example: its releases version
+infrastructure state and record that progression without publishing an
+installer, package or image.
+
 ## The ladder
 
 Represent each planned release with one version epic. The epic is the working
@@ -193,39 +206,24 @@ releases exactly its declared successors, and that whole set is concurrently
 claimable: a member may have multiple successors, while the collision rule
 already orders any that share a deliverable. Insertion re-points downstream
 edges rather than merely appending membership at the sink. It follows that
-every `ready` issue is a member. `epic` and `post-merge` issues are exempt
-because neither is claimable (#292).
+every `ready` issue is a member. An `epic` is exempt because builders never
+claim it (#292).
 
-A member that lands `post-merge` releases nothing: that exemption is about
-claimability, while a `post-merge` issue is still open and an open predecessor
-holds its successors, so every successor declaring on it stays held and the
-window stops advancing along that edge (#329).
-
-**When a member reaches `post-merge` and any open declaration names it, triage
-splits the remainder**: mint a fresh issue carrying the outstanding criteria
+**The merge-door repair for after-close work is a split.** When an issue is
+found mid-flight to carry work whose evidence cannot exist before merge,
+triage mints a fresh issue carrying the outstanding criteria
 verbatim, naming its owner and its wake condition and citing the original, then
 close the original on what it delivered. Triage owns this because only triage
-mints issues and `post-merge` is its completion queue (#329).
+mints issues (#329, #536).
 
 **The release edge is the original's close, never the remainder's.** Each
 successor's declaration names the original's number, so closing the new issue
 releases nothing (#329).
 
-**Split only when an open declaration names the issue.** The trigger is a check
-rather than a judgement — run the blocker parse over every open `blocked` body
-and see whether this number appears — because an issue that strands nothing is
-`post-merge` working as intended (#329).
-
 **Never close work out from under a builder.** Where the original is assigned,
 `claimed`, or carrying an open PR, amend its body to hand the outstanding
 criteria to the new issue and let its holder close it, so the release edge above
 is reached without taking the work from them (#329).
-
-**Do not instead teach the blocker parse that `post-merge` counts as landed.**
-That promotes a successor while its predecessor still owes acceptance criteria,
-inverts a parser whose deliberate error direction is to hold or flag a reference
-it cannot read rather than release it, and needs label data a reference-state
-lookup does not carry (#329).
 
 The operator may declare a parallel track at init when its footprint is
 disjoint from the primary window: another repository, another artifact, or

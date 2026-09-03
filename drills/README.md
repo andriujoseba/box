@@ -9,7 +9,7 @@ drills/0.9.0-rc1.md
 ```
 
 The name must match the contents of `VERSION` exactly.
-[the pinned ceremony drill-recorded action](https://github.com/heavy-duty/ceremony/tree/0.7.7/actions/drill-recorded)
+[the pinned ceremony drill-recorded action](https://github.com/heavy-duty/ceremony/tree/0.7.8/actions/drill-recorded)
 refuses any tree with a bare `VERSION` that has no such file, or whose file is
 blank. A `-dev` tree passes with nothing to assert.
 

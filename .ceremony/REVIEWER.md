@@ -27,16 +27,19 @@ The machine reads only your **verdict**; humans read your reasons.
 In order of authority:
 
 1. **The issue's acceptance criteria** — the PR's `Closes #N`, its
-   cross-repo `Part of <owner>/<repo>#N`, or its `Refs #N` when the issue
-   body marks a criterion post-merge, names your spec. That last shape is
-   not a defect: the issue directs it, triage owns that close, and a
-   request-changes on the "missing" keyword enforces the bug the shape
-   exists to fix — `Closes #137` closed its issue with a post-merge
-   criterion unmet (#151). For a `Refs #N` body, also verify that no closing
-   keyword immediately precedes `#N` anywhere in the body, even in prose
-   explaining the hand close: GitHub used that shape to close #209 and #212
-   (#200, #218). The `refs-not-closing` guard and GitHub's closing-issue graph
-   settle the check: a `Refs #N` head with a clean graph closes nothing, and a
+   cross-repo `Part of <owner>/<repo>#N`, or its `Refs #N` on a round-cap cut
+   **predecessor**, names your spec. A same-repo PR carrying acceptance
+   criteria carries `Closes #N`, so the only `Refs #N` head you meet is that
+   predecessor, and there the shape is not a defect: the cut directs it and a
+   request-changes on the "missing" keyword asks for a close the successor
+   owns. The shape once served a post-merge criterion too — `Closes #137`
+   closed its issue with such a criterion unmet, which is what bought the rule
+   (#151) — and that path is retired, no mint producing one (#536). For a
+   `Refs #N` body, also verify that no closing keyword immediately precedes
+   `#N` anywhere in the body, even in prose explaining the hand close: GitHub
+   used that shape to close #209 and #212 (#200, #218). The
+   `refs-not-closing` guard and GitHub's closing-issue graph settle the
+   check: a `Refs #N` head with a clean graph closes nothing, and a
    closing keyword quoted inside a code span at such a head is not a defect or
    grounds for request-changes. The safe forms put the number first (`#N is
    closed by hand`) or omit it (`triage closes the issue by hand`). Check every

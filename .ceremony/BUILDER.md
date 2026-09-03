@@ -48,11 +48,15 @@ not to guess.
      else's — awaiting first verdicts, or answered whole with the owed
      re-requests posted, by head and not by verdict (steps 1–2). A red check
      at the head takes it out of this shape: the next move is yours;
-  3. every remaining acceptance criterion is operator-owned, stated so by
-     triage on the issue. **An operator-owned remainder parks the claim and
-     never the handoff**: this shape is reached only from the far side of
-     shape 4, because it is the state finishing the work puts you in and
-     would otherwise excuse the handoff it should follow (#336);
+  3. a criterion is found, at claim or build time, to be beyond a builder's
+     reach, and you have reported it on the issue. The next move is
+     **triage's relocation** — the operator-owned criteria move verbatim into
+     their own issue and yours is left a wholly PR-checkable remainder
+     ([TRIAGE.md](TRIAGE.md)) — and the shape ends when that lands, the
+     remainder then being ordinary work you finish and hand off. This park is
+     **transient and never terminal**: an operator-owned remainder does not
+     wait at the merge door, so no claim rests here after the work is done
+     (#488, #336);
   4. it is **handed off** — round passed, no `blocker:*` standing,
      `state:needs-human` set per Handoff, the merge the human's. Shapes 2
      and 4 are sequential and never overlap;
@@ -74,14 +78,17 @@ not to guess.
      head whose next move is a **right you do not hold** parks, so a
      deterministic red, and a red whose rerun you could have started, are
      ordinary fix rounds and hold the claim (#423).
-  Not parked: waiting on yourself, on CI (a red head is yours unless shape 6
-  takes it; a pending one resolves without you), or for a good moment. An
+  Not parked: holding another unparked claim anywhere, waiting on yourself, on
+  CI (a red head is yours unless shape 6 takes it; a pending one resolves
+  without you), or waiting for a good moment. An
   issue you stopped working on is abandoned — unassign and restore `ready`.
   Parked claims are held beside the one active build (#15, #16, #73).
 
 ## Claiming
 
-- Assign yourself, swap `ready` → `claimed`, and comment that you are
+- **The slot assertion is a precondition**: where you cannot truthfully say
+  that you hold no unparked claim in any repository, do not take the claim.
+  Assign yourself, swap `ready` → `claimed`, and comment that you are
   starting. **That comment asserts the slot**: you hold no unparked claim in
   **any** repository, and it names the parked claims you do hold, each with
   its shape and where it lives. One clause, not a form — and it is the whole
@@ -89,6 +96,15 @@ not to guess.
   promises a draft PR soon: a claim with no PR and no activity is what the
   staleness sweep reclaims, unless `offsite` records that its PR lives in
   another repo.
+- A claim taken while that assertion was false is out of contract. With no
+  deliverable pushed, use the existing abandon route below. With a deliverable
+  already pushed and its head green, close it out to the nearest legitimate
+  resting point — get its round live or land it — without discarding the work.
+  Neither branch makes the claim retroactively admissible. Disclosure never
+  costs the claim: a silent taker is in the same breach and has hidden it.
+  Triage may direct this remedy only on the board it serves, using `attention`
+  on the assigned issue; the 48-hour reclaim remains the backstop. This creates
+  no label or cross-repository counter.
 - **A park is declared, never inferred.** Comment naming what the claim
   waits on and who owns the next move — no new label; the comment is the
   activity the reclaim clock reads, as for `needs-ruling` (#52) and
@@ -136,16 +152,15 @@ not to guess.
   hand once its criteria are met, the builder reporting there whether the PR
   merged or closed and clearing `offsite` in the same comment. The
   cross-repo merge never closes the authorizing issue (#13, #16).
-- **`Closes #N` does not survive a post-merge criterion.** Where the issue
-  body says a criterion can only be checked after the merge — a workflow
-  trigger proved live, a released artifact, anything whose subject does not
-  exist until the change is on the base branch — the same-repo PR says
-  `Refs #N`; the issue goes `post-merge` at the merge, the builder walks
-  away, and triage owns verification and closure on the evidence, returning
-  the issue to `ready` or minting a fresh one where corrective work is
-  needed — claimable by any builder from current `main`, the original having
-  no special standing. The issue body says so — you never judge which
-  qualify — and absent it `Closes #N` is the default (#151).
+- **A same-repo PR always carries `Closes #N`.** There is no
+  acceptance-criteria shape that does not: the mint already asked of every
+  criterion whether its evidence can exist before the merge and split out the
+  ones whose evidence cannot, so nothing is left for the merge to hand on.
+  Where you meet one that survived — a criterion whose subject does not exist
+  until the change is on the base branch, a workflow trigger proved live, a
+  released artifact — it is a **defect in the issue**: report it there and let
+  triage split it, the same move you make for a criterion beyond your reach.
+  Never write `Refs #N` to route around it (#151, #536).
 - On a `Refs #N` PR, never put a closing keyword (`close`, `closes`,
   `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`)
   immediately before `#N` anywhere in the body, including the sentence
@@ -197,6 +212,9 @@ such as the panel roster live in that repo's own CONTRIBUTING.)
    being what the state machine reads; where it names no roster, ask triage
    on the authorizing issue rather than guess. An off-panel reviewer may be
    requested, said to be advisory and not required.
+   Where an engine mediates the request, declaring the round answered and
+   marking ready-for-review is the whole of the builder's act; the engine
+   requests the panel.
 
    **A review request requires a green check at the head**, whether or not
    an engine enforces it: a red check is the author's own signal, so fix it
@@ -249,8 +267,8 @@ such as the panel roster live in that repo's own CONTRIBUTING.)
    head, and its mechanism is crew's to describe (#94). **The re-request
    carries the same green-check-at-head precondition**, argued exception
    included: a fix push whose check comes up red is your next fix, not the
-   panel's. **Where an engine mediates the request, that precondition binds
-   the engine's act and not yours**: declaring a round answered is not
+   panel's. **In the engine-mediated case stated in step 1, that precondition
+   binds the engine's act and not yours**: declaring a round answered is not
    requesting the panel, so declare it as soon as the round's fixes are
    pushed and stop. The engine holds the request while the head is pending
    or red, so an early declaration cannot produce an early request while a
@@ -305,11 +323,21 @@ checks are pending or red (#236).
 
 ## The round cap
 
-**A PR carries at most five rounds.** At the **close of round 5** the branch
+**A PR carries at most five rounds.** The cap fires at the event that would
+open a sixth round on the same PR: the close of a fifth round with work owed,
+or, after a passing fifth round, the next push to the head. The branch then
 continues in a **successor** PR and the predecessor **closes** as the ledger
-of how the work got there, every comment, verdict and ruling intact. Round six
-never opens on the same PR. Five is ruled, not derived from any measurement,
-and no build re-derives it (#420).
+of how the work got there, every comment, verdict and ruling intact.
+Round six never opens on the same PR.
+Five is ruled, not derived from any measurement, and no build re-derives it (#420).
+
+A fifth round that passes does not cut at its close: the handoff runs, the
+human's review is requested, `state:needs-human` is set, the handoff comment
+posts, and the claim parks. If the human merges, no cut is ever paid. If the
+human returns it and the answer requires a push, that push fires the cut before
+the panel is re-requested, and the successor's round 1 answers the human. A
+no-push return remains the narrow case governed by [The review
+round](#the-review-round)'s existing no-head-move clause; it fires no cut.
 
 **The cap is a consensus-surface rule that happens to bound bytes, and it is
 stated in that order**: the longer a PR runs the harder it is to bring the
@@ -322,12 +350,17 @@ to choose a numbering. Where the PR sits in the chain is what the issue's
 ordered `## Pull requests` list records ([TRIAGE.md](TRIAGE.md)), not the
 round number.
 
-**You perform the cut, at the round close.** Every act in it is an authoring
+**You perform the cut, at its trigger.** Every act in it is an authoring
 act you already perform, and nothing else performs any of it: nothing counts
 rounds for you, nothing enforces the cut, and nothing stops a sixth round on
 one PR. Where an engine does count and says the boundary is here, that is
 instruction and never performance — the procedure below is executable by a
 builder counting rounds by hand, and that is how it is written.
+
+The following steps serve a fifth-round close with work owed. After a passing
+fifth-round handoff, they instead serve the push that would open round six.
+In that case the cut is reachable only after the push has already spent the
+approvals, so step 2's rationale remains true.
 
 At the close of round 5, in this order:
 
@@ -373,6 +406,7 @@ cut already spends the approvals, and cutting mid-round spends a round's work
 on top of them, which is why the boundary is a round boundary and not a byte
 count. It is not a failure and carries no stigma, though a chain reaching a
 **second** cut is sizing evidence for the next mint ([TRIAGE.md](TRIAGE.md)).
+A fifth round that passes is not a cut trigger.
 
 ## The ruling ask
 
@@ -404,7 +438,26 @@ hard block, as published artifacts, secrets, prod and org policy are by
 construction (#50 D12–D13).
 
 The ladder is anchored to the current episode's `needs-ruling` **`labeled`
-event**, not its `Default:` deadline or the last activity (#50 D13–D14):
+event**, not its `Default:` deadline or the last activity (#50 D13–D14). A
+discussion carries neither that label nor that event, so a discussion-borne
+ask carries no ladder and no rung ever falls due against it (#526).
+
+**On a flag borne by an issue whose escalation reads `Default: none — hard
+block`, the 24h and past-24h rungs do not fire.** The flag waits for the
+human, and no timer replaces them. What the setter owes at each of those two
+rungs instead is a **published re-read** — the default read again against
+what has landed, and what doubt stands — which is the 12h rung's own act
+extended to the two below it, so the carve-out adds a duty rather than
+removing one. The reason is that the late rungs' safety is the merge gate,
+in their own words *"the human still gates the merge"*: a pick made on a PR
+gets a second look before anything lands, an issue has no second look, and
+where the pick would tick an acceptance criterion the tick is the terminal
+act. Three things are **not** carved out — a **PR-borne** flag runs the whole
+ladder as written, *"as a PR"* and merge gate included; an **issue-borne**
+flag carrying a **timed, reversible** `Default:` still expires under the
+0–12h rung, the carve-out being keyed on the hard block and never on the
+surface alone; and the **0–12h and 12h rungs are unchanged on every
+surface**, being surface-agnostic already (#526). The rungs:
 
 - **0–12h:** proceed when a still-clear, reversible default expires, saying
   out loud that you did; a hard block waits.
@@ -412,15 +465,21 @@ event**, not its `Default:` deadline or the last activity (#50 D13–D14):
   landed, and where doubt has appeared, make it a hard block.
 - **at 24h:** proceed regardless, **as a PR**: pick an option and say in the
   body which way you went and what doubt remains. Nothing merges by this;
-  the human still gates the merge.
+  the human still gates the merge. This rung does not fire on an issue-borne
+  flag reading `Default: none — hard block`: publish the re-read instead.
 - **past 24h:** hand the choice to triage, which picks the option, records
   it as a decision, and stays accountable; the operator can overturn it at
-  merge.
+  merge. This rung does not fire on an issue-borne flag reading `Default:
+  none — hard block` either: the flag waits for the human, and the re-read
+  is what is owed.
 
 A re-flag starts a fresh ladder, which applies whatever `Default:` says,
 hard block included, and an active back-and-forth still climbs it — unlike
-the 7-day nudge, which resets on real activity. The machine observes both
-clocks but never sets, clears, or decides `needs-ruling`. The label stays
+the 7-day nudge, which resets on real activity. The 24h and past-24h rungs do
+not fire when that fresh episode is issue-borne and its own escalation comment
+reads `Default: none — hard block`; otherwise the whole ladder applies. The
+machine observes both clocks but never sets, clears, or decides
+`needs-ruling`. The label stays
 until agreement is *reached*, not until the maintainer replies: the setter
 records the ruling, removes the label, and returns the item to its flow in
 the same comment ([LABELS.md](LABELS.md)).
@@ -444,7 +503,8 @@ section, and handing off over one hands the human a record saying nothing
 takes it back if the PR is not mergeable-right-now. Then stop: the PR is
 the human's, and the claim parks as shape 4 (Picking, above), that comment
 its declaration and your slot free. Address what comes back
-(`state:addressing`) and re-hand-off the same way.
+(`state:addressing`) and re-hand-off the same way; at a passed round 5, a push
+fires the cut first and the re-handoff is on the successor.
 
 **A taken-back handoff is answered by clearing the blocker, never by
 re-setting the label**: the take-back says the precondition was not met, so
