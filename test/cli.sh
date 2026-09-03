@@ -851,13 +851,8 @@ if [ -n "$SFPRECOMMIT" ]; then
   check "corpus: the guard reds on the real pre-amendment 177.md (${SFPRECOMMIT:0:7}) (#214)" 0 "" \
     cl_announces_removed "$CLPRE"
   # This half reads git history and is indifferent to the cut, so it is
-  # unchanged. Its other half reads the amended fragment as a tracked path,
-  # and on a release tree that path is gone — the amended text is in the
-  # section. Same assertion, same subject, found where the cut put it (#222 D6).
-  if [ -n "$CL_FRAGMENTS" ]; then
-    check "corpus: ...and is green on the amended one (the control's other half)" 1 "" \
-      cl_announces_removed "$ROOT/changelog.d/177.md"
-  fi
+  # unchanged. The green direction is the unconditional repaired-line fixture
+  # above; keying it to the consumed 177.md path made the next fragment red.
   rm -f "$CLPRE"
 fi
 
