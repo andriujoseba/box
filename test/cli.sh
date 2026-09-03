@@ -746,29 +746,15 @@ rm -f "$SFPROBE"
 # class, in the one directory whose entire output is the release notes.
 #
 # So the rule is the corpus: no surviving fragment announces --role, a pin, a
-# converger, or a seed set that does not exist. Two exceptions, and they are
-# named HERE rather than remembered, because an exception a reviewer has to
-# recall is one nobody can red:
-#
-#   214.md  — this release's own removals. It must name what it removes; a
-#             BREAKING entry that cannot say '--role' is not an entry.
-#   159.md  — one line, 'Retired agent template spellings'. That clause is
-#             HISTORY and is correct as history: those spellings were retired,
-#             and the sentence says so in the past tense about a thing that
-#             happened, not in the present about a thing that exists.
-#
-# Both exceptions are asserted to still HIT below. An absence sweep whose
-# exception list has quietly emptied is asserting nothing, and this one would
-# go green on a directory with no fragments in it at all.
+# converger, or a seed set that does not exist. Every tracked file is swept;
+# exceptions consumed by a release disappear with the files that carried them.
+# A future fragment that needs an exception must earn and exercise it then.
 #
 # The pattern is the acceptance criterion's, verbatim and case-insensitive, so
 # what the suite enforces and what the panel greps cannot drift apart.
 CL_PATTERN='\brig\b|RIG_RE(PO|F)|--role|agent (box|boxes|seed|seeds|template|templates)|blank template'
 cl_announces_removed() {          # <file>
   grep -qEi "$CL_PATTERN" "$1"
-}
-cl_announces_removed_except() {   # <file> <fixed string the one blessed line carries>
-  grep -vF -- "$2" "$1" | grep -qEi "$CL_PATTERN"
 }
 # Every tracked file in the directory, not a *.md glob: the criterion greps
 # changelog.d/ whole, and README.md and shape assemble into nothing but are
@@ -777,20 +763,21 @@ cl_announces_removed_except() {   # <file> <fixed string the one blessed line ca
 # The walk is 'git ls-files', so it asserts over TRACKED files and a checkout
 # without git would hand it an empty list — and an absence sweep over an empty
 # list passes by having nothing to look at, which is the exact failure mode the
-# exception list above is written to avoid. So the walk proves it reached
-# something before it sweeps, and it proves it by naming the two files the
-# exceptions name: if either is missing from the list, the exceptions are
-# excepting nothing and the sweep is asserting nothing.
+# sweep is written to avoid. So the walk proves it reached something before it
+# sweeps. The directory furniture survives every release cut by design, so it
+# is the era-free proof that the walk reached the corpus.
 CL_TRACKED="$(git -C "$ROOT" ls-files changelog.d 2>/dev/null)"
 cl_walk_reaches() { printf '%s\n' "$CL_TRACKED" | grep -qxF "$1"; }
+check "corpus: the walk reaches README.md — an empty walk sweeps nothing (#214, #271)" 0 "" \
+  cl_walk_reaches changelog.d/README.md
+check "corpus: ...and shape, the directory's second permanent anchor (#271)" 0 "" \
+  cl_walk_reaches changelog.d/shape
 #
 # ---- the two trees this block runs on (#222 D6) ---------------------------
 #
-# A release cut CONSUMES every fragment, so the five controls that read
-# changelog.d/{214,159,177}.md as tracked paths cannot run on the tree the cut
-# produces — and that tree is the one whose release notes those controls exist
-# to police. They do not become optional there; they change subject, from the
-# fragments to the section the fragments were assembled into.
+# A release cut CONSUMES every fragment, so no control may key liveness or
+# content to a fragment from one release. The permanent furniture proves the
+# walk on either arm; a cut tree proves its assembled section structurally.
 #
 # The branch is derived from the TREE and from nothing else: the fragments'
 # absence, and the assembled section's presence. Not an environment variable,
@@ -814,28 +801,7 @@ cl_release_section_is_stamped() {
     | grep -qE '^## [0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)? — [0-9]{4}-[0-9]{2}-[0-9]{2}$'
 }
 cl_release_section_has_entries() { cl_release_section | grep -q '^- '; }
-cl_release_section_announces() { cl_release_section | grep -qEi "$CL_PATTERN"; }
-cl_release_section_clause() { cl_release_section | grep -cF "$1"; }
-# The amended 177.md entries, found in the section by their own terminal
-# citation. '(#177).' and not '#177': 214.md's tenant-seed entry cites
-# '(#177, #214).' and is a DIFFERENT entry, one that announces a removal on
-# purpose, so a looser match would drag it in and invert this control.
-cl_release_177() { cl_release_section | grep -F -- '(#177).'; }
-cl_release_177_count() { cl_release_177 | grep -c '^- '; }
-cl_release_177_announces() { cl_release_177 | grep -qEi "$CL_PATTERN"; }
-if [ -n "$CL_FRAGMENTS" ]; then
-  # ---- the ordinary tree: exercised by this repository's own main ---------
-  # Unchanged in substance and in wording. Every assertion below ran before
-  # #222 and runs identically after it.
-  check "corpus: 214.md still names the removal it announces (#214)" 0 "" \
-    cl_announces_removed "$ROOT/changelog.d/214.md"
-  check "corpus: 159.md still carries the history clause the sweep excepts (#214)" 0 "1" \
-    grep -c 'Retired agent template spellings' "$ROOT/changelog.d/159.md"
-  check "corpus: the walk reaches 214.md, which the first exception names (#214)" 0 "" \
-    cl_walk_reaches changelog.d/214.md
-  check "corpus: ...and 159.md, which the second names — an empty walk sweeps nothing" 0 "" \
-    cl_walk_reaches changelog.d/159.md
-else
+if [ -z "$CL_FRAGMENTS" ]; then
   # ---- the release tree: exercised by the cut PR itself -------------------
   # This is the liveness guarantee moved, not dropped. On the ordinary tree
   # the 'git ls-files' walk proves the sweep reached something before it swept
@@ -847,31 +813,11 @@ else
     cl_release_section_is_stamped
   check "corpus/release: ...and it is not empty — a section that assembled nothing reds" 0 "" \
     cl_release_section_has_entries
-  # The two excepted clauses, now asserted where they actually ship. These are
-  # the same two exceptions the ordinary path names, read out of the section
-  # instead of out of the files: 214.md's removal announcement, which a
-  # BREAKING entry that cannot say '--role' would not be, and 159.md's
-  # one-line history clause.
-  check "corpus/release: the section carries 214.md's removal announcement (#214, #222)" 0 "" \
-    cl_release_section_announces
-  check "corpus/release: ...and names --role, the removal it announces" 0 "1" \
-    cl_release_section_clause 'box new --role <role>'
-  check "corpus/release: ...and carries the BREAKING entry that heads it" 0 "1" \
-    cl_release_section_clause '**BREAKING** — box no longer installs or runs a converger'
-  check "corpus/release: ...and 159.md's history clause, exactly once (#214, #222)" 0 "1" \
-    cl_release_section_clause 'Retired agent template spellings'
 fi
 while read -r rel; do
   [ -n "$rel" ] || continue
-  case "$rel" in
-    changelog.d/214.md) continue ;;
-    changelog.d/159.md)
-      check "corpus: $rel announces nothing removed but its history clause (#214)" 1 "" \
-        cl_announces_removed_except "$ROOT/$rel" 'Retired agent template spellings' ;;
-    *)
-      check "corpus: $rel announces nothing this release removes (#214)" 1 "" \
-        cl_announces_removed "$ROOT/$rel" ;;
-  esac
+  check "corpus: $rel announces nothing this release removes (#214)" 1 "" \
+    cl_announces_removed "$ROOT/$rel"
 done <<< "$CL_TRACKED"
 # The guard's own test, on the two shapes it exists to tell apart: a stale
 # SUBJECT — true in substance, naming a seed set #209 collapsed — and the same
@@ -911,15 +857,6 @@ if [ -n "$SFPRECOMMIT" ]; then
   if [ -n "$CL_FRAGMENTS" ]; then
     check "corpus: ...and is green on the amended one (the control's other half)" 1 "" \
       cl_announces_removed "$ROOT/changelog.d/177.md"
-  else
-    # Liveness first, for the reason the walk exists: an extraction that
-    # reaches no entry would make the assertion below pass by having nothing
-    # to look at, which is the failure mode this whole block is written
-    # against. 177.md contributed two entries and both must be found.
-    check "corpus/release: the section carries 177.md's two amended entries (#222)" 0 "2" \
-      cl_release_177_count
-    check "corpus/release: ...and the guard is green on them (the control's other half)" 1 "" \
-      cl_release_177_announces
   fi
   rm -f "$CLPRE"
 fi
